@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         configureNotifications()
 
+        #if DEBUG
+        GovernorPolicyEngineSelfTests.run()
+        #endif
+
         settingsStore.$samplingInterval
             .combineLatest(settingsStore.$smoothingAlpha)
             .receive(on: RunLoop.main)

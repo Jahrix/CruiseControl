@@ -1,4 +1,4 @@
-# Project Speed v1.1.0 (macOS Desktop App)
+# Project Speed v1.1.1 (macOS Desktop App)
 
 Project Speed is a desktop performance companion for X-Plane on Apple Silicon.
 
@@ -14,20 +14,23 @@ Project Speed is a desktop performance companion for X-Plane on Apple Silicon.
 - Sim Mode profiles (Balanced/Aggressive/Streaming) with app allowlist/blocklist/do-not-touch policy.
 - Diagnostics export to JSON.
 
-## Governor Mode (Altitude-based LOD policy)
+## Automatic LOD Governor (v1.1.1)
 
-Governor Mode determines a policy tier from altitude and sends LOD targets to a FlyWithLua bridge.
+Project Speed can automatically adjust XP12 LOD using altitude tiers.
 
 Default tiers:
-- `GROUND` (`AGL < 1500 ft`): aggressive FPS-oriented LOD target.
-- `CLIMB/DESCENT` (`1500-10000 ft`): moderate target.
-- `CRUISE` (`> 10000 ft`): visuals-first target (bounded by safety clamp).
+- `GROUND` (`AGL < 1500 ft`): FPS-oriented (higher `LOD_bias_rat`)
+- `TRANSITION` (`1500-10000 ft`): balanced
+- `CRUISE` (`> 10000 ft`): visuals-oriented (lower `LOD_bias_rat`)
 
 Governor behavior:
-- Uses AGL when available from telemetry.
-- Falls back to a simple MSL heuristic when AGL is unavailable.
-- Applies clamp min/max for safety.
-- Sends UDP command messages to FlyWithLua script (`Scripts/ProjectSpeed_Governor.lua`) running inside X-Plane.
+- Uses AGL when available from UDP telemetry.
+- Falls back to MSL heuristic if AGL is missing.
+- If altitude telemetry is unavailable, governor pauses and does not send LOD commands.
+- Applies smoothing/ramping, minimum time-in-tier, command interval limit, and minimum send delta.
+- Uses app-side and script-side clamp bounds for safety.
+
+The app does not write datarefs directly. It sends localhost UDP commands to the FlyWithLua companion script running inside X-Plane.
 
 ## Build and run
 
@@ -51,6 +54,28 @@ Project Speed shows:
 - Packets/sec
 - X-Plane detected yes/no
 
+## FlyWithLua Companion Setup
+
+Install script:
+- `X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua`
+
+Default companion endpoint:
+- `127.0.0.1:49006`
+
+Commands accepted by the script:
+- `ENABLE`
+- `SET_LOD <float>`
+- `DISABLE`
+
+Companion behavior:
+- Applies `set("sim/private/controls/reno/LOD_bias_rat", value)` with clamps.
+- Stores original value on load.
+- Restores original value on `DISABLE` and on script exit.
+
+Verification:
+- Check FlyWithLua log for `Listening on 127.0.0.1:49006`.
+- In Project Speed, LOD Governor card should show `Command status: Connected` when commands are flowing.
+
 ## UDP bind diagnostics
 
 - Bind errors are errno-aware and concise:
@@ -63,16 +88,10 @@ Project Speed shows:
   - `0.0.0.0 (all interfaces):<port>` when binding all interfaces
 - Port text is displayed without grouping commas.
 
-## Governor FlyWithLua bridge setup
-
-1. Copy `Scripts/ProjectSpeed_Governor.lua` into your X-Plane FlyWithLua Scripts directory.
-2. Keep Governor bridge host/port in app aligned with script defaults (`127.0.0.1:49006`) or edit both.
-3. The script restores original LOD when Governor is disabled or script exits.
-
 ## Limitations
 
 - No kernel extensions.
 - No direct control of macOS scheduler internals or GPU clocks.
-- GPU utilization is not exposed with a stable public API for this use case.
+- Uses a private XP12 dataref (`sim/private/controls/reno/LOD_bias_rat`) through FlyWithLua only.
 - UDP telemetry quality depends on X-Plane Data Output configuration.
 - Force quit/telemetry visibility can be restricted by macOS process protections.

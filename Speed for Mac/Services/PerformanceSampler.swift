@@ -19,6 +19,13 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var alertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
     @Published private(set) var configuredIntervalSeconds: TimeInterval = 1.0
     @Published private(set) var governorDecision: GovernorDecision?
+    @Published private(set) var governorCurrentTier: GovernorTier?
+    @Published private(set) var governorCurrentTargetLOD: Double?
+    @Published private(set) var governorSmoothedTargetLOD: Double?
+    @Published private(set) var governorActiveAGLFeet: Double?
+    @Published private(set) var governorLastSentLOD: Double?
+    @Published private(set) var governorCommandStatus: String = "Not connected"
+    @Published private(set) var governorPauseReason: String?
 
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "ProjectSpeed.PerformanceSampler", qos: .utility)
@@ -45,6 +52,11 @@ final class PerformanceSampler: ObservableObject {
 
     private var governorConfig: GovernorPolicyConfig = .default
     private var governorPreviouslyEnabled = false
+
+    private var governorLockedTier: GovernorTier?
+    private var governorLockedTierSince: Date?
+    private var governorSmoothedLODInternal: Double?
+    private var governorLastUpdateAt: Date?
 
     func configureSampling(interval: TimeInterval, alpha: Double) {
         let clampedInterval = max(0.5, min(interval, 2.0))
@@ -73,6 +85,10 @@ final class PerformanceSampler: ObservableObject {
         if !config.enabled, governorPreviouslyEnabled {
             _ = governorBridge.sendDisable(host: config.commandHost, port: config.commandPort)
             governorPreviouslyEnabled = false
+        }
+
+        if !config.enabled {
+            resetGovernorRuntimeState()
         }
     }
 
@@ -262,7 +278,7 @@ final class PerformanceSampler: ObservableObject {
             swapRapidIncrease &&
             memoryPressure == .red
 
-        let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus)
+        let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus, simActive: simActive, now: now)
 
         let warningItems = buildWarnings(
             memoryPressure: memoryPressure,
@@ -325,6 +341,13 @@ final class PerformanceSampler: ObservableObject {
             culprits = culpritItems
             history = historyBuffer
             governorDecision = governorResult.decision
+            governorCurrentTier = governorResult.currentTier
+            governorCurrentTargetLOD = governorResult.currentTargetLOD
+            governorSmoothedTargetLOD = governorResult.smoothedLOD
+            governorActiveAGLFeet = governorResult.activeAGLFeet
+            governorLastSentLOD = governorResult.lastSentLOD
+            governorCommandStatus = governorResult.commandStatus
+            governorPauseReason = governorResult.pauseReason
 
             alertFlags = AlertFlags(
                 memoryPressureRed: memoryPressure == .red,
@@ -336,36 +359,177 @@ final class PerformanceSampler: ObservableObject {
         previousSwapUsedBytes = swapUsedBytes
     }
 
-    private func evaluateGovernor(telemetry: SimTelemetrySnapshot?, udpStatus: XPlaneUDPStatus) -> (decision: GovernorDecision?, statusLine: String) {
+    private func evaluateGovernor(
+        telemetry: SimTelemetrySnapshot?,
+        udpStatus: XPlaneUDPStatus,
+        simActive: Bool,
+        now: Date
+    ) -> (
+        decision: GovernorDecision?,
+        statusLine: String,
+        currentTier: GovernorTier?,
+        currentTargetLOD: Double?,
+        smoothedLOD: Double?,
+        activeAGLFeet: Double?,
+        lastSentLOD: Double?,
+        commandStatus: String,
+        pauseReason: String?
+    ) {
+        func pausedResult(reason: String) -> (
+            decision: GovernorDecision?,
+            statusLine: String,
+            currentTier: GovernorTier?,
+            currentTargetLOD: Double?,
+            smoothedLOD: Double?,
+            activeAGLFeet: Double?,
+            lastSentLOD: Double?,
+            commandStatus: String,
+            pauseReason: String?
+        ) {
+            _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
+            governorPreviouslyEnabled = false
+            resetGovernorRuntimeState()
+            let commandStatus = governorBridge.commandStatusText(now: now)
+            return (nil, "Governor: \(reason)", nil, nil, nil, nil, governorBridge.lastSentLOD, commandStatus, reason)
+        }
+
         guard governorConfig.enabled else {
             if governorPreviouslyEnabled {
                 _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
                 governorPreviouslyEnabled = false
             }
-            return (nil, "Governor: Disabled")
+            resetGovernorRuntimeState()
+            return (nil, "Governor: Disabled", nil, nil, nil, nil, governorBridge.lastSentLOD, governorBridge.commandStatusText(now: now), nil)
+        }
+
+        guard simActive else {
+            return pausedResult(reason: "No sim data; governor paused")
+        }
+
+        guard udpStatus.state == .active else {
+            return pausedResult(reason: "No sim data; governor paused")
+        }
+
+        guard let telemetry else {
+            return pausedResult(reason: "No sim data; governor paused")
+        }
+
+        let resolved = GovernorPolicyEngine.resolveAGL(telemetry: telemetry)
+        guard let aglFeet = resolved.feet else {
+            return pausedResult(reason: "AGL unavailable; governor paused")
         }
 
         governorPreviouslyEnabled = true
 
-        guard let decision = GovernorPolicyEngine.decide(telemetry: telemetry, config: governorConfig) else {
-            return (nil, "Governor: Enabled | waiting for altitude telemetry")
-        }
+        let candidateTier = GovernorPolicyEngine.selectTier(
+            aglFeet: aglFeet,
+            groundMaxAGLFeet: governorConfig.clampedGroundMax,
+            cruiseMinAGLFeet: governorConfig.clampedCruiseMin
+        )
 
-        var statusLine = decision.statusLine
-
-        if udpStatus.state == .active {
-            if let bridgeError = governorBridge.send(
-                decision: decision,
-                host: governorConfig.commandHost,
-                port: governorConfig.commandPort
-            ) {
-                statusLine += " | Bridge error: \(bridgeError)"
+        if let lockedTier = governorLockedTier,
+           let lockedSince = governorLockedTierSince,
+           candidateTier != lockedTier {
+            let holdElapsed = now.timeIntervalSince(lockedSince)
+            if holdElapsed >= governorConfig.minimumTierHoldSeconds {
+                governorLockedTier = candidateTier
+                governorLockedTierSince = now
             }
-        } else {
-            statusLine += " | Bridge pending (UDP not active)"
+        } else if governorLockedTier == nil {
+            governorLockedTier = candidateTier
+            governorLockedTierSince = now
         }
 
-        return (decision, statusLine)
+        let effectiveTier = governorLockedTier ?? candidateTier
+        let tierTarget = governorConfig.targetLOD(for: effectiveTier)
+
+        if governorSmoothedLODInternal == nil {
+            governorSmoothedLODInternal = tierTarget
+        } else if let previousLOD = governorSmoothedLODInternal {
+            let deltaSeconds = max(now.timeIntervalSince(governorLastUpdateAt ?? now), 0)
+            let smoothing = max(governorConfig.smoothingDurationSeconds, 0.1)
+            let factor = min(deltaSeconds / smoothing, 1.0)
+            let nextLOD = previousLOD + (tierTarget - previousLOD) * factor
+            governorSmoothedLODInternal = governorConfig.clampLOD(nextLOD)
+        }
+
+        governorLastUpdateAt = now
+        let smoothedLOD = governorConfig.clampLOD(governorSmoothedLODInternal ?? tierTarget)
+
+        let sendResult = governorBridge.send(
+            lod: smoothedLOD,
+            tier: effectiveTier,
+            host: governorConfig.commandHost,
+            port: governorConfig.commandPort,
+            now: now,
+            minimumInterval: governorConfig.minimumCommandIntervalSeconds,
+            minimumDelta: governorConfig.minimumCommandDelta
+        )
+
+        let thresholdsText = String(
+            format: "GROUND < %.0fft, TRANSITION %.0f-%.0fft, CRUISE > %.0fft",
+            governorConfig.clampedGroundMax,
+            governorConfig.clampedGroundMax,
+            governorConfig.clampedCruiseMin,
+            governorConfig.clampedCruiseMin
+        )
+
+        let decision = GovernorDecision(
+            tier: effectiveTier,
+            resolvedAGLFeet: aglFeet,
+            resolvedAltitudeSource: resolved.source,
+            targetLOD: tierTarget,
+            thresholdsText: thresholdsText
+        )
+
+        var statusLine = decision.statusLine + String(format: " | Ramp: %.2f", smoothedLOD)
+        if resolved.source == .mslHeuristic {
+            statusLine += " | AGL fallback: MSL heuristic"
+        }
+        if let bridgeError = sendResult.error {
+            statusLine += " | Bridge error: \(bridgeError)"
+        }
+
+        return (
+            decision,
+            statusLine,
+            effectiveTier,
+            tierTarget,
+            smoothedLOD,
+            aglFeet,
+            governorBridge.lastSentLOD,
+            sendResult.statusText,
+            nil
+        )
+    }
+
+    private func resetGovernorRuntimeState() {
+        governorLockedTier = nil
+        governorLockedTierSince = nil
+        governorSmoothedLODInternal = nil
+        governorLastUpdateAt = nil
+    }
+    
+    @MainActor
+    func sendGovernorTestCommand(lodValue: Double) -> ActionOutcome {
+        let clampedLOD = governorConfig.clampLOD(lodValue)
+        let host = governorConfig.commandHost
+        let port = governorConfig.commandPort
+        let now = Date()
+
+        let result = queue.sync {
+            governorBridge.sendTestLOD(lod: clampedLOD, host: host, port: port, now: now)
+        }
+
+        if result.sent {
+            governorLastSentLOD = clampedLOD
+            governorCommandStatus = result.statusText
+            return ActionOutcome(success: true, message: "Test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)) to \(host):\(port).")
+        }
+
+        let detail = result.error ?? "Unknown send failure."
+        governorCommandStatus = result.statusText
+        return ActionOutcome(success: false, message: "Test command failed: \(detail)")
     }
 
     private func isXPlaneProcessRunning(processes: [ProcessSample]?) -> Bool {

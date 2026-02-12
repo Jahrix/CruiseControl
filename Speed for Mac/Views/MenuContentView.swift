@@ -72,6 +72,7 @@ struct MenuContentView: View {
     @State private var udpPortText: String = "49005"
     @State private var governorPortText: String = "49006"
     @State private var governorHostText: String = "127.0.0.1"
+    @State private var governorTestLODText: String = "1.00"
 
     @State private var showUDPSetupGuide: Bool = true
     @State private var now: Date = Date()
@@ -387,11 +388,29 @@ struct MenuContentView: View {
 
     private var simModeSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            dashboardCard(title: "Governor Mode") {
+            dashboardCard(title: "LOD Governor") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Governor Mode", isOn: $settings.governorModeEnabled)
+                    Toggle("Enable LOD Governor", isOn: $settings.governorModeEnabled)
 
-                    Text("AGL Thresholds")
+                    HStack(spacing: 12) {
+                        metricPill(label: "AGL", value: sampler.governorActiveAGLFeet.map { String(format: "%.0f ft", $0) } ?? "AGL unavailable")
+                        metricPill(label: "Tier", value: sampler.governorCurrentTier?.rawValue ?? "Paused")
+                        metricPill(label: "Target", value: sampler.governorCurrentTargetLOD.map { String(format: "%.2f", $0) } ?? "-")
+                        metricPill(label: "Ramp", value: sampler.governorSmoothedTargetLOD.map { String(format: "%.2f", $0) } ?? "-")
+                        metricPill(label: "Last Sent", value: sampler.governorLastSentLOD.map { String(format: "%.2f", $0) } ?? "-")
+                    }
+
+                    Text("Command status: \(sampler.governorCommandStatus)")
+                        .font(.subheadline)
+                        .foregroundStyle(sampler.governorCommandStatus == "Connected" ? .green : .orange)
+
+                    if let pauseReason = sampler.governorPauseReason {
+                        Text(pauseReason)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Text("Altitude thresholds (feet AGL)")
                         .font(.headline)
                     sliderRow(
                         label: "GROUND upper (ft)",
@@ -406,16 +425,23 @@ struct MenuContentView: View {
                         step: 250
                     )
 
-                    Text("LOD Targets")
+                    Text("Per-tier LOD targets")
                         .font(.headline)
-                    sliderRow(label: "GROUND target", value: $settings.governorTargetLODGround, range: 0.5...2.5, step: 0.05)
-                    sliderRow(label: "CLIMB/DESCENT target", value: $settings.governorTargetLODClimbDescent, range: 0.5...2.5, step: 0.05)
-                    sliderRow(label: "CRUISE target", value: $settings.governorTargetLODCruise, range: 0.5...2.5, step: 0.05)
+                    sliderRow(label: "GROUND target", value: $settings.governorTargetLODGround, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "TRANSITION target", value: $settings.governorTargetLODClimbDescent, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "CRUISE target", value: $settings.governorTargetLODCruise, range: 0.20...3.00, step: 0.05)
 
-                    Text("Safety Clamp")
+                    Text("Safety clamps")
                         .font(.headline)
-                    sliderRow(label: "Min LOD", value: $settings.governorLODMinClamp, range: 0.3...2.0, step: 0.05)
-                    sliderRow(label: "Max LOD", value: $settings.governorLODMaxClamp, range: 0.5...3.0, step: 0.05)
+                    sliderRow(label: "Min LOD", value: $settings.governorLODMinClamp, range: 0.20...2.00, step: 0.05)
+                    sliderRow(label: "Max LOD", value: $settings.governorLODMaxClamp, range: 0.50...3.00, step: 0.05)
+
+                    Text("Governor behavior")
+                        .font(.headline)
+                    sliderRow(label: "Min time in tier (s)", value: $settings.governorMinimumTierHoldSeconds, range: 0...30, step: 1)
+                    sliderRow(label: "Ramp duration (s)", value: $settings.governorSmoothingDurationSeconds, range: 0.5...12, step: 0.5)
+                    sliderRow(label: "Command interval (s)", value: $settings.governorMinimumCommandIntervalSeconds, range: 0.1...3.0, step: 0.1)
+                    sliderRow(label: "Min send delta", value: $settings.governorMinimumCommandDelta, range: 0.01...0.30, step: 0.01)
 
                     HStack {
                         Text("Bridge Host")
@@ -432,12 +458,38 @@ struct MenuContentView: View {
                         .buttonStyle(.bordered)
                     }
 
+                    HStack {
+                        Text("Test LOD")
+                        TextField("1.00", text: $governorTestLODText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 90)
+                        Button("Test send") {
+                            guard let lod = Double(governorTestLODText) else {
+                                processActionResult = "Invalid LOD test value. Use a number like 0.95 or 1.25."
+                                return
+                            }
+                            let outcome = sampler.sendGovernorTestCommand(lodValue: lod)
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+
                     Text(sampler.snapshot.governorStatusLine)
                         .font(.subheadline)
                         .foregroundStyle(settings.governorModeEnabled ? .green : .secondary)
                 }
             }
 
+            dashboardCard(title: "Setup FlyWithLua Companion") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Install to: X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua")
+                    Text("Companion listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
+                    Text("In FlyWithLua log, confirm: [ProjectSpeed_Governor] Listening on ...")
+                    Text("Troubleshooting: if command status is Not connected, confirm LuaSocket is available and host/port match.")
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
             dashboardCard(title: "Sim Mode Profiles") {
                 VStack(alignment: .leading, spacing: 12) {
                     Picker("Profile", selection: $settings.selectedProfile) {

@@ -111,6 +111,22 @@ final class SettingsStore: ObservableObject {
         didSet { savePreferences() }
     }
 
+    @Published var governorMinimumTierHoldSeconds: Double {
+        didSet { savePreferences() }
+    }
+
+    @Published var governorSmoothingDurationSeconds: Double {
+        didSet { savePreferences() }
+    }
+
+    @Published var governorMinimumCommandIntervalSeconds: Double {
+        didSet { savePreferences() }
+    }
+
+    @Published var governorMinimumCommandDelta: Double {
+        didSet { savePreferences() }
+    }
+
     @Published var governorCommandHost: String {
         didSet { savePreferences() }
     }
@@ -161,6 +177,10 @@ final class SettingsStore: ObservableObject {
         static let governorTargetLODCruise = "governor.targetLOD.cruise"
         static let governorLODMinClamp = "governor.lod.minClamp"
         static let governorLODMaxClamp = "governor.lod.maxClamp"
+        static let governorMinimumTierHoldSeconds = "governor.tier.minimumHoldSeconds"
+        static let governorSmoothingDurationSeconds = "governor.smoothing.durationSeconds"
+        static let governorMinimumCommandIntervalSeconds = "governor.command.minimumIntervalSeconds"
+        static let governorMinimumCommandDelta = "governor.command.minimumDelta"
         static let governorCommandHost = "governor.command.host"
         static let governorCommandPort = "governor.command.port"
     }
@@ -216,6 +236,10 @@ final class SettingsStore: ObservableObject {
         self.governorTargetLODCruise = defaults.object(forKey: Keys.governorTargetLODCruise) as? Double ?? GovernorPolicyConfig.default.targetLODCruise
         self.governorLODMinClamp = defaults.object(forKey: Keys.governorLODMinClamp) as? Double ?? GovernorPolicyConfig.default.clampMinLOD
         self.governorLODMaxClamp = defaults.object(forKey: Keys.governorLODMaxClamp) as? Double ?? GovernorPolicyConfig.default.clampMaxLOD
+        self.governorMinimumTierHoldSeconds = defaults.object(forKey: Keys.governorMinimumTierHoldSeconds) as? Double ?? GovernorPolicyConfig.default.minimumTierHoldSeconds
+        self.governorSmoothingDurationSeconds = defaults.object(forKey: Keys.governorSmoothingDurationSeconds) as? Double ?? GovernorPolicyConfig.default.smoothingDurationSeconds
+        self.governorMinimumCommandIntervalSeconds = defaults.object(forKey: Keys.governorMinimumCommandIntervalSeconds) as? Double ?? GovernorPolicyConfig.default.minimumCommandIntervalSeconds
+        self.governorMinimumCommandDelta = defaults.object(forKey: Keys.governorMinimumCommandDelta) as? Double ?? GovernorPolicyConfig.default.minimumCommandDelta
         self.governorCommandHost = defaults.string(forKey: Keys.governorCommandHost) ?? GovernorPolicyConfig.default.commandHost
 
         let storedCommandPort = defaults.object(forKey: Keys.governorCommandPort) as? Int ?? GovernorPolicyConfig.default.commandPort
@@ -237,6 +261,10 @@ final class SettingsStore: ObservableObject {
             targetLODCruise: governorTargetLODCruise,
             clampMinLOD: minClamp,
             clampMaxLOD: maxClamp,
+            minimumTierHoldSeconds: max(governorMinimumTierHoldSeconds, 0),
+            smoothingDurationSeconds: max(governorSmoothingDurationSeconds, 0.1),
+            minimumCommandIntervalSeconds: max(governorMinimumCommandIntervalSeconds, 0.1),
+            minimumCommandDelta: max(governorMinimumCommandDelta, 0.005),
             commandHost: governorCommandHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "127.0.0.1" : governorCommandHost,
             commandPort: min(max(governorCommandPort, 1_024), 65_535)
         )
@@ -463,6 +491,10 @@ final class SettingsStore: ObservableObject {
         defaults.set(governorTargetLODCruise, forKey: Keys.governorTargetLODCruise)
         defaults.set(governorLODMinClamp, forKey: Keys.governorLODMinClamp)
         defaults.set(governorLODMaxClamp, forKey: Keys.governorLODMaxClamp)
+        defaults.set(governorMinimumTierHoldSeconds, forKey: Keys.governorMinimumTierHoldSeconds)
+        defaults.set(governorSmoothingDurationSeconds, forKey: Keys.governorSmoothingDurationSeconds)
+        defaults.set(governorMinimumCommandIntervalSeconds, forKey: Keys.governorMinimumCommandIntervalSeconds)
+        defaults.set(governorMinimumCommandDelta, forKey: Keys.governorMinimumCommandDelta)
         defaults.set(governorCommandHost, forKey: Keys.governorCommandHost)
         defaults.set(min(max(governorCommandPort, 1_024), 65_535), forKey: Keys.governorCommandPort)
 
