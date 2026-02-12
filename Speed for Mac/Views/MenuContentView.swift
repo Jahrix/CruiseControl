@@ -214,7 +214,7 @@ struct MenuContentView: View {
                         udpStateBadge(sampler.snapshot.udpStatus.state)
                     }
 
-                    Text("Listening on 127.0.0.1:\(String(settings.xPlaneUDPPort))")
+                    Text("Listening on \(sampler.snapshot.udpStatus.listenHost):\(String(sampler.snapshot.udpStatus.listenPort))")
                         .font(.subheadline)
                     Text("Last packet received: \(lastPacketText)")
                         .font(.subheadline)
@@ -865,7 +865,8 @@ struct MenuContentView: View {
         }
 
         settings.xPlaneUDPPort = port
-        diagnosticsExportResult = "Listening on 127.0.0.1:\(String(port))."
+        let host = sampler.snapshot.udpStatus.listenHost
+        diagnosticsExportResult = "Listening on \(host):\(String(port))."
     }
 
     private func applyGovernorBridgeEndpoint() {

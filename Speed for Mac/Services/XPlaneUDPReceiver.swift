@@ -2,11 +2,19 @@ import Foundation
 import Darwin
 
 final class XPlaneUDPReceiver {
+    private struct SocketError: Error {
+        let op: String
+        let code: Int32
+        let message: String
+    }
+
     private var socketFD: Int32 = -1
     private var readSource: DispatchSourceRead?
 
     private var listenHost: String = "127.0.0.1"
     private var listenPort: Int = 49_005
+    private var effectiveListenHost: String = "127.0.0.1"
+    private var effectiveListenPort: Int = 49_005
     private var listeningEnabled: Bool = true
 
     private var totalPackets: UInt64 = 0
@@ -23,8 +31,10 @@ final class XPlaneUDPReceiver {
     private var lastDetail: String?
 
     func configure(enabled: Bool, host: String = "127.0.0.1", port: Int, queue: DispatchQueue) {
-        listenHost = host
+        listenHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         listenPort = min(max(port, 1_024), 65_535)
+        effectiveListenHost = listenAddressLabel(for: listenHost)
+        effectiveListenPort = listenPort
         listeningEnabled = enabled
 
         guard enabled else {
@@ -82,8 +92,8 @@ final class XPlaneUDPReceiver {
 
         let status = XPlaneUDPStatus(
             state: state,
-            listenHost: listenHost,
-            listenPort: listenPort,
+            listenHost: effectiveListenHost,
+            listenPort: effectiveListenPort,
             lastPacketDate: lastPacketDate,
             lastValidPacketDate: lastValidPacketDate,
             packetsPerSecond: packetsPerSecond,
@@ -107,23 +117,60 @@ final class XPlaneUDPReceiver {
     private func startListening(queue: DispatchQueue) {
         let fd = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard fd >= 0 else {
-            lastDetail = "Failed to create UDP socket."
+            let code = errno
+            let error = makeSocketError(op: "socket", code: code)
+            lastDetail = error.message
             return
         }
 
         var reuseAddress: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuseAddress, socklen_t(MemoryLayout<Int32>.size))
-
-        let flags = fcntl(fd, F_GETFL, 0)
-        if flags >= 0 {
-            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        if setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuseAddress, socklen_t(MemoryLayout<Int32>.size)) != 0 {
+            let code = errno
+            let error = makeSocketError(op: "setsockopt", code: code)
+            lastDetail = error.message
+            Darwin.close(fd)
+            return
         }
 
+        let flags = fcntl(fd, F_GETFL, 0)
+        guard flags >= 0 else {
+            let code = errno
+            let error = makeSocketError(op: "fcntl(F_GETFL)", code: code)
+            lastDetail = error.message
+            Darwin.close(fd)
+            return
+        }
+
+        if fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0 {
+            let code = errno
+            let error = makeSocketError(op: "fcntl(F_SETFL)", code: code)
+            lastDetail = error.message
+            Darwin.close(fd)
+            return
+        }
+
+        let normalizedHost = normalizedListenHost(from: listenHost)
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.stride)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(UInt16(listenPort).bigEndian)
-        addr.sin_addr = in_addr(s_addr: INADDR_ANY)
+
+        if normalizedHost == "0.0.0.0" {
+            addr.sin_addr = in_addr(s_addr: INADDR_ANY.bigEndian)
+        } else {
+            var ipv4 = in_addr()
+            let parseResult = normalizedHost.withCString { cString in
+                inet_pton(AF_INET, cString, &ipv4)
+            }
+
+            guard parseResult == 1 else {
+                lastDetail = "Invalid listen address '\(listenHost)'. Use 127.0.0.1 or 0.0.0.0."
+                Darwin.close(fd)
+                return
+            }
+
+            addr.sin_addr = ipv4
+        }
 
         let bindResult = withUnsafePointer(to: &addr) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
@@ -132,7 +179,14 @@ final class XPlaneUDPReceiver {
         }
 
         guard bindResult == 0 else {
-            lastDetail = "Could not bind 127.0.0.1:\(listenPort). Another process may already be using this port."
+            let code = errno
+            let error = makeSocketError(
+                op: "bind",
+                code: code,
+                addressLabel: listenAddressLabel(for: normalizedHost),
+                port: listenPort
+            )
+            lastDetail = error.message
             Darwin.close(fd)
             return
         }
@@ -148,6 +202,8 @@ final class XPlaneUDPReceiver {
 
         socketFD = fd
         readSource = source
+        effectiveListenHost = listenAddressLabel(for: normalizedHost)
+        effectiveListenPort = listenPort
         lastDetail = nil
     }
 
@@ -189,7 +245,9 @@ final class XPlaneUDPReceiver {
                 break
             }
 
-            lastDetail = "UDP read error: \(String(cString: strerror(errno)))"
+            let code = errno
+            let error = makeSocketError(op: "recv", code: code)
+            lastDetail = error.message
             break
         }
     }
@@ -294,5 +352,53 @@ final class XPlaneUDPReceiver {
         let b2 = UInt32(data[offset + 2]) << 16
         let b3 = UInt32(data[offset + 3]) << 24
         return b0 | b1 | b2 | b3
+    }
+
+    private func normalizedListenHost(from host: String) -> String {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+
+        if lowered.isEmpty || lowered == "localhost" {
+            return "127.0.0.1"
+        }
+        if lowered == "0.0.0.0" || lowered == "*" || lowered == "all" || lowered == "any" {
+            return "0.0.0.0"
+        }
+        return trimmed
+    }
+
+    private func listenAddressLabel(for host: String) -> String {
+        let normalized = normalizedListenHost(from: host)
+        if normalized == "0.0.0.0" {
+            return "0.0.0.0 (all interfaces)"
+        }
+        return normalized
+    }
+
+    private func makeSocketError(
+        op: String,
+        code: Int32? = nil,
+        addressLabel: String? = nil,
+        port: Int? = nil
+    ) -> SocketError {
+        let errorCode = code ?? errno
+        let errorText = String(cString: strerror(errorCode))
+        let endpoint = "\(addressLabel ?? listenAddressLabel(for: listenHost)):\(port ?? listenPort)"
+
+        let message: String
+        switch errorCode {
+        case EADDRINUSE:
+            message = "Port \(port ?? listenPort) is already in use."
+        case EACCES, EPERM:
+            message = "Permission denied binding to \(endpoint)."
+        case EADDRNOTAVAIL:
+            message = "Address \(addressLabel ?? listenAddressLabel(for: listenHost)) is not available on this Mac."
+        case ENETDOWN, ENETUNREACH:
+            message = "Network unavailable."
+        default:
+            message = "\(op) failed (errno \(errorCode): \(errorText))."
+        }
+
+        return SocketError(op: op, code: errorCode, message: message)
     }
 }

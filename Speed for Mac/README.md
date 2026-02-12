@@ -51,15 +51,23 @@ Project Speed shows:
 - Packets/sec
 - X-Plane detected yes/no
 
+## UDP bind diagnostics
+
+- Bind errors are errno-aware and concise:
+  - `EADDRINUSE`: `Port <port> is already in use.`
+  - `EACCES`/`EPERM`: permission denied binding to `<address>:<port>`.
+  - `EADDRNOTAVAIL`: address is not available on this Mac.
+  - fallback includes `errno` and `strerror`.
+- Listening address reflects actual bind target:
+  - `127.0.0.1:<port>` for loopback-only
+  - `0.0.0.0 (all interfaces):<port>` when binding all interfaces
+- Port text is displayed without grouping commas.
+
 ## Governor FlyWithLua bridge setup
 
 1. Copy `Scripts/ProjectSpeed_Governor.lua` into your X-Plane FlyWithLua Scripts directory.
 2. Keep Governor bridge host/port in app aligned with script defaults (`127.0.0.1:49006`) or edit both.
 3. The script restores original LOD when Governor is disabled or script exits.
-
-## Repository
-
-This project can be maintained in a private GitHub repo. See commands below in the root `CHANGELOG.md`/release notes workflow.
 
 ## Limitations
 

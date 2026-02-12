@@ -19,6 +19,12 @@
 - Session Overview now uses explicit no-comma port formatting (e.g., `49010`, not `49,010`).
 - Sim overview now reports clearer UDP diagnostics and packet state.
 
+### Fixed
+- UDP socket error reporting now maps real `errno` values for bind/setup failures.
+- Bind failure text no longer always reports "port already in use".
+- Session Overview listen address now reflects the actual bind target (`127.0.0.1` vs `0.0.0.0 (all interfaces)`).
+- Stale bind error text is cleared after successful listener startup.
+
 ### Improved
 - Diagnostics export includes UDP state and Governor status.
 - Governor policy implemented with testable pure selection functions.
