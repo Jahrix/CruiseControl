@@ -45,6 +45,7 @@
 - Migration note: settings under `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported into the new domain.
 - App delegate now applies combined runtime config from settings + v1.1.2 feature store.
 - Documentation refreshed for ACK protocol, wizard flow, and quarantine safety.
+- XP11 compatibility pass: setup guidance now explicitly references Data Set 0/20 and X-Plane 11/12 FlyWithLua install path.
 
 ### Fixed
 - `V112FeatureStore` now imports `Combine` for `ObservableObject`/`@Published` conformance.

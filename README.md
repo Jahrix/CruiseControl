@@ -46,7 +46,7 @@ In X-Plane:
 2. Check `Send network data output`
 3. Set IP to `127.0.0.1`
 4. Set Port to CruiseControl listening port (default `49005`)
-5. Enable frame-rate and position datasets
+5. Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)
 
 Ports are shown without grouping commas (for example `49005`, not `49,005`).
 
@@ -54,7 +54,7 @@ Ports are shown without grouping commas (for example `49005`, not `49,005`).
 
 Script path:
 
-- `X-Plane 12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua`
+- `X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua`
 
 Command protocol:
 

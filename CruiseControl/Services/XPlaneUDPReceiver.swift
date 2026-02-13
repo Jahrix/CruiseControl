@@ -317,12 +317,12 @@ final class XPlaneUDPReceiver {
         }
 
         let fps = readFPS(records: records)
-        let frameTime = readFrameTime(records: records)
+        let frameTime = readFrameTime(records: records, fps: fps)
         let altitude = readAltitude(records: records)
 
         if fps == nil, frameTime == nil, altitude.aglFeet == nil, altitude.mslFeet == nil {
             datasetMismatchPackets += 1
-            return (false, nil, "DATA packets are arriving but expected dataset fields are missing. Enable frame-rate and position output.")
+            return (false, nil, "DATA packets are arriving but expected fields are missing. In X-Plane 11/12 Data Output, enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude).")
         }
 
         let telemetry = SimTelemetrySnapshot(
@@ -343,34 +343,50 @@ final class XPlaneUDPReceiver {
             return nil
         }
 
-        let candidate = Double(frameRecord[0])
-        guard candidate.isFinite, candidate > 1, candidate < 400 else {
-            return nil
+        for candidateIndex in [0, 1] {
+            guard frameRecord.indices.contains(candidateIndex) else { continue }
+            let candidate = Double(frameRecord[candidateIndex])
+            if candidate.isFinite, candidate > 1, candidate < 400 {
+                return candidate
+            }
         }
-        return candidate
+
+        return nil
     }
 
-    private func readFrameTime(records: [Int32: [Float]]) -> Double? {
-        guard let frameRecord = records[0], frameRecord.count >= 3 else {
-            return nil
+    private func readFrameTime(records: [Int32: [Float]], fps: Double?) -> Double? {
+        if let frameRecord = records[0], !frameRecord.isEmpty {
+            for candidateIndex in [2, 1, 3] {
+                guard frameRecord.indices.contains(candidateIndex) else { continue }
+                let secondsPerFrame = Double(frameRecord[candidateIndex])
+                if secondsPerFrame.isFinite, secondsPerFrame > 0.001, secondsPerFrame < 0.5 {
+                    return secondsPerFrame * 1_000.0
+                }
+            }
         }
 
-        let secondsPerFrame = Double(frameRecord[2])
-        guard secondsPerFrame.isFinite, secondsPerFrame > 0.001, secondsPerFrame < 0.5 else {
-            return nil
+        if let fps, fps.isFinite, fps > 1 {
+            return 1_000.0 / fps
         }
-        return secondsPerFrame * 1_000.0
+
+        return nil
     }
 
     private func readAltitude(records: [Int32: [Float]]) -> (aglFeet: Double?, mslFeet: Double?) {
-        // Data set 20 commonly contains latitude/longitude/altitude fields in X-Plane Data Output.
-        if let positionRecord = records[20], positionRecord.count >= 4 {
-            let msl = normalizeAltitude(Double(positionRecord[2]), min: -1_500, max: 80_000)
-            let agl = normalizeAltitude(Double(positionRecord[3]), min: -200, max: 50_000)
-            return (agl, msl)
+        // Data Set 20 is the cross-version X-Plane position output row (XP11/XP12).
+        guard let positionRecord = records[20], positionRecord.count >= 3 else {
+            return (nil, nil)
         }
 
-        return (nil, nil)
+        let msl = normalizeAltitude(Double(positionRecord[2]), min: -1_500, max: 80_000)
+        let agl: Double?
+        if positionRecord.count >= 4 {
+            agl = normalizeAltitude(Double(positionRecord[3]), min: -200, max: 50_000)
+        } else {
+            agl = nil
+        }
+
+        return (agl, msl)
     }
 
     private func normalizeAltitude(_ candidate: Double, min: Double, max: Double) -> Double? {

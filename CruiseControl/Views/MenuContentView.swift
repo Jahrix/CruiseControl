@@ -339,7 +339,7 @@ struct MenuContentView: View {
                         .buttonStyle(.borderedProminent)
                     }
 
-                    Text("Install Lua script at X-Plane 12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
+                    Text("Install Lua script at X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -352,7 +352,7 @@ struct MenuContentView: View {
                         Text("2) Check Send network data output")
                         Text("3) Set IP to 127.0.0.1")
                         Text("4) Set Port to \(String(settings.xPlaneUDPPort))")
-                        Text("5) Enable frame-rate and position datasets")
+                        Text("5) Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)")
 
                         HStack {
                             Text("Setup line: 127.0.0.1:\(String(settings.xPlaneUDPPort))")
@@ -692,7 +692,7 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Setup FlyWithLua Companion") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Install to: X-Plane 12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
+                    Text("Install to: X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
                     Text("Companion listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
                     Text("ACK protocol: PING/PONG, ACK ENABLE, ACK DISABLE, ACK SET_LOD <value>, ERR <message>.")
                     Text("If LuaSocket is missing, CruiseControl writes fallback commands to /tmp/CruiseControl_lod_target.txt.")
