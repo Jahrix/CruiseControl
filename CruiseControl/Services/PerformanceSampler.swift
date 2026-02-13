@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import UniformTypeIdentifiers
 
 struct DiagnosticsExportOutcome {
     let success: Bool
@@ -251,11 +252,35 @@ final class PerformanceSampler: ObservableObject {
 
         do {
             let data = try encoder.encode(report)
-            let destination = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-                ?? FileManager.default.temporaryDirectory
+
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let fileURL = destination.appendingPathComponent("CruiseControl-diagnostics-\(formatter.string(from: Date())).json")
+            let suggestedName = "CruiseControl-diagnostics-\(formatter.string(from: Date())).json"
+
+            let panel = NSSavePanel()
+            panel.title = "Export Diagnostics"
+            panel.message = "Choose where to save your diagnostics report."
+            panel.nameFieldStringValue = suggestedName
+            panel.canCreateDirectories = true
+            panel.showsTagField = false
+            panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+
+            if #available(macOS 11.0, *) {
+                panel.allowedContentTypes = [UTType.json]
+            } else {
+                panel.allowedFileTypes = ["json"]
+            }
+
+            guard panel.runModal() == .OK, let fileURL = panel.url else {
+                return DiagnosticsExportOutcome(success: false, fileURL: nil, message: "Diagnostics export cancelled.")
+            }
+
+            let directoryURL = fileURL.deletingLastPathComponent()
+            let access = directoryURL.startAccessingSecurityScopedResource()
+            defer {
+                if access { directoryURL.stopAccessingSecurityScopedResource() }
+            }
+
             try data.write(to: fileURL, options: .atomic)
             return DiagnosticsExportOutcome(success: true, fileURL: fileURL, message: "Diagnostics exported to \(fileURL.path).")
         } catch {

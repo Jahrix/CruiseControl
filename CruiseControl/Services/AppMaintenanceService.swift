@@ -21,24 +21,46 @@ enum AppMaintenanceService {
         return ActionOutcome(success: true, message: "Opened /Applications.")
     }
 
+    @MainActor
     static func installToApplications() -> ActionOutcome {
         let source = Bundle.main.bundleURL
-        let destination = URL(fileURLWithPath: "/Applications").appendingPathComponent(source.lastPathComponent)
+
+        let panel = NSOpenPanel()
+        panel.title = "Install CruiseControl"
+        panel.message = "Select an install folder. /Applications is recommended."
+        panel.prompt = "Install"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+
+        guard panel.runModal() == .OK, let destinationFolder = panel.url else {
+            return ActionOutcome(success: false, message: "Install cancelled.")
+        }
+
+        let access = destinationFolder.startAccessingSecurityScopedResource()
+        defer {
+            if access { destinationFolder.stopAccessingSecurityScopedResource() }
+        }
+
+        let destination = destinationFolder.appendingPathComponent(source.lastPathComponent)
 
         do {
             if source.path == destination.path {
-                return ActionOutcome(success: true, message: "CruiseControl is already running from /Applications.")
+                return ActionOutcome(success: true, message: "CruiseControl is already running from \(destinationFolder.path).")
             }
 
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
             }
+
             try FileManager.default.copyItem(at: source, to: destination)
             return ActionOutcome(success: true, message: "Installed app to \(destination.path).")
         } catch {
             return ActionOutcome(
                 success: false,
-                message: "Install to /Applications failed: \(error.localizedDescription). Grant Finder/admin permission and retry."
+                message: "Install failed: \(error.localizedDescription). Choose a writable folder or retry /Applications and approve admin prompt."
             )
         }
     }
