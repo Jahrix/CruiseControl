@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CryptoKit
+import Darwin
 
 final class SmartScanService {
     struct ScanOptions {
@@ -127,34 +128,48 @@ final class SmartScanService {
     func scanOptimizationModuleAsync(topCPUProcesses: [ProcessSample]) async -> [SmartScanItem] {
         Self.scanOptimization(topCPUProcesses: topCPUProcesses)
     }
-
     func trashSummary() -> (count: Int, sizeBytes: UInt64) {
-        let trash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
-        guard fileManager.fileExists(atPath: trash.path),
-              let children = try? fileManager.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) else {
-            return (0, 0)
+        let trashFolders = Self.discoveredTrashDirectories(fileManager: fileManager)
+        var totalCount = 0
+        var totalSize: UInt64 = 0
+
+        for folder in trashFolders {
+            guard fileManager.fileExists(atPath: folder.path),
+                  let children = try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                continue
+            }
+
+            totalCount += children.count
+            for item in children {
+                totalSize += directoryOrFileSize(url: item)
+            }
         }
 
-        var total: UInt64 = 0
-        for item in children {
-            total += directoryOrFileSize(url: item)
-        }
-        return (children.count, total)
+        return (totalCount, totalSize)
     }
 
     func emptyTrash() -> ActionOutcome {
-        let scriptText = "tell application \"Finder\" to empty the trash"
-        guard let script = NSAppleScript(source: scriptText) else {
-            return ActionOutcome(success: false, message: "Unable to create Finder automation script. Open Trash in Finder and empty manually.")
+        let before = trashSummary()
+        if before.count == 0 {
+            return ActionOutcome(success: true, message: "Trash is already empty.")
         }
 
-        var scriptError: NSDictionary?
-        script.executeAndReturnError(&scriptError)
-        if let scriptError {
-            return ActionOutcome(success: false, message: "Could not empty Trash automatically. Open Trash in Finder and empty it manually. Error: \(scriptError)")
+        let scriptResult = runFinderEmptyTrashScript()
+        if scriptResult.success {
+            let after = trashSummary()
+            return ActionOutcome(success: true, message: after.count == 0 ? "Trash emptied." : "Trash command sent to Finder.")
         }
 
-        return ActionOutcome(success: true, message: "Trash emptied.")
+        let fallback = emptyTrashByRemovingFiles()
+        if fallback.deletedCount > 0 {
+            let partial = fallback.failedCount > 0 ? " (\(fallback.failedCount) could not be removed)" : ""
+            return ActionOutcome(success: true, message: "Trash emptied via fallback: removed \(fallback.deletedCount) item(s)\(partial).")
+        }
+
+        return ActionOutcome(
+            success: false,
+            message: "Could not empty Trash automatically. \(scriptResult.message). Open Trash in Finder and empty it manually."
+        )
     }
 
     func quarantine(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
@@ -355,8 +370,13 @@ final class SmartScanService {
     }
 
     func openTrashInFinder() {
-        let trashURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
-        NSWorkspace.shared.open(trashURL)
+        if let trashURL = URL(string: "trash://") {
+            NSWorkspace.shared.open(trashURL)
+            return
+        }
+
+        let fallbackTrash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash", isDirectory: true)
+        NSWorkspace.shared.open(fallbackTrash)
     }
 
     func openBridgeFolderInFinder() -> ActionOutcome {
@@ -461,25 +481,33 @@ final class SmartScanService {
 
     private static func scanTrashBins() -> [SmartScanItem] {
         let fm = FileManager.default
-        let trash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
-        guard fm.fileExists(atPath: trash.path),
-              let children = try? fm.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
-            return []
+        var items: [SmartScanItem] = []
+
+        for trash in discoveredTrashDirectories(fileManager: fm) {
+            guard fm.fileExists(atPath: trash.path),
+                  let children = try? fm.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                continue
+            }
+
+            let sourceLabel = trash.path.hasSuffix("/.Trash") ? "Home Trash" : trash.path
+
+            for item in children {
+                if Task.isCancelled { break }
+                let size = directoryOrFileSize(url: item)
+                guard size > 0 else { continue }
+                items.append(
+                    SmartScanItem(
+                        module: .trashBins,
+                        path: item.path,
+                        sizeBytes: size,
+                        note: "Trash item (\(sourceLabel))",
+                        safeByDefault: true
+                    )
+                )
+            }
         }
 
-        return children.compactMap { item in
-            if Task.isCancelled { return nil }
-            let size = directoryOrFileSize(url: item)
-            guard size > 0 else { return nil }
-            return SmartScanItem(
-                module: .trashBins,
-                path: item.path,
-                sizeBytes: size,
-                note: "User trash item",
-                safeByDefault: true
-            )
-        }
-        .sorted { $0.sizeBytes > $1.sizeBytes }
+        return items.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
     private static func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
@@ -586,6 +614,108 @@ final class SmartScanService {
         let relative = child.path.replacingOccurrences(of: root.path, with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let first = relative.split(separator: "/").first
         return first.map(String.init) ?? root.lastPathComponent
+    }
+
+    private func runFinderEmptyTrashScript() -> (success: Bool, message: String) {
+        let script = "tell application \"Finder\"\nactivate\nempty the trash\nend tell"
+
+        let firstError = executeAppleScript(script)
+        if firstError == nil {
+            return (true, "OK")
+        }
+
+        if let code = firstError?[NSAppleScript.errorNumber] as? Int, code == -600 {
+            _ = NSWorkspace.shared.launchApplication("Finder")
+            Thread.sleep(forTimeInterval: 0.35)
+            let retryError = executeAppleScript(script)
+            if retryError == nil {
+                return (true, "OK")
+            }
+            return (false, userFriendlyAppleScriptError(retryError))
+        }
+
+        return (false, userFriendlyAppleScriptError(firstError))
+    }
+
+    private func executeAppleScript(_ source: String) -> NSDictionary? {
+        guard let script = NSAppleScript(source: source) else {
+            return [NSLocalizedDescriptionKey: "Unable to create AppleScript instance"]
+        }
+
+        var scriptError: NSDictionary?
+        script.executeAndReturnError(&scriptError)
+        return scriptError
+    }
+
+    private func userFriendlyAppleScriptError(_ error: NSDictionary?) -> String {
+        guard let error else { return "Unknown Finder automation error." }
+
+        let code = (error[NSAppleScript.errorNumber] as? Int) ?? 0
+        let brief = (error[NSAppleScript.errorBriefMessage] as? String)
+            ?? (error[NSAppleScript.errorMessage] as? String)
+            ?? "Unknown error"
+
+        switch code {
+        case -600:
+            return "Finder is not running (error -600)."
+        case -1743:
+            return "Permission denied controlling Finder. Allow CruiseControl under Privacy & Security > Automation."
+        case -1712:
+            return "Finder automation timed out (error -1712)."
+        default:
+            return "Finder automation failed (error \(code)): \(brief)"
+        }
+    }
+
+    private func emptyTrashByRemovingFiles() -> (deletedCount: Int, failedCount: Int) {
+        var deleted = 0
+        var failed = 0
+
+        for folder in Self.discoveredTrashDirectories(fileManager: fileManager) {
+            guard fileManager.fileExists(atPath: folder.path),
+                  let children = try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                continue
+            }
+
+            for child in children {
+                do {
+                    try fileManager.removeItem(at: child)
+                    deleted += 1
+                } catch {
+                    failed += 1
+                }
+            }
+        }
+
+        return (deleted, failed)
+    }
+
+    private static func discoveredTrashDirectories(fileManager: FileManager = .default) -> [URL] {
+        var candidates: [URL] = [
+            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash", isDirectory: true)
+        ]
+
+        if let userTrash = fileManager.urls(for: .trashDirectory, in: .userDomainMask).first {
+            candidates.append(userTrash)
+        }
+
+        let uid = String(getuid())
+        if let volumeURLs = fileManager.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) {
+            for volume in volumeURLs {
+                candidates.append(volume.appendingPathComponent(".Trashes/\(uid)", isDirectory: true))
+            }
+        }
+
+        var seen: Set<String> = []
+        var unique: [URL] = []
+        for url in candidates {
+            let path = url.standardizedFileURL.path
+            if seen.insert(path).inserted {
+                unique.append(url)
+            }
+        }
+
+        return unique
     }
 
     private static func appSupportCruiseControlRoot() -> URL {
