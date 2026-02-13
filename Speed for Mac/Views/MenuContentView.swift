@@ -402,7 +402,7 @@ struct MenuContentView: View {
 
                     Text("Command status: \(sampler.governorCommandStatus)")
                         .font(.subheadline)
-                        .foregroundStyle(sampler.governorCommandStatus == "Connected" ? .green : .orange)
+                        .foregroundStyle(sampler.governorCommandStatus.hasPrefix("Connected") ? .green : .orange)
 
                     if let pauseReason = sampler.governorPauseReason {
                         Text(pauseReason)

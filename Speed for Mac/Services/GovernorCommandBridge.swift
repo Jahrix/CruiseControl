@@ -115,6 +115,9 @@ final class GovernorCommandBridge {
             if age <= 10 {
                 return "Connected"
             }
+            if lastSentLOD != nil {
+                return "Connected (idle)"
+            }
             return "Not connected"
         }
 
