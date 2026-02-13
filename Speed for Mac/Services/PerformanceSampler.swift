@@ -389,8 +389,7 @@ final class PerformanceSampler: ObservableObject {
             _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
             governorPreviouslyEnabled = false
             resetGovernorRuntimeState()
-            let commandStatus = governorBridge.commandStatusText(now: now)
-            return (nil, "Governor: \(reason)", nil, nil, nil, nil, governorBridge.lastSentLOD, commandStatus, reason)
+            return (nil, "Governor: \(reason)", nil, nil, nil, nil, governorBridge.lastSentLOD, "Paused", reason)
         }
 
         guard governorConfig.enabled else {
@@ -399,7 +398,7 @@ final class PerformanceSampler: ObservableObject {
                 governorPreviouslyEnabled = false
             }
             resetGovernorRuntimeState()
-            return (nil, "Governor: Disabled", nil, nil, nil, nil, governorBridge.lastSentLOD, governorBridge.commandStatusText(now: now), nil)
+            return (nil, "Governor: Disabled", nil, nil, nil, nil, governorBridge.lastSentLOD, "Disabled", nil)
         }
 
         guard simActive else {

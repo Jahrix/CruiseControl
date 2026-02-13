@@ -25,6 +25,7 @@
   - `ENABLE`
   - `SET_LOD <float>`
   - `DISABLE`
+- File fallback channel (`/tmp/ProjectSpeed_lod_target.txt`) when LuaSocket is unavailable in FlyWithLua.
 - Debug self-tests for tier selection pure function.
 
 ### Changed

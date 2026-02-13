@@ -485,7 +485,8 @@ struct MenuContentView: View {
                     Text("Install to: X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua")
                     Text("Companion listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
                     Text("In FlyWithLua log, confirm: [ProjectSpeed_Governor] Listening on ...")
-                    Text("Troubleshooting: if command status is Not connected, confirm LuaSocket is available and host/port match.")
+                    Text("Troubleshooting: if LuaSocket is missing, Project Speed writes fallback commands to /tmp/ProjectSpeed_lod_target.txt.")
+                    Text("If not connected, verify UDP host/port and check FlyWithLua log for fallback mode.")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

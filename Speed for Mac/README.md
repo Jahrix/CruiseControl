@@ -67,13 +67,17 @@ Commands accepted by the script:
 - `SET_LOD <float>`
 - `DISABLE`
 
+Fallback command file (used when LuaSocket is missing):
+- `/tmp/ProjectSpeed_lod_target.txt`
+- Format: `<sequence>|<command>` (example: `42|SET_LOD 1.10`)
+
 Companion behavior:
 - Applies `set("sim/private/controls/reno/LOD_bias_rat", value)` with clamps.
 - Stores original value on load.
 - Restores original value on `DISABLE` and on script exit.
 
 Verification:
-- Check FlyWithLua log for `Listening on 127.0.0.1:49006`.
+- Check FlyWithLua log for `UDP listening on 127.0.0.1:49006` (or `using file fallback` if LuaSocket is unavailable).
 - In Project Speed, LOD Governor card should show `Command status: Connected` when commands are flowing.
 
 ## UDP bind diagnostics

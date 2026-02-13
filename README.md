@@ -27,5 +27,6 @@ Session Overview should show:
    `X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua`
 2. In Project Speed LOD Governor card, confirm bridge host/port match script settings (default `127.0.0.1:49006`).
 3. Enable LOD Governor and verify command status.
+4. If LuaSocket is unavailable in FlyWithLua, Project Speed also writes fallback commands to `/tmp/ProjectSpeed_lod_target.txt`.
 
 Detailed product notes and limitations are in `Speed for Mac/README.md`.

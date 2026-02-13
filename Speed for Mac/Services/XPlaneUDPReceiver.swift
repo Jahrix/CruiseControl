@@ -390,7 +390,7 @@ final class XPlaneUDPReceiver {
         case EADDRINUSE:
             message = "Port \(port ?? listenPort) is already in use."
         case EACCES, EPERM:
-            message = "Permission denied binding to \(endpoint)."
+            message = "Permission denied binding to \(endpoint). App Sandbox needs Incoming Network Connections enabled."
         case EADDRNOTAVAIL:
             message = "Address \(addressLabel ?? listenAddressLabel(for: listenHost)) is not available on this Mac."
         case ENETDOWN, ENETUNREACH:

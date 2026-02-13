@@ -16,6 +16,9 @@ final class GovernorCommandBridge {
 
     private var enabledCommandSent: Bool = false
     private var disableSent: Bool = false
+    private var commandSequence: UInt64 = 0
+
+    private let fallbackFileURL = URL(fileURLWithPath: "/tmp/ProjectSpeed_lod_target.txt")
 
     func send(
         lod: Double,
@@ -27,7 +30,7 @@ final class GovernorCommandBridge {
         minimumDelta: Double
     ) -> GovernorBridgeSendResult {
         if !enabledCommandSent {
-            if let enableError = sendUDP(message: "ENABLE\n", host: host, port: port) {
+            if let enableError = sendCommand(command: "ENABLE", host: host, port: port) {
                 lastError = enableError
                 return GovernorBridgeSendResult(sent: false, error: enableError, statusText: "Not connected")
             }
@@ -45,8 +48,8 @@ final class GovernorCommandBridge {
             return GovernorBridgeSendResult(sent: false, error: nil, statusText: commandStatusText(now: now))
         }
 
-        let message = String(format: "SET_LOD %.3f\n", lod)
-        if let error = sendUDP(message: message, host: host, port: port) {
+        let command = String(format: "SET_LOD %.3f", lod)
+        if let error = sendCommand(command: command, host: host, port: port) {
             lastError = error
             return GovernorBridgeSendResult(sent: false, error: error, statusText: "Not connected")
         }
@@ -63,7 +66,7 @@ final class GovernorCommandBridge {
 
     func sendTestLOD(lod: Double, host: String, port: Int, now: Date) -> GovernorBridgeSendResult {
         if !enabledCommandSent {
-            if let enableError = sendUDP(message: "ENABLE\n", host: host, port: port) {
+            if let enableError = sendCommand(command: "ENABLE", host: host, port: port) {
                 lastError = enableError
                 return GovernorBridgeSendResult(sent: false, error: enableError, statusText: "Not connected")
             }
@@ -71,8 +74,8 @@ final class GovernorCommandBridge {
             disableSent = false
         }
 
-        let message = String(format: "SET_LOD %.3f\n", lod)
-        if let error = sendUDP(message: message, host: host, port: port) {
+        let command = String(format: "SET_LOD %.3f", lod)
+        if let error = sendCommand(command: command, host: host, port: port) {
             lastError = error
             return GovernorBridgeSendResult(sent: false, error: error, statusText: "Not connected")
         }
@@ -88,7 +91,7 @@ final class GovernorCommandBridge {
     func sendDisable(host: String, port: Int) -> String? {
         guard !disableSent else { return nil }
 
-        let error = sendUDP(message: "DISABLE\n", host: host, port: port)
+        let error = sendCommand(command: "DISABLE", host: host, port: port)
         if error == nil {
             disableSent = true
             enabledCommandSent = false
@@ -116,6 +119,30 @@ final class GovernorCommandBridge {
         }
 
         return "Not connected"
+    }
+
+    private func sendCommand(command: String, host: String, port: Int) -> String? {
+        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let udpError = sendUDP(message: normalized + "\n", host: host, port: port)
+        let fileError = writeFallbackCommand(command: normalized)
+
+        if udpError == nil || fileError == nil {
+            return nil
+        }
+
+        return "\(udpError ?? "Unknown UDP error.") Fallback file command write failed: \(fileError ?? "Unknown file error.")"
+    }
+
+    private func writeFallbackCommand(command: String) -> String? {
+        commandSequence &+= 1
+        let payload = "\(commandSequence)|\(command)\n"
+
+        do {
+            try payload.write(to: fallbackFileURL, atomically: true, encoding: .utf8)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     private func sendUDP(message: String, host: String, port: Int) -> String? {
