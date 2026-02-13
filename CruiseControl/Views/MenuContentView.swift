@@ -94,20 +94,24 @@ struct MenuContentView: View {
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
+    private let neonMint = Color(red: 0.30, green: 0.95, blue: 0.68)
+    private let neonBlue = Color(red: 0.42, green: 0.72, blue: 1.00)
+    private let neonViolet = Color(red: 0.61, green: 0.52, blue: 1.00)
+    private let neonOrange = Color(red: 1.00, green: 0.52, blue: 0.18)
+    private let cardInk = Color(red: 0.05, green: 0.08, blue: 0.16)
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.06, green: 0.08, blue: 0.16), Color(red: 0.10, green: 0.15, blue: 0.27)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            CruiseBackgroundView()
+                .ignoresSafeArea()
 
             NavigationSplitView {
                 sidebar
             } detail: {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        heroBanner
+
                         detailContent
 
                         if let processActionResult {
@@ -135,11 +139,13 @@ struct MenuContentView: View {
                         }
                     }
                     .padding(24)
+                    .padding(.bottom, 24)
                 }
+                .scrollIndicators(.hidden)
                 .background(Color.clear)
             }
             .navigationSplitViewStyle(.balanced)
-            .tint(Color(red: 0.30, green: 0.76, blue: 1.0))
+            .tint(neonBlue)
         }
         .onAppear {
             sampler.start()
@@ -203,26 +209,84 @@ struct MenuContentView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("CruiseControl")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(neonViolet.opacity(0.35))
+                        .frame(width: 34, height: 34)
+                        .overlay(
+                            Image(systemName: "gauge.high")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(neonBlue)
+                        )
 
-                Text(sampler.isSimActive ? "Sim Active" : "System Monitoring")
-                    .font(.subheadline)
-                    .foregroundStyle(sampler.isSimActive ? .green : .white.opacity(0.7))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("CruiseControl")
+                            .font(.system(size: 26, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("FLIGHT PERFORMANCE LAB")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.52))
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(sampler.isSimActive ? neonMint : .orange)
+                        .frame(width: 8, height: 8)
+                    Text(sampler.isSimActive ? "SIM ACTIVE" : "STANDBY")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(sampler.isSimActive ? neonMint : .orange)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.22), in: Capsule())
+                .overlay(Capsule().stroke((sampler.isSimActive ? neonMint : .orange).opacity(0.55), lineWidth: 1))
             }
             .padding(.top, 8)
 
-            List(DashboardSection.allCases, selection: $selectedSection) { section in
-                Label(section.title, systemImage: section.icon)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .padding(.vertical, 4)
-                    .tag(section)
+            VStack(spacing: 6) {
+                ForEach(DashboardSection.allCases) { section in
+                    let isActive = (selectedSection ?? .overview) == section
+
+                    Button {
+                        selectedSection = section
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: section.icon)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(isActive ? neonBlue : .white.opacity(0.6))
+                                .frame(width: 18)
+
+                            Text(section.title)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundStyle(isActive ? .white : .white.opacity(0.72))
+
+                            Spacer()
+
+                            if isActive {
+                                Circle()
+                                    .fill(neonMint)
+                                    .frame(width: 6, height: 6)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(isActive ? Color(red: 0.10, green: 0.18, blue: 0.31).opacity(0.92) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(isActive ? neonBlue.opacity(0.45) : Color.white.opacity(0.06), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .scrollContentBackground(.hidden)
-            .listStyle(.sidebar)
+
+            Spacer(minLength: 8)
 
             VStack(alignment: .leading, spacing: 8) {
                 quickMetric(title: "CPU", value: percentString(sampler.snapshot.cpuTotalPercent))
@@ -231,10 +295,22 @@ struct MenuContentView: View {
                 quickMetric(title: "Governor", value: settings.governorModeEnabled ? "ON" : "OFF")
             }
             .padding(12)
-            .background(.ultraThinMaterial.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(neonBlue.opacity(0.28), lineWidth: 1)
+            )
         }
         .padding(18)
-        .frame(minWidth: 260)
+        .frame(minWidth: 268, maxWidth: 286)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(cardInk.opacity(0.78))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(neonBlue.opacity(0.24), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
@@ -253,6 +329,76 @@ struct MenuContentView: View {
         case .settings:
             preferencesSection
         }
+    }
+
+    private var heroBanner: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(sampler.isSimActive ? neonMint : .orange)
+                        .frame(width: 8, height: 8)
+                    Text(sampler.snapshot.udpStatus.state == .active ? "LIVE TELEMETRY" : "WAITING FOR STREAM")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(sampler.snapshot.udpStatus.state == .active ? neonMint : .orange)
+                }
+
+                Text("CruiseControl Operations")
+                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text("Real-time simulator performance monitoring, governor controls, and diagnostics tuned for long-haul sessions.")
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("NETWORK STATUS")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.55))
+                Text(sampler.snapshot.udpStatus.state == .active ? "All Systems Operational" : "Telemetry Not Locked")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(sampler.snapshot.udpStatus.state == .active ? neonMint : .orange)
+
+                Text("Packets/sec: \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond))")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.72))
+                Text("Endpoint: \(sampler.snapshot.udpStatus.listenHost):\(String(sampler.snapshot.udpStatus.listenPort))")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .padding(18)
+            .frame(maxWidth: 420, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.09, green: 0.16, blue: 0.28).opacity(0.9),
+                                Color(red: 0.19, green: 0.14, blue: 0.36).opacity(0.8)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(neonBlue.opacity(0.35), lineWidth: 1)
+            )
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.black.opacity(0.24))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(neonMint.opacity(0.2), lineWidth: 1)
+        )
     }
 
     private var overviewSection: some View {
@@ -1132,57 +1278,73 @@ struct MenuContentView: View {
     }
 
     private func wizardStep(title: String, good: Bool, detail: String) -> some View {
-        HStack {
-            Image(systemName: good ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(good ? .green : .orange)
+        HStack(spacing: 10) {
+            Circle()
+                .fill(good ? neonMint : neonOrange)
+                .frame(width: 8, height: 8)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.semibold))
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
         }
+        .padding(.vertical, 2)
     }
 
     private func metricPill(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.48))
             Text(value)
-                .font(.subheadline)
-                .fontWeight(.semibold)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.black.opacity(0.3))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(neonViolet.opacity(0.24), lineWidth: 1)
+        )
     }
 
     private func statTile(_ label: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.46))
             Text(value)
-                .font(.headline)
+                .font(.system(size: 28, weight: .heavy, design: .rounded))
                 .foregroundStyle(color)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.black.opacity(0.32))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(color.opacity(0.35), lineWidth: 1)
+        )
     }
 
     private func quickMetric(title: String, value: String) -> some View {
         HStack {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.5))
             Spacer()
             Text(value)
-                .font(.caption)
-                .fontWeight(.semibold)
+                .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
         }
     }
@@ -1193,19 +1355,19 @@ struct MenuContentView: View {
         case .idle:
             color = .gray
         case .listening:
-            color = .orange
+            color = neonOrange
         case .active:
-            color = .green
+            color = neonMint
         case .misconfig:
             color = .red
         }
 
-        return Text(state.displayName)
-            .font(.caption)
-            .fontWeight(.bold)
+        return Text(state.displayName.uppercased())
+            .font(.system(size: 10, weight: .black, design: .monospaced))
             .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.2), in: Capsule())
+            .padding(.vertical, 5)
+            .background(color.opacity(0.14), in: Capsule())
+            .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
             .foregroundStyle(color)
     }
 
@@ -1574,6 +1736,59 @@ struct MenuContentView: View {
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+private struct CruiseBackgroundView: View {
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.02, green: 0.04, blue: 0.09),
+                        Color(red: 0.03, green: 0.06, blue: 0.12),
+                        Color(red: 0.02, green: 0.03, blue: 0.07)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+
+                Canvas { context, size in
+                    let spacing: CGFloat = 20
+                    let amplitude: CGFloat = 3
+                    let frequency: CGFloat = 0.022
+
+                    var y: CGFloat = -spacing
+                    while y < size.height + spacing {
+                        var path = Path()
+                        path.move(to: CGPoint(x: 0, y: y))
+
+                        var x: CGFloat = 0
+                        while x <= size.width {
+                            let wave = sin((x * frequency) + (y * 0.05)) * amplitude
+                            path.addLine(to: CGPoint(x: x, y: y + wave))
+                            x += 8
+                        }
+
+                        context.stroke(path, with: .color(Color.white.opacity(0.08)), lineWidth: 0.7)
+                        y += spacing
+                    }
+                }
+
+                Circle()
+                    .fill(Color(red: 0.43, green: 0.35, blue: 1.0).opacity(0.24))
+                    .blur(radius: 45)
+                    .frame(width: 220, height: 220)
+                    .position(x: geo.size.width * 0.12, y: 90)
+
+                Circle()
+                    .fill(Color(red: 0.24, green: 0.95, blue: 0.72).opacity(0.20))
+                    .blur(radius: 50)
+                    .frame(width: 260, height: 260)
+                    .position(x: geo.size.width * 0.78, y: geo.size.height * 0.18)
+            }
+            .ignoresSafeArea()
+        }
     }
 }
 
