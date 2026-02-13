@@ -12,6 +12,9 @@ local COMMAND_FILE_PATH = "/tmp/ProjectSpeed_lod_target.txt"
 local CLAMP_MIN = 0.20
 local CLAMP_MAX = 3.00
 
+-- Set true temporarily if you want verbose command/ACK logs.
+local ACK_DEBUG = false
+
 local socket_ok, socket = pcall(require, "socket")
 local udp = nil
 local udp_enabled = false
@@ -54,11 +57,27 @@ local function send_response(message, ip, port)
         return
     end
     if ip == nil or port == nil then
+        if ACK_DEBUG then
+            logMsg("[ProjectSpeed_Governor] ACK skipped: sender ip/port missing")
+        end
+        return
+    end
+
+    local port_number = tonumber(port)
+    if port_number == nil then
+        if ACK_DEBUG then
+            logMsg("[ProjectSpeed_Governor] ACK skipped: invalid sender port '" .. tostring(port) .. "'")
+        end
         return
     end
 
     local payload = tostring(message) .. "\n"
-    udp:sendto(payload, ip, port)
+    local ok, err = udp:sendto(payload, tostring(ip), port_number)
+    if ok == nil then
+        logMsg("[ProjectSpeed_Governor] ACK send failed to " .. tostring(ip) .. ":" .. tostring(port_number) .. " err=" .. tostring(err))
+    elseif ACK_DEBUG then
+        logMsg("[ProjectSpeed_Governor] ACK -> " .. tostring(ip) .. ":" .. tostring(port_number) .. " :: " .. tostring(message))
+    end
 end
 
 local function restore_original_lod()
@@ -112,6 +131,10 @@ local function handle_message(raw_message, ip, port)
     local message = string.gsub(raw_message, "[%c%s]+$", "")
     if message == "" then
         return "ERR empty command"
+    end
+
+    if ACK_DEBUG then
+        logMsg("[ProjectSpeed_Governor] RX <- " .. tostring(ip) .. ":" .. tostring(port) .. " :: " .. tostring(message))
     end
 
     if message == "PING" then
