@@ -134,6 +134,7 @@ struct MenuContentView: View {
         ZStack {
             CruiseBackgroundView()
                 .ignoresSafeArea()
+                .allowsHitTesting(false)
 
             NavigationSplitView {
                 sidebar
@@ -325,6 +326,7 @@ struct MenuContentView: View {
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(isActive ? Color(red: 0.10, green: 0.18, blue: 0.31).opacity(0.92) : Color.clear)
@@ -333,6 +335,7 @@ struct MenuContentView: View {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .stroke(isActive ? neonBlue.opacity(0.45) : Color.white.opacity(0.06), lineWidth: 1)
                         )
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
