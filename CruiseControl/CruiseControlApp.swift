@@ -36,6 +36,10 @@ struct CruiseControlApp: App {
                     _ = AppMaintenanceService.showAppInFinder()
                 }
 
+                Button("Open Applications Folder") {
+                    _ = AppMaintenanceService.openApplicationsFolder()
+                }
+
                 Button("Install to /Applications") {
                     _ = AppMaintenanceService.installToApplications()
                 }

@@ -4,6 +4,11 @@ import Combine
 
 enum DashboardSection: String, CaseIterable, Identifiable {
     case overview
+    case smartScan
+    case cleaner
+    case largeFiles
+    case optimization
+    case quarantine
     case processes
     case simMode
     case history
@@ -15,6 +20,11 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .overview: return "Overview"
+        case .smartScan: return "Smart Scan"
+        case .cleaner: return "Cleaner"
+        case .largeFiles: return "Large Files"
+        case .optimization: return "Optimization"
+        case .quarantine: return "Quarantine"
         case .processes: return "Top Processes"
         case .simMode: return "Sim Mode"
         case .history: return "History"
@@ -26,6 +36,11 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .overview: return "speedometer"
+        case .smartScan: return "sparkles"
+        case .cleaner: return "trash.slash"
+        case .largeFiles: return "externaldrive.fill.badge.plus"
+        case .optimization: return "waveform.path.ecg.rectangle"
+        case .quarantine: return "archivebox"
         case .processes: return "list.bullet.rectangle.portrait"
         case .simMode: return "airplane"
         case .history: return "clock.arrow.circlepath"
@@ -83,14 +98,29 @@ struct MenuContentView: View {
     @State private var smartScanIncludePrivacy = false
     @State private var smartScanRoots: [URL] = []
     @State private var smartScanSummary: SmartScanSummary?
+    @State private var smartScanRunState: SmartScanRunState = .idle
     @State private var selectedSmartScanItemIDs: Set<UUID> = []
     @State private var confirmQuarantineSelection = false
+    @State private var confirmDeleteSelection = false
     @State private var confirmDeleteLatestQuarantine = false
-    @State private var isSmartScanRunning = false
+    @State private var confirmEmptyTrash = false
+    @State private var smartScanTask: Task<Void, Never>?
 
+    @State private var cleanerItems: [SmartScanItem] = []
+    @State private var selectedCleanerItemIDs: Set<UUID> = []
+    @State private var cleanerLoading = false
+
+    @State private var largeFileItems: [SmartScanItem] = []
+    @State private var selectedLargeFileItemIDs: Set<UUID> = []
+    @State private var largeFilesLoading = false
+
+    @State private var optimizationItems: [SmartScanItem] = []
+    @State private var selectedOptimizationItemIDs: Set<UUID> = []
+
+    @State private var quarantineBatches: [QuarantineBatchSummary] = []
+    @State private var selectedQuarantineBatchID: String = ""
 
     @State private var updateCheckStatus: String?
-
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -156,6 +186,8 @@ struct MenuContentView: View {
             governorHostText = settings.governorCommandHost
             syncAirportProfileEditorSelection()
             airportImportJSONText = ""
+            applyDefaultLargeFileScopesIfNeeded()
+            refreshQuarantineBatches()
         }
         .onReceive(clockTimer) { newDate in
             now = newDate
@@ -168,6 +200,9 @@ struct MenuContentView: View {
         }
         .onChange(of: featureStore.airportProfiles) {
             syncAirportProfileEditorSelection()
+        }
+        .onDisappear {
+            smartScanTask?.cancel()
         }
         .alert("Force Quit Process", isPresented: forceQuitBinding) {
             Button("Cancel", role: .cancel) {
@@ -197,14 +232,31 @@ struct MenuContentView: View {
         } message: {
             Text("Files are moved to CruiseControl quarantine with manifest metadata for restore.")
         }
+        .confirmationDialog("Delete selected files permanently?", isPresented: $confirmDeleteSelection, titleVisibility: .visible) {
+            Button("Delete Selected", role: .destructive) {
+                deleteSelectedScanItems()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete is permanent. Use Quarantine first for safer rollback.")
+        }
         .confirmationDialog("Permanently delete latest quarantine?", isPresented: $confirmDeleteLatestQuarantine, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 let outcome = smartScanService.permanentlyDeleteLatestQuarantine()
                 processActionResult = outcome.message
+                refreshQuarantineBatches()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This cannot be undone.")
+        }
+        .confirmationDialog("Empty Trash?", isPresented: $confirmEmptyTrash, titleVisibility: .visible) {
+            Button("Empty Trash", role: .destructive) {
+                processActionResult = smartScanService.emptyTrash().message
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes files currently in your user Trash.")
         }
     }
 
@@ -318,6 +370,16 @@ struct MenuContentView: View {
         switch selectedSection ?? .overview {
         case .overview:
             overviewSection
+        case .smartScan:
+            smartScanSection
+        case .cleaner:
+            cleanerSection
+        case .largeFiles:
+            largeFilesSection
+        case .optimization:
+            optimizationSection
+        case .quarantine:
+            quarantineSection
         case .processes:
             processesSection
         case .simMode:
@@ -647,7 +709,10 @@ struct MenuContentView: View {
                     Text("Compressed: \(byteCountString(sampler.snapshot.compressedMemoryBytes))")
                         .foregroundStyle(.secondary)
 
-                    let suggestions = sampler.memoryReliefSuggestions(maxCount: 3)
+                    let suggestions = sampler
+                        .memoryReliefSuggestions(maxCount: 6)
+                        .filter { !featureStore.isProcessAllowlisted($0.name) }
+                        .prefix(3)
                     if suggestions.isEmpty {
                         Text("No immediate memory-relief suggestions.")
                             .font(.subheadline)
@@ -672,6 +737,23 @@ struct MenuContentView: View {
 
                             Button("Run limited purge attempt") {
                                 runLimitedPurgeAttempt()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        Toggle("Pause CruiseControl background scans while sim is active", isOn: $featureStore.pauseBackgroundScansDuringSim)
+
+                        HStack {
+                            Button("Run Cleaner recommendations") {
+                                selectedSection = .cleaner
+                                scanCleanerModule()
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Large Files: Downloads") {
+                                setLargeFileQuickScope(.downloadsDirectory)
+                                selectedSection = .largeFiles
+                                scanLargeFilesModule()
                             }
                             .buttonStyle(.bordered)
                         }
@@ -1237,11 +1319,21 @@ struct MenuContentView: View {
                     }
                 }
             }
+        }
+    }
 
+
+    private var smartScanSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
             dashboardCard(title: "Smart Scan") {
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("Runs System Junk, Trash, Large Files, and Optimization scans in parallel.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
                     Toggle("Include privacy data scan (user profile only)", isOn: $smartScanIncludePrivacy)
                     Toggle("Advanced mode (allow quarantine outside safe defaults)", isOn: $featureStore.advancedModeEnabled)
+                    Toggle("Extra confirmation for advanced-mode destructive actions", isOn: $featureStore.advancedModeExtraConfirmation)
 
                     HStack {
                         Button("Pick Large Files Folder") {
@@ -1249,11 +1341,18 @@ struct MenuContentView: View {
                         }
                         .buttonStyle(.bordered)
 
-                        Button(isSmartScanRunning ? "Scanning..." : "Run Smart Scan") {
+                        Button(smartScanRunState.isRunning ? "Scanning..." : "Scan") {
                             runSmartScan()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isSmartScanRunning)
+                        .disabled(smartScanRunState.isRunning)
+
+                        if smartScanRunState.isRunning {
+                            Button("Cancel") {
+                                smartScanTask?.cancel()
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
 
                     if !smartScanRoots.isEmpty {
@@ -1264,57 +1363,70 @@ struct MenuContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                    } else {
+                        Text("Large Files scope required: pick one or more folders.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    ProgressView(value: smartScanRunState.overallProgress)
+                    Text("Overall progress: \(Int((smartScanRunState.overallProgress * 100).rounded()))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    ForEach(SmartScanModule.allCases) { module in
+                        if let progress = smartScanRunState.moduleProgress[module] {
+                            HStack {
+                                Text(module.rawValue)
+                                    .font(.caption)
+                                Spacer()
+                                Text("\(Int((progress * 100).rounded()))%")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
 
                     if let summary = smartScanSummary {
                         Text("Found \(summary.items.count) items, total \(byteCountString(summary.totalBytes)).")
                             .font(.subheadline)
 
-                        ForEach(summary.items.prefix(40)) { item in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Toggle(
-                                    "[\(item.module.rawValue)] \(item.path)",
-                                    isOn: smartScanSelectionBinding(itemID: item.id)
-                                )
-                                .toggleStyle(.checkbox)
+                        ForEach(Array(summary.moduleResults.enumerated()), id: \.offset) { _, module in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(module.module.rawValue)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text(byteCountString(module.bytes))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
 
-                                Text("\(item.note)  -  \(byteCountString(item.sizeBytes))")
+                                Text(module.error ?? "\(module.items.count) item(s)")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(module.error == nil ? Color.secondary : Color.orange)
 
                                 HStack {
-                                    if !item.path.hasPrefix("pid:") {
-                                        Button("Reveal in Finder") {
-                                            smartScanService.revealInFinder(path: item.path)
-                                        }
-                                        .buttonStyle(.bordered)
+                                    Button("Review Items") {
+                                        deepLinkToModule(module.module)
                                     }
+                                    .buttonStyle(.bordered)
                                 }
                             }
                             .padding(.vertical, 4)
                         }
 
                         HStack {
-                            Button("Quarantine Selected") {
+                            Button("Run Clean") {
+                                selectedSmartScanItemIDs = Set(summary.items.filter { $0.safeByDefault }.map(\.id))
                                 confirmQuarantineSelection = true
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(selectedSmartScanItems.isEmpty)
+                            .disabled(summary.items.isEmpty)
 
-                            Button("Restore Latest Quarantine") {
-                                let outcome = smartScanService.restoreLatestQuarantine()
-                                processActionResult = outcome.message
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button("Permanently Delete Latest Quarantine") {
-                                confirmDeleteLatestQuarantine = true
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.red)
-
-                            Button("Open Trash in Finder") {
-                                smartScanService.openTrashInFinder()
+                            Button("Review Quarantine") {
+                                refreshQuarantineBatches()
+                                selectedSection = .quarantine
                             }
                             .buttonStyle(.bordered)
                         }
@@ -1324,6 +1436,291 @@ struct MenuContentView: View {
         }
     }
 
+    private var cleanerSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Cleaner") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Safe targets only: ~/Library/Caches, ~/Library/Logs, ~/Library/Application Support/CruiseControl, optional Saved Application State.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Caches may regenerate. Cleaning helps reduce pressure but is not a permanent speed hack.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button(cleanerLoading ? "Scanning..." : "Scan Cleaner") {
+                            scanCleanerModule()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(cleanerLoading)
+
+                        Button("Quarantine Selected") {
+                            confirmQuarantineSelection = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(selectedCleanerItems.isEmpty)
+
+                        Button("Delete Selected") {
+                            confirmDeleteSelection = true
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .disabled(selectedCleanerItems.isEmpty)
+                    }
+
+                    if cleanerItems.isEmpty {
+                        Text("No cleaner items loaded yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(cleanerItems.prefix(60)) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Toggle(item.path, isOn: cleanerSelectionBinding(itemID: item.id))
+                                    .toggleStyle(.checkbox)
+                                Text("\(item.note) • \(byteCountString(item.sizeBytes))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                HStack {
+                                    Button("Reveal in Finder") {
+                                        smartScanService.revealInFinder(path: item.path)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+
+            dashboardCard(title: "Trash Bins") {
+                VStack(alignment: .leading, spacing: 10) {
+                    let summary = smartScanService.trashSummary()
+                    Text("Items: \(summary.count) • Size: \(byteCountString(summary.sizeBytes))")
+
+                    HStack {
+                        Button("Open Trash in Finder") {
+                            smartScanService.openTrashInFinder()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Empty Trash") {
+                            confirmEmptyTrash = true
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                    }
+                }
+            }
+        }
+    }
+
+    private var largeFilesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Large Files") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Scope required: choose folders first. CruiseControl does not scan entire disk by default.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Documents") { setLargeFileQuickScope(.documentDirectory) }
+                            .buttonStyle(.bordered)
+                        Button("Downloads") { setLargeFileQuickScope(.downloadsDirectory) }
+                            .buttonStyle(.bordered)
+                        Button("Desktop") { setLargeFileQuickScope(.desktopDirectory) }
+                            .buttonStyle(.bordered)
+                        Button("Pick Folder") { pickLargeFileFolder() }
+                            .buttonStyle(.bordered)
+                    }
+
+                    HStack {
+                        Button(largeFilesLoading ? "Scanning..." : "Scan Large Files") {
+                            scanLargeFilesModule()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(largeFilesLoading || smartScanRoots.isEmpty)
+
+                        Button("Quarantine Selected") {
+                            confirmQuarantineSelection = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(selectedLargeFileItems.isEmpty)
+
+                        Button("Delete Selected") {
+                            confirmDeleteSelection = true
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .disabled(selectedLargeFileItems.isEmpty)
+                    }
+
+                    if smartScanRoots.isEmpty {
+                        Text("No scope selected yet.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        ForEach(smartScanRoots, id: \.path) { root in
+                            Text(root.path)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    ForEach(largeFileItems.prefix(featureStore.largeFilesTopN)) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle(item.path, isOn: largeFilesSelectionBinding(itemID: item.id))
+                                .toggleStyle(.checkbox)
+                            Text("\(byteCountString(item.sizeBytes)) • \(item.note)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("Reveal in Finder") {
+                                smartScanService.revealInFinder(path: item.path)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+    }
+
+    private var optimizationSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Optimization") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("CPU: \(percentString(sampler.snapshot.cpuTotalPercent)) • Memory: \(sampler.snapshot.memoryPressure.displayName) • Swap \(deltaByteString(sampler.snapshot.swapDelta5MinBytes))")
+                        .font(.subheadline)
+
+                    let impact = impactProcesses()
+                    if impact.isEmpty {
+                        Text("No significant background impact process detected.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(impact) { process in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("\(process.name) (PID \(process.pid))")
+                                    .font(.headline)
+                                Text("CPU \(percentString(process.cpuPercent)) • RAM \(byteCountString(process.memoryBytes))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                HStack {
+                                    Button("Quit") {
+                                        runProcessAction(process: process, force: false)
+                                    }
+                                    .buttonStyle(.bordered)
+
+                                    Button("Force Quit") {
+                                        forceQuitCandidate = process
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .tint(.red)
+
+                                    Button("Allowlist") {
+                                        featureStore.addProcessToAllowlist(process.name)
+                                        processActionResult = "Added \(process.name) to Optimization allowlist."
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+
+            dashboardCard(title: "Allowlist") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if featureStore.optimizationProcessAllowlist.isEmpty {
+                        Text("No allowlisted processes yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(featureStore.optimizationProcessAllowlist, id: \.self) { item in
+                            HStack {
+                                Text(item)
+                                Spacer()
+                                Button("Remove") {
+                                    featureStore.removeProcessFromAllowlist(item)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+
+                    Button("Open Login Items Settings") {
+                        openLoginItemsSettings()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private var quarantineSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Quarantine") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Button("Refresh") {
+                            refreshQuarantineBatches()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Restore Latest") {
+                            processActionResult = smartScanService.restoreLatestQuarantine().message
+                            refreshQuarantineBatches()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Delete Latest") {
+                            confirmDeleteLatestQuarantine = true
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                    }
+
+                    if quarantineBatches.isEmpty {
+                        Text("No quarantine batches found.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Batch", selection: $selectedQuarantineBatchID) {
+                            ForEach(quarantineBatches) { batch in
+                                Text("\(batch.batchID) • \(byteCountString(batch.totalBytes))").tag(batch.batchID)
+                            }
+                        }
+
+                        if let selected = quarantineBatches.first(where: { $0.batchID == selectedQuarantineBatchID }) {
+                            Text("Created: \(selected.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Entries: \(selected.entryCount) • Total: \(byteCountString(selected.totalBytes))")
+                                .font(.subheadline)
+
+                            HStack {
+                                Button("Restore Batch") {
+                                    processActionResult = smartScanService.restoreQuarantineBatch(batchID: selected.batchID).message
+                                    refreshQuarantineBatches()
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Delete Batch") {
+                                    processActionResult = smartScanService.permanentlyDeleteQuarantineBatch(batchID: selected.batchID).message
+                                    refreshQuarantineBatches()
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.red)
+                            }
+                        }
+                    }
+
+                    Text("Total quarantined size: \(byteCountString(quarantineBatches.reduce(0) { $0 + $1.totalBytes }))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
     private var preferencesSection: some View {
         dashboardCard(title: "Preferences") {
             VStack(alignment: .leading, spacing: 10) {
@@ -1344,6 +1741,7 @@ struct MenuContentView: View {
                 Toggle("Listen for X-Plane UDP", isOn: $settings.xPlaneUDPListeningEnabled)
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
+                Stepper("Large Files top results: \(featureStore.largeFilesTopN)", value: $featureStore.largeFilesTopN, in: 10...200, step: 5)
 
                 HStack {
                     Text("X-Plane UDP Port")
@@ -1359,6 +1757,12 @@ struct MenuContentView: View {
                 HStack {
                     Button("Show App in Finder") {
                         let outcome = AppMaintenanceService.showAppInFinder()
+                        processActionResult = outcome.message
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Open Applications Folder") {
+                        let outcome = AppMaintenanceService.openApplicationsFolder()
                         processActionResult = outcome.message
                     }
                     .buttonStyle(.bordered)
@@ -1703,6 +2107,31 @@ struct MenuContentView: View {
         return summary.items.filter { idSet.contains($0.id) }
     }
 
+    private var selectedCleanerItems: [SmartScanItem] {
+        cleanerItems.filter { selectedCleanerItemIDs.contains($0.id) }
+    }
+
+    private var selectedLargeFileItems: [SmartScanItem] {
+        largeFileItems.filter { selectedLargeFileItemIDs.contains($0.id) }
+    }
+
+    private var selectedOptimizationItems: [SmartScanItem] {
+        optimizationItems.filter { selectedOptimizationItemIDs.contains($0.id) }
+    }
+
+    private var selectedScanItemsForAction: [SmartScanItem] {
+        switch selectedSection ?? .overview {
+        case .cleaner:
+            return selectedCleanerItems
+        case .largeFiles:
+            return selectedLargeFileItems
+        case .optimization:
+            return selectedOptimizationItems
+        default:
+            return selectedSmartScanItems
+        }
+    }
+
     private func runProcessAction(process: ProcessSample, force: Bool) {
         let outcome = settings.terminateProcess(pid: process.pid, force: force)
         processActionResult = outcome.message
@@ -1850,7 +2279,9 @@ struct MenuContentView: View {
     }
 
     private func closeSelectedReliefApps() {
-        let targets = sampler.topMemoryProcesses.filter { selectedReliefPIDs.contains($0.pid) }
+        let targets = sampler.topMemoryProcesses.filter {
+            selectedReliefPIDs.contains($0.pid) && !featureStore.isProcessAllowlisted($0.name)
+        }
         guard !targets.isEmpty else {
             processActionResult = "No selected memory-relief targets."
             return
@@ -1955,31 +2386,127 @@ struct MenuContentView: View {
 
         if panel.runModal() == .OK {
             smartScanRoots = panel.urls
+            featureStore.largeFilesDefaultScopes = panel.urls.map(\.path)
+        }
+    }
+
+    private func setLargeFileQuickScope(_ directory: FileManager.SearchPathDirectory) {
+        if let url = FileManager.default.urls(for: directory, in: .userDomainMask).first {
+            smartScanRoots = [url]
+            featureStore.largeFilesDefaultScopes = [url.path]
+        }
+    }
+
+    private func applyDefaultLargeFileScopesIfNeeded() {
+        guard smartScanRoots.isEmpty else { return }
+        let urls = featureStore.largeFilesDefaultScopes.map { URL(fileURLWithPath: $0) }
+        let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if !existing.isEmpty {
+            smartScanRoots = existing
         }
     }
 
     private func runSmartScan() {
-        guard !isSmartScanRunning else { return }
+        guard !smartScanRunState.isRunning else { return }
 
-        isSmartScanRunning = true
+        guard !smartScanRoots.isEmpty else {
+            processActionResult = "Select at least one Large Files scope before running Smart Scan."
+            return
+        }
+
+        smartScanTask?.cancel()
         processActionResult = "Smart Scan in progress..."
 
         let options = SmartScanService.ScanOptions(
             includePrivacy: smartScanIncludePrivacy,
+            includeSavedApplicationState: true,
             selectedLargeFileRoots: smartScanRoots,
-            topLargeFilesCount: 25
+            topLargeFilesCount: featureStore.largeFilesTopN
         )
+
         let topCPU = sampler.topCPUProcesses
+        smartScanTask = Task {
+            let summary = await smartScanService.runSmartScanAsync(options: options, topCPUProcesses: topCPU) { state in
+                Task { @MainActor in
+                    smartScanRunState = state
+                }
+            }
 
-        DispatchQueue.global(qos: .utility).async {
-            let summary = smartScanService.runSmartScan(options: options, topCPUProcesses: topCPU)
-
-            DispatchQueue.main.async {
+            await MainActor.run {
                 smartScanSummary = summary
                 selectedSmartScanItemIDs.removeAll()
-                isSmartScanRunning = false
+                smartScanRunState.isRunning = false
                 processActionResult = "Smart Scan complete: \(summary.items.count) items found, total \(byteCountString(summary.totalBytes))."
             }
+
+            await scanOptimizationModule()
+            if !(featureStore.pauseBackgroundScansDuringSim && sampler.isSimActive) {
+                scanCleanerModule()
+                scanLargeFilesModule()
+            }
+            await MainActor.run {
+                refreshQuarantineBatches()
+            }
+        }
+    }
+
+    private func scanCleanerModule() {
+        guard !cleanerLoading else { return }
+        cleanerLoading = true
+
+        Task {
+            let items = await smartScanService.scanCleanerModuleAsync(includeSavedApplicationState: true)
+            await MainActor.run {
+                cleanerItems = items
+                selectedCleanerItemIDs.removeAll()
+                cleanerLoading = false
+                processActionResult = "Cleaner scan complete: \(items.count) item(s)."
+            }
+        }
+    }
+
+    private func scanLargeFilesModule() {
+        guard !largeFilesLoading else { return }
+        guard !smartScanRoots.isEmpty else {
+            processActionResult = "Choose at least one folder scope for Large Files scan."
+            return
+        }
+
+        largeFilesLoading = true
+
+        Task {
+            let items = await smartScanService.scanLargeFilesModuleAsync(roots: smartScanRoots, topCount: featureStore.largeFilesTopN)
+            await MainActor.run {
+                largeFileItems = items
+                selectedLargeFileItemIDs.removeAll()
+                largeFilesLoading = false
+                processActionResult = "Large Files scan complete: \(items.count) item(s)."
+            }
+        }
+    }
+
+    private func scanOptimizationModule() async {
+        let items = await smartScanService.scanOptimizationModuleAsync(topCPUProcesses: sampler.topCPUProcesses)
+        await MainActor.run {
+            optimizationItems = items
+            selectedOptimizationItemIDs.removeAll()
+        }
+    }
+
+    private func deepLinkToModule(_ module: SmartScanModule) {
+        switch module {
+        case .systemJunk, .trashBins:
+            selectedSection = .cleaner
+            scanCleanerModule()
+        case .largeFiles:
+            selectedSection = .largeFiles
+            scanLargeFilesModule()
+        case .optimization:
+            selectedSection = .optimization
+            Task { await scanOptimizationModule() }
+        case .privacy:
+            selectedSection = .cleaner
+            scanCleanerModule()
         }
     }
 
@@ -1996,14 +2523,119 @@ struct MenuContentView: View {
         )
     }
 
+    private func cleanerSelectionBinding(itemID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { selectedCleanerItemIDs.contains(itemID) },
+            set: { selected in
+                if selected {
+                    selectedCleanerItemIDs.insert(itemID)
+                } else {
+                    selectedCleanerItemIDs.remove(itemID)
+                }
+            }
+        )
+    }
+
+    private func largeFilesSelectionBinding(itemID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { selectedLargeFileItemIDs.contains(itemID) },
+            set: { selected in
+                if selected {
+                    selectedLargeFileItemIDs.insert(itemID)
+                } else {
+                    selectedLargeFileItemIDs.remove(itemID)
+                }
+            }
+        )
+    }
+
+    private func impactProcesses() -> [ProcessSample] {
+        let allowlisted = Set(featureStore.optimizationProcessAllowlist.map { $0.lowercased() })
+        let combined = Dictionary(grouping: sampler.topCPUProcesses + sampler.topMemoryProcesses, by: { $0.pid })
+            .compactMap { _, group -> ProcessSample? in
+                guard let first = group.first else { return nil }
+                let highestCPU = group.map(\.cpuPercent).max() ?? first.cpuPercent
+                let highestMemory = group.map(\.memoryBytes).max() ?? first.memoryBytes
+                return ProcessSample(
+                    pid: first.pid,
+                    name: first.name,
+                    bundleIdentifier: first.bundleIdentifier,
+                    cpuPercent: highestCPU,
+                    memoryBytes: highestMemory,
+                    sampledAt: first.sampledAt
+                )
+            }
+            .filter {
+                !$0.name.localizedCaseInsensitiveContains("X-Plane") &&
+                !$0.name.localizedCaseInsensitiveContains("CruiseControl") &&
+                !allowlisted.contains($0.name.lowercased())
+            }
+            .sorted {
+                let leftScore = ($0.cpuPercent * 1.8) + (Double($0.memoryBytes) / 1_073_741_824.0 * 8.0)
+                let rightScore = ($1.cpuPercent * 1.8) + (Double($1.memoryBytes) / 1_073_741_824.0 * 8.0)
+                return leftScore > rightScore
+            }
+
+        return Array(combined.prefix(8))
+    }
+
+    private func refreshQuarantineBatches() {
+        quarantineBatches = smartScanService.listQuarantineBatches()
+        if selectedQuarantineBatchID.isEmpty || !quarantineBatches.contains(where: { $0.batchID == selectedQuarantineBatchID }) {
+            selectedQuarantineBatchID = quarantineBatches.first?.batchID ?? ""
+        }
+    }
+
     private func quarantineSelectedScanItems() {
+        let selected = selectedScanItemsForAction
         let outcome = smartScanService.quarantine(
-            items: selectedSmartScanItems,
+            items: selected,
             advancedModeEnabled: featureStore.advancedModeEnabled
         )
         processActionResult = outcome.message
+        refreshQuarantineBatches()
     }
 
+    private func deleteSelectedScanItems() {
+        if featureStore.advancedModeEnabled && featureStore.advancedModeExtraConfirmation {
+            processActionResult = "Advanced Mode destructive action confirmed."
+        }
+
+        let selected = selectedScanItemsForAction
+        let outcome = smartScanService.deletePermanently(
+            items: selected,
+            advancedModeEnabled: featureStore.advancedModeEnabled
+        )
+        processActionResult = outcome.message
+
+        if selectedSection == .cleaner {
+            cleanerItems.removeAll { selectedCleanerItemIDs.contains($0.id) }
+            selectedCleanerItemIDs.removeAll()
+        } else if selectedSection == .largeFiles {
+            largeFileItems.removeAll { selectedLargeFileItemIDs.contains($0.id) }
+            selectedLargeFileItemIDs.removeAll()
+        } else {
+            smartScanSummary = SmartScanSummary(
+                generatedAt: smartScanSummary?.generatedAt ?? Date(),
+                duration: smartScanSummary?.duration ?? 0,
+                moduleResults: smartScanSummary?.moduleResults ?? [],
+                items: (smartScanSummary?.items ?? []).filter { !selectedSmartScanItemIDs.contains($0.id) }
+            )
+            selectedSmartScanItemIDs.removeAll()
+        }
+
+        refreshQuarantineBatches()
+    }
+
+    private func openLoginItemsSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+            if NSWorkspace.shared.open(url) {
+                processActionResult = "Opened Login Items settings."
+                return
+            }
+        }
+        processActionResult = "Open System Settings > General > Login Items to review startup/background apps."
+    }
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)

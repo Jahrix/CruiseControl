@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.1.4 - Smart Scan + Safe Performance Cleaner
+
+### Added
+- Cleaner Suite sidebar modules:
+  - Smart Scan
+  - Cleaner
+  - Large Files
+  - Optimization
+  - Quarantine
+- Async Smart Scan runner with module progress reporting and cancellation.
+- Quarantine batch management:
+  - batch list UI
+  - restore/delete by batch
+  - total quarantined size display
+- Trash module actions:
+  - open Trash in Finder
+  - empty Trash confirmation flow
+- Optimization allowlist persistence and process-level allowlist action.
+- `Open Applications Folder` app maintenance action.
+- Sparkle-compatible update bridge path with GitHub fallback.
+
+### Changed
+- Smart Scan moved to dedicated section with review deep-links into module pages.
+- Cleaner logic hardened with safe allowlist defaults and protected path exclusions.
+- Large Files scanning now requires explicit scope selection.
+- Memory Relief wording and controls now emphasize truthful pressure-reduction behavior.
+- GitHub update endpoint normalized to the active repository.
+- Version bumped to `1.1.4` (build `114`).
+
+### Fixed
+- Quarantine manifest expanded and written atomically per batch.
+- Destructive actions now route through section-aware selection and confirmation dialogs.
+- Port/endpoint formatting remains non-grouped numeric style.
+
 ## v1.1.3 - Regulator Proof + Bridge UX
 
 ### Added

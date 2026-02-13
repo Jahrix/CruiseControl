@@ -19,11 +19,34 @@ final class V112FeatureStore: ObservableObject {
         didSet { save() }
     }
 
+    @Published var advancedModeExtraConfirmation: Bool {
+        didSet { save() }
+    }
+
     @Published var purgeAttemptEnabled: Bool {
         didSet { save() }
     }
 
     @Published var stutterHeuristics: StutterHeuristicConfig {
+        didSet { save() }
+    }
+
+    @Published var optimizationProcessAllowlist: [String] {
+        didSet { save() }
+    }
+
+    @Published var largeFilesTopN: Int {
+        didSet {
+            largeFilesTopN = min(max(largeFilesTopN, 10), 200)
+            save()
+        }
+    }
+
+    @Published var largeFilesDefaultScopes: [String] {
+        didSet { save() }
+    }
+
+     var pauseBackgroundScansDuringSim: Bool {
         didSet { save() }
     }
 
@@ -34,8 +57,13 @@ final class V112FeatureStore: ObservableObject {
         static let manualAirportICAO = "v112.airport.manualICAO"
         static let airportProfiles = "v112.airport.profiles"
         static let advancedModeEnabled = "v112.cleaner.advancedMode"
+        static let advancedModeExtraConfirmation = "v114.cleaner.advancedModeExtraConfirmation"
         static let purgeAttemptEnabled = "v112.cleaner.purgeAttempt"
         static let stutterHeuristics = "v112.stutter.heuristics"
+        static let optimizationProcessAllowlist = "v114.optimization.allowlist"
+        static let largeFilesTopN = "v114.largeFiles.topN"
+        static let largeFilesDefaultScopes = "v114.largeFiles.defaultScopes"
+        static let pauseBackgroundScansDuringSim = "v114.scans.pauseWhenSimActive"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -59,6 +87,7 @@ final class V112FeatureStore: ObservableObject {
         }
 
         self.advancedModeEnabled = defaults.object(forKey: Keys.advancedModeEnabled) as? Bool ?? false
+        self.advancedModeExtraConfirmation = defaults.object(forKey: Keys.advancedModeExtraConfirmation) as? Bool ?? true
         self.purgeAttemptEnabled = defaults.object(forKey: Keys.purgeAttemptEnabled) as? Bool ?? false
 
         if let data = defaults.data(forKey: Keys.stutterHeuristics),
@@ -67,6 +96,14 @@ final class V112FeatureStore: ObservableObject {
         } else {
             self.stutterHeuristics = .default
         }
+
+        self.optimizationProcessAllowlist = defaults.array(forKey: Keys.optimizationProcessAllowlist) as? [String] ?? []
+
+        let storedTopN = defaults.object(forKey: Keys.largeFilesTopN) as? Int ?? 25
+        self.largeFilesTopN = min(max(storedTopN, 10), 200)
+
+        self.largeFilesDefaultScopes = defaults.array(forKey: Keys.largeFilesDefaultScopes) as? [String] ?? []
+        self.pauseBackgroundScansDuringSim = defaults.object(forKey: Keys.pauseBackgroundScansDuringSim) as? Bool ?? true
     }
 
     func upsertAirportProfile(_ profile: AirportGovernorProfile) {
@@ -143,11 +180,30 @@ final class V112FeatureStore: ObservableObject {
         return config
     }
 
+    func isProcessAllowlisted(_ processName: String) -> Bool {
+        optimizationProcessAllowlist.contains { $0.caseInsensitiveCompare(processName) == .orderedSame }
+    }
+
+    func addProcessToAllowlist(_ processName: String) {
+        guard !isProcessAllowlisted(processName) else { return }
+        optimizationProcessAllowlist.append(processName)
+        optimizationProcessAllowlist.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    func removeProcessFromAllowlist(_ processName: String) {
+        optimizationProcessAllowlist.removeAll { $0.caseInsensitiveCompare(processName) == .orderedSame }
+    }
+
     private func save() {
         defaults.set(historyDuration.rawValue, forKey: Keys.historyDuration)
         defaults.set(manualAirportICAO, forKey: Keys.manualAirportICAO)
         defaults.set(advancedModeEnabled, forKey: Keys.advancedModeEnabled)
+        defaults.set(advancedModeExtraConfirmation, forKey: Keys.advancedModeExtraConfirmation)
         defaults.set(purgeAttemptEnabled, forKey: Keys.purgeAttemptEnabled)
+        defaults.set(optimizationProcessAllowlist, forKey: Keys.optimizationProcessAllowlist)
+        defaults.set(largeFilesTopN, forKey: Keys.largeFilesTopN)
+        defaults.set(largeFilesDefaultScopes, forKey: Keys.largeFilesDefaultScopes)
+        defaults.set(pauseBackgroundScansDuringSim, forKey: Keys.pauseBackgroundScansDuringSim)
 
         if let profilesData = try? JSONEncoder().encode(airportProfiles) {
             defaults.set(profilesData, forKey: Keys.airportProfiles)

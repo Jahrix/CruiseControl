@@ -15,11 +15,21 @@ enum AppMaintenanceService {
         return ActionOutcome(success: true, message: "Revealed app in Finder.")
     }
 
+    static func openApplicationsFolder() -> ActionOutcome {
+        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        NSWorkspace.shared.open(applicationsURL)
+        return ActionOutcome(success: true, message: "Opened /Applications.")
+    }
+
     static func installToApplications() -> ActionOutcome {
         let source = Bundle.main.bundleURL
         let destination = URL(fileURLWithPath: "/Applications").appendingPathComponent(source.lastPathComponent)
 
         do {
+            if source.path == destination.path {
+                return ActionOutcome(success: true, message: "CruiseControl is already running from /Applications.")
+            }
+
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
             }
@@ -28,24 +38,45 @@ enum AppMaintenanceService {
         } catch {
             return ActionOutcome(
                 success: false,
-                message: "Install to /Applications failed: \(error.localizedDescription). If prompted, grant Finder/admin permission and retry."
+                message: "Install to /Applications failed: \(error.localizedDescription). Grant Finder/admin permission and retry."
             )
         }
     }
 
     static func openReleasesPage() {
-        guard let url = URL(string: "https://github.com/Jahrix/CruiseControl/releases") else { return }
+        guard let url = URL(string: "https://github.com/Jahrix/Speed-for-Mac/releases") else { return }
         NSWorkspace.shared.open(url)
     }
 
-    static func checkForUpdates(currentVersion: String) async -> UpdateCheckOutcome {
-        guard let url = URL(string: "https://api.github.com/repos/Jahrix/CruiseControl/releases/latest") else {
+    static func checkForUpdates(currentVersion: String, preferSparkle: Bool = true) async -> UpdateCheckOutcome {
+        if preferSparkle {
+            let sparkleOutcome = SparkleUpdateBridge.checkForUpdatesIfAvailable()
+            if sparkleOutcome.success {
+                return sparkleOutcome
+            }
+            if sparkleOutcome.message.contains("Sparkle not configured") == false {
+                return sparkleOutcome
+            }
+        }
+
+        return await checkGitHubReleases(currentVersion: currentVersion)
+    }
+
+    static func currentVersionString() -> String {
+        if let marketing = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            return marketing
+        }
+        return "Unknown"
+    }
+
+    private static func checkGitHubReleases(currentVersion: String) async -> UpdateCheckOutcome {
+        guard let url = URL(string: "https://api.github.com/repos/Jahrix/Speed-for-Mac/releases/latest") else {
             return UpdateCheckOutcome(success: false, message: "Invalid releases URL.", latestVersion: nil, releaseURL: nil)
         }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
-        request.setValue("CruiseControl/1.1.2", forHTTPHeaderField: "User-Agent")
+        request.setValue("CruiseControl/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -71,13 +102,6 @@ enum AppMaintenanceService {
         } catch {
             return UpdateCheckOutcome(success: false, message: "Update check failed: \(error.localizedDescription)", latestVersion: nil, releaseURL: nil)
         }
-    }
-
-    static func currentVersionString() -> String {
-        if let marketing = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
-            return marketing
-        }
-        return "Unknown"
     }
 
     private static func normalizedVersion(_ raw: String) -> String {

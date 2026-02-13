@@ -1,46 +1,40 @@
-# CruiseControl v1.1.2 (Desktop App)
+# CruiseControl v1.1.4 (Desktop App)
 
-CruiseControl is a Swift/SwiftUI desktop app for monitoring and guiding flight-sim performance on macOS.
+CruiseControl combines simulator telemetry and a safe Cleaner Suite.
 
-## Highlights in v1.1.2
+## v1.1.4 highlights
 
-- Memory Pressure Relief panel with safe user-confirmed process actions.
-- Lua ACK handshake UI (`Connected` / `No ACK` / `ACK OK`) with `PING` test.
-- Connection Wizard for X-Plane UDP + FlyWithLua setup validation.
-- Stutter Detective event capture and culprit ranking.
-- Mini history charts with 10m / 20m / 30m ranges.
-- Per-airport governor profile system with JSON import/export.
-- Smart Scan modules + quarantine/restore workflow.
-- App maintenance actions: reveal app, install to `/Applications`, update check.
+- New sidebar sections: Smart Scan, Cleaner, Large Files, Optimization, Quarantine.
+- Async Smart Scan with per-module progress + cancel.
+- Hardened quarantine batches with restore/delete and manifest metadata.
+- Large Files scanning is scope-required (no full-disk default scans).
+- Optimization allowlist to avoid suggesting trusted apps.
+- Memory Relief messaging updated to be explicit and credible.
+- Update checks: Sparkle-configured path + GitHub fallback.
 
-## LOD Governor architecture
+## Cleaner safety model
 
-CruiseControl computes target LOD from altitude tiers and sends commands to a FlyWithLua script.
+Default allowlist:
 
-The app does not write X-Plane private datarefs directly.
+- `~/Library/Caches`
+- `~/Library/Logs`
+- `~/Library/Application Support/CruiseControl`
+- `~/Library/Saved Application State`
+- `~/.Trash`
 
-FlyWithLua script applies:
+Default exclusions:
 
-- `set("sim/private/controls/reno/LOD_bias_rat", value)`
+- `/System`
+- `/Library`
+- `/private/var/vm`
 
-with clamping and restore-on-disable/exit behavior.
+Quarantine-first is the default clean flow.
 
-## Build
+## Sparkle placeholders
 
-1. Open `CruiseControl.xcodeproj`.
-2. Build + Run.
-3. In app settings, verify telemetry and governor ports.
+Add these in `Info.plist` for Sparkle path:
 
-## Bundle Identifier Migration
+- `SUFeedURL`
+- `SUPublicEDKey`
 
-- New bundle identifier: `jahrix.CruiseControl`
-- Previous bundle identifier: `jahrix.Speed-for-Mac`
-- macOS treats this as a different app identity. Existing settings in `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported.
-- If both app copies are installed, keep only CruiseControl in `/Applications` to avoid duplicate notifications or Launch Services entries.
-
-
-## Safety constraints
-
-- Monitoring + user-approved automation only.
-- No protected kernel/scheduler/GPU controls.
-- Memory cleaner is pressure relief guidance, not a fake global cache purge.
+If not configured, CruiseControl falls back to GitHub release API checks.

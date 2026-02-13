@@ -1,11 +1,20 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 final class SmartScanService {
     struct ScanOptions {
         var includePrivacy: Bool
+        var includeSavedApplicationState: Bool
         var selectedLargeFileRoots: [URL]
         var topLargeFilesCount: Int
+
+        static let `default` = ScanOptions(
+            includePrivacy: false,
+            includeSavedApplicationState: true,
+            selectedLargeFileRoots: [],
+            topLargeFilesCount: 25
+        )
     }
 
     private let fileManager = FileManager.default
@@ -13,31 +22,150 @@ final class SmartScanService {
     func runSmartScan(options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanSummary {
         let start = Date()
 
-        var items: [SmartScanItem] = []
-        items.append(contentsOf: scanSystemJunk())
-        items.append(contentsOf: scanTrashBins())
-        items.append(contentsOf: scanLargeFiles(roots: options.selectedLargeFileRoots, topCount: options.topLargeFilesCount))
-        items.append(contentsOf: scanOptimization(topCPUProcesses: topCPUProcesses))
-
+        var moduleResults: [SmartScanModuleResult] = []
+        moduleResults.append(runModule(.systemJunk, options: options, topCPUProcesses: topCPUProcesses))
+        moduleResults.append(runModule(.trashBins, options: options, topCPUProcesses: topCPUProcesses))
+        moduleResults.append(runModule(.largeFiles, options: options, topCPUProcesses: topCPUProcesses))
+        moduleResults.append(runModule(.optimization, options: options, topCPUProcesses: topCPUProcesses))
         if options.includePrivacy {
-            items.append(contentsOf: scanPrivacyCaches())
+            moduleResults.append(runModule(.privacy, options: options, topCPUProcesses: topCPUProcesses))
         }
 
-        return SmartScanSummary(generatedAt: Date(), duration: Date().timeIntervalSince(start), items: items)
+        let items = moduleResults.flatMap(\.items)
+
+        return SmartScanSummary(
+            generatedAt: Date(),
+            duration: Date().timeIntervalSince(start),
+            moduleResults: moduleResults,
+            items: items
+        )
     }
 
-    func quarantine(
-        items: [SmartScanItem],
-        advancedModeEnabled: Bool
-    ) -> ActionOutcome {
+    func runSmartScanAsync(
+        options: ScanOptions,
+        topCPUProcesses: [ProcessSample],
+        progress: @escaping @Sendable (SmartScanRunState) -> Void
+    ) async -> SmartScanSummary {
+        let start = Date()
+        var moduleList: [SmartScanModule] = [.systemJunk, .trashBins, .largeFiles, .optimization]
+        if options.includePrivacy {
+            moduleList.append(.privacy)
+        }
+
+        var runState = SmartScanRunState.idle
+        runState.isRunning = true
+        runState.cancellable = true
+        runState.startedAt = start
+        moduleList.forEach { runState.moduleProgress[$0] = 0 }
+        progress(runState)
+
+        var moduleResults: [SmartScanModuleResult] = []
+
+        await withTaskGroup(of: SmartScanModuleResult.self) { group in
+            for module in moduleList {
+                group.addTask(priority: .utility) {
+                    Self.scanModule(module: module, options: options, topCPUProcesses: topCPUProcesses)
+                }
+            }
+
+            for await result in group {
+                moduleResults.append(result)
+                runState.completedModules.insert(result.module)
+                runState.moduleProgress[result.module] = 1
+                runState.overallProgress = Double(runState.completedModules.count) / Double(max(moduleList.count, 1))
+                progress(runState)
+            }
+        }
+
+        if Task.isCancelled {
+            runState.isRunning = false
+            runState.cancellable = false
+            runState.finishedAt = Date()
+            progress(runState)
+
+            return SmartScanSummary(
+                generatedAt: Date(),
+                duration: Date().timeIntervalSince(start),
+                moduleResults: moduleResults,
+                items: moduleResults.flatMap(\.items)
+            )
+        }
+
+        runState.isRunning = false
+        runState.cancellable = false
+        runState.overallProgress = 1
+        runState.finishedAt = Date()
+        progress(runState)
+
+        let sorted = moduleResults.sorted { $0.module.rawValue < $1.module.rawValue }
+        return SmartScanSummary(
+            generatedAt: Date(),
+            duration: Date().timeIntervalSince(start),
+            moduleResults: sorted,
+            items: sorted.flatMap(\.items)
+        )
+    }
+
+    func scanCleanerModuleAsync(includeSavedApplicationState: Bool = true) async -> [SmartScanItem] {
+        let options = ScanOptions(
+            includePrivacy: false,
+            includeSavedApplicationState: includeSavedApplicationState,
+            selectedLargeFileRoots: [],
+            topLargeFilesCount: 25
+        )
+        return Self.scanSystemJunk(options: options)
+    }
+
+    func scanTrashModuleAsync() async -> [SmartScanItem] {
+        Self.scanTrashBins()
+    }
+
+    func scanLargeFilesModuleAsync(roots: [URL], topCount: Int) async -> [SmartScanItem] {
+        Self.scanLargeFiles(roots: roots, topCount: topCount)
+    }
+
+    func scanOptimizationModuleAsync(topCPUProcesses: [ProcessSample]) async -> [SmartScanItem] {
+        Self.scanOptimization(topCPUProcesses: topCPUProcesses)
+    }
+
+    func trashSummary() -> (count: Int, sizeBytes: UInt64) {
+        let trash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
+        guard fileManager.fileExists(atPath: trash.path),
+              let children = try? fileManager.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) else {
+            return (0, 0)
+        }
+
+        var total: UInt64 = 0
+        for item in children {
+            total += directoryOrFileSize(url: item)
+        }
+        return (children.count, total)
+    }
+
+    func emptyTrash() -> ActionOutcome {
+        let scriptText = "tell application \"Finder\" to empty the trash"
+        guard let script = NSAppleScript(source: scriptText) else {
+            return ActionOutcome(success: false, message: "Unable to create Finder automation script. Open Trash in Finder and empty manually.")
+        }
+
+        var scriptError: NSDictionary?
+        script.executeAndReturnError(&scriptError)
+        if let scriptError {
+            return ActionOutcome(success: false, message: "Could not empty Trash automatically. Open Trash in Finder and empty it manually. Error: \(scriptError)")
+        }
+
+        return ActionOutcome(success: true, message: "Trash emptied.")
+    }
+
+    func quarantine(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
         guard !items.isEmpty else {
             return ActionOutcome(success: false, message: "No scan items selected for quarantine.")
         }
 
         let allowedRoots = defaultAllowlistedRoots()
         let root = quarantineRootURL()
-        let stamp = isoTimestamp(Date())
-        let destinationRoot = root.appendingPathComponent(stamp, isDirectory: true)
+        let batchID = isoTimestamp(Date())
+        let destinationRoot = root.appendingPathComponent(batchID, isDirectory: true)
 
         do {
             try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
@@ -49,12 +177,13 @@ final class SmartScanService {
         var movedCount = 0
 
         for item in items {
-            let sourceURL = URL(fileURLWithPath: item.path)
-            if !fileManager.fileExists(atPath: sourceURL.path) {
-                continue
-            }
+            if item.path.hasPrefix("pid:") { continue }
 
-            let isAllowed = allowedRoots.contains(where: { sourceURL.path.hasPrefix($0.path) })
+            let sourceURL = URL(fileURLWithPath: item.path).standardizedFileURL
+            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+            guard !isProtectedSystemPath(sourceURL.path) else { continue }
+
+            let isAllowed = isPathWithinAllowlist(sourceURL.path, allowlistedRoots: allowedRoots)
             if !isAllowed && !advancedModeEnabled {
                 continue
             }
@@ -72,7 +201,8 @@ final class SmartScanService {
                         originalPath: sourceURL.path,
                         quarantinedPath: destinationURL.path,
                         sizeBytes: item.sizeBytes,
-                        timestamp: Date()
+                        timestamp: Date(),
+                        sha256: quickSHA256(url: destinationURL)
                     )
                 )
             } catch {
@@ -81,14 +211,18 @@ final class SmartScanService {
         }
 
         if entries.isEmpty {
-            return ActionOutcome(success: false, message: "No files were quarantined. Ensure paths exist and are within safe locations, or enable Advanced Mode.")
+            return ActionOutcome(success: false, message: "No files were quarantined. Check selection and safe-path restrictions.")
         }
 
-        let manifest = QuarantineManifest(createdAt: Date(), entries: entries)
+        let totalBytes = entries.reduce(UInt64(0)) { $0 + $1.sizeBytes }
+        let manifest = QuarantineManifest(batchId: batchID, createdAt: Date(), totalBytes: totalBytes, entries: entries)
         let manifestURL = destinationRoot.appendingPathComponent("manifest.json")
 
         do {
-            let data = try JSONEncoder().encode(manifest)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(manifest)
             try data.write(to: manifestURL, options: .atomic)
         } catch {
             return ActionOutcome(success: false, message: "Files moved but manifest write failed: \(error.localizedDescription)")
@@ -97,14 +231,42 @@ final class SmartScanService {
         return ActionOutcome(success: true, message: "Quarantined \(movedCount) item(s) to \(destinationRoot.path).")
     }
 
-    func restoreLatestQuarantine() -> ActionOutcome {
-        guard let latestManifestURL = latestManifestURL() else {
-            return ActionOutcome(success: false, message: "No quarantine manifest found.")
+    func listQuarantineBatches() -> [QuarantineBatchSummary] {
+        let root = quarantineRootURL()
+        guard fileManager.fileExists(atPath: root.path),
+              let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else {
+            return []
         }
 
+        return folders.compactMap { folder in
+            let manifestURL = folder.appendingPathComponent("manifest.json")
+            guard let data = try? Data(contentsOf: manifestURL),
+                  let manifest = try? JSONDecoder().decode(QuarantineManifest.self, from: data) else {
+                return nil
+            }
+
+            return QuarantineBatchSummary(
+                batchID: manifest.batchId,
+                folderPath: folder.path,
+                createdAt: manifest.createdAt,
+                entryCount: manifest.entries.count,
+                totalBytes: manifest.totalBytes
+            )
+        }
+        .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func restoreQuarantineBatch(batchID: String) -> ActionOutcome {
+        guard let folder = quarantineFolder(batchID: batchID) else {
+            return ActionOutcome(success: false, message: "Quarantine batch not found.")
+        }
+
+        let manifestURL = folder.appendingPathComponent("manifest.json")
         do {
-            let data = try Data(contentsOf: latestManifestURL)
-            let manifest = try JSONDecoder().decode(QuarantineManifest.self, from: data)
+            let data = try Data(contentsOf: manifestURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let manifest = try decoder.decode(QuarantineManifest.self, from: data)
 
             var restored = 0
             for entry in manifest.entries {
@@ -114,6 +276,9 @@ final class SmartScanService {
 
                 do {
                     try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try fileManager.removeItem(at: destination)
+                    }
                     try fileManager.moveItem(at: source, to: destination)
                     restored += 1
                 } catch {
@@ -121,23 +286,67 @@ final class SmartScanService {
                 }
             }
 
-            return ActionOutcome(success: true, message: "Restored \(restored) item(s) from quarantine.")
+            return ActionOutcome(success: true, message: "Restored \(restored) item(s) from batch \(batchID).")
         } catch {
             return ActionOutcome(success: false, message: "Restore failed: \(error.localizedDescription)")
         }
     }
 
-    func permanentlyDeleteLatestQuarantine() -> ActionOutcome {
-        guard let folder = latestQuarantineFolderURL() else {
-            return ActionOutcome(success: false, message: "No quarantine folder found.")
+    func permanentlyDeleteQuarantineBatch(batchID: String) -> ActionOutcome {
+        guard let folder = quarantineFolder(batchID: batchID) else {
+            return ActionOutcome(success: false, message: "Quarantine batch not found.")
         }
 
         do {
             try fileManager.removeItem(at: folder)
-            return ActionOutcome(success: true, message: "Permanently deleted quarantine folder \(folder.lastPathComponent).")
+            return ActionOutcome(success: true, message: "Deleted quarantine batch \(batchID).")
         } catch {
-            return ActionOutcome(success: false, message: "Failed to delete quarantine folder: \(error.localizedDescription)")
+            return ActionOutcome(success: false, message: "Failed to delete quarantine batch: \(error.localizedDescription)")
         }
+    }
+
+    func restoreLatestQuarantine() -> ActionOutcome {
+        guard let batch = listQuarantineBatches().first else {
+            return ActionOutcome(success: false, message: "No quarantine batch found.")
+        }
+        return restoreQuarantineBatch(batchID: batch.batchID)
+    }
+
+    func permanentlyDeleteLatestQuarantine() -> ActionOutcome {
+        guard let batch = listQuarantineBatches().first else {
+            return ActionOutcome(success: false, message: "No quarantine batch found.")
+        }
+        return permanentlyDeleteQuarantineBatch(batchID: batch.batchID)
+    }
+
+    func deletePermanently(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
+        guard !items.isEmpty else {
+            return ActionOutcome(success: false, message: "No items selected for permanent delete.")
+        }
+
+        let allowedRoots = defaultAllowlistedRoots()
+        var deleted = 0
+
+        for item in items {
+            if item.path.hasPrefix("pid:") { continue }
+            let path = URL(fileURLWithPath: item.path).standardizedFileURL.path
+            guard fileManager.fileExists(atPath: path) else { continue }
+            guard !isProtectedSystemPath(path) else { continue }
+
+            let isAllowed = isPathWithinAllowlist(path, allowlistedRoots: allowedRoots)
+            if !isAllowed && !advancedModeEnabled {
+                continue
+            }
+
+            do {
+                try fileManager.removeItem(atPath: path)
+                deleted += 1
+            } catch {
+                continue
+            }
+        }
+
+        return ActionOutcome(success: deleted > 0, message: deleted > 0 ? "Permanently deleted \(deleted) item(s)." : "No items were deleted.")
     }
 
     func revealInFinder(path: String) {
@@ -150,29 +359,97 @@ final class SmartScanService {
         NSWorkspace.shared.open(trashURL)
     }
 
-    private func scanSystemJunk() -> [SmartScanItem] {
-        let roots = [
-            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches"),
-            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs"),
-            appCacheRoot()
+    func openBridgeFolderInFinder() -> ActionOutcome {
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        let folder = base.appendingPathComponent("CruiseControl", isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(folder)
+            return ActionOutcome(success: true, message: "Opened bridge folder: \(folder.path)")
+        } catch {
+            return ActionOutcome(success: false, message: "Could not open bridge folder: \(error.localizedDescription)")
+        }
+    }
+
+    private func runModule(_ module: SmartScanModule, options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanModuleResult {
+        Self.scanModule(module: module, options: options, topCPUProcesses: topCPUProcesses)
+    }
+
+    private static func scanModule(module: SmartScanModule, options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanModuleResult {
+        let start = Date()
+
+        do {
+            let items: [SmartScanItem]
+            switch module {
+            case .systemJunk:
+                items = scanSystemJunk(options: options)
+            case .trashBins:
+                items = scanTrashBins()
+            case .largeFiles:
+                items = scanLargeFiles(roots: options.selectedLargeFileRoots, topCount: options.topLargeFilesCount)
+            case .optimization:
+                items = scanOptimization(topCPUProcesses: topCPUProcesses)
+            case .privacy:
+                items = scanPrivacyCaches()
+            }
+
+            return SmartScanModuleResult(
+                module: module,
+                items: items,
+                bytes: items.reduce(0) { $0 + $1.sizeBytes },
+                duration: Date().timeIntervalSince(start),
+                error: nil
+            )
+        } catch {
+            return SmartScanModuleResult(
+                module: module,
+                items: [],
+                bytes: 0,
+                duration: Date().timeIntervalSince(start),
+                error: error.localizedDescription
+            )
+        }
+    }
+
+    private static func scanSystemJunk(options: ScanOptions) -> [SmartScanItem] {
+        let fm = FileManager.default
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+
+        var roots: [URL] = [
+            home.appendingPathComponent("Library/Caches"),
+            home.appendingPathComponent("Library/Logs"),
+            appSupportCruiseControlRoot()
         ]
+
+        if options.includeSavedApplicationState {
+            roots.append(home.appendingPathComponent("Library/Saved Application State"))
+        }
 
         var items: [SmartScanItem] = []
         for root in roots {
-            guard fileManager.fileExists(atPath: root.path),
-                  let children = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+            guard fm.fileExists(atPath: root.path),
+                  let children = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
                 continue
             }
 
             for child in children {
+                if Task.isCancelled { break }
+                let childPath = child.standardizedFileURL.path
+                if isProtectedSystemPath(childPath) { continue }
+                if !isPathWithinAllowlist(childPath, allowlistedRoots: defaultAllowlistedRoots()) { continue }
+
                 let size = directoryOrFileSize(url: child)
                 guard size > 0 else { continue }
+
+                let groupName = topLevelGroupName(root: root, child: child)
                 items.append(
                     SmartScanItem(
                         module: .systemJunk,
                         path: child.path,
                         sizeBytes: size,
-                        note: "User cache/log candidate",
+                        note: "\(groupName) cache/log candidate (regenerates as apps run)",
                         safeByDefault: true
                     )
                 )
@@ -182,14 +459,16 @@ final class SmartScanService {
         return items.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private func scanTrashBins() -> [SmartScanItem] {
+    private static func scanTrashBins() -> [SmartScanItem] {
+        let fm = FileManager.default
         let trash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
-        guard fileManager.fileExists(atPath: trash.path),
-              let children = try? fileManager.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) else {
+        guard fm.fileExists(atPath: trash.path),
+              let children = try? fm.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
             return []
         }
 
         return children.compactMap { item in
+            if Task.isCancelled { return nil }
             let size = directoryOrFileSize(url: item)
             guard size > 0 else { return nil }
             return SmartScanItem(
@@ -203,34 +482,39 @@ final class SmartScanService {
         .sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
+    private static func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
+        let fm = FileManager.default
         guard !roots.isEmpty else { return [] }
 
         var files: [SmartScanItem] = []
 
         for root in roots {
-            guard fileManager.fileExists(atPath: root.path) else { continue }
+            if Task.isCancelled { break }
+            guard fm.fileExists(atPath: root.path) else { continue }
 
-            let enumerator = fileManager.enumerator(
+            let enumerator = fm.enumerator(
                 at: root,
-                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
                 options: [.skipsPackageDescendants, .skipsHiddenFiles]
             )
 
             while let fileURL = enumerator?.nextObject() as? URL {
-                guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                if Task.isCancelled { break }
+
+                guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
                       values.isRegularFile == true,
                       let size = values.fileSize,
                       size > 10 * 1_024 * 1_024 else {
                     continue
                 }
 
+                let modified = values.contentModificationDate?.formatted(date: .abbreviated, time: .shortened) ?? "unknown date"
                 files.append(
                     SmartScanItem(
                         module: .largeFiles,
                         path: fileURL.path,
                         sizeBytes: UInt64(size),
-                        note: "Large file",
+                        note: "Modified \(modified)",
                         safeByDefault: false
                     )
                 )
@@ -243,21 +527,22 @@ final class SmartScanService {
             .map { $0 }
     }
 
-    private func scanOptimization(topCPUProcesses: [ProcessSample]) -> [SmartScanItem] {
+    private static func scanOptimization(topCPUProcesses: [ProcessSample]) -> [SmartScanItem] {
         topCPUProcesses
-            .filter { $0.cpuPercent > 18 && !$0.name.localizedCaseInsensitiveContains("X-Plane") }
+            .filter { $0.cpuPercent > 12 && !$0.name.localizedCaseInsensitiveContains("X-Plane") }
             .map { process in
                 SmartScanItem(
                     module: .optimization,
                     path: "pid:\(process.pid) \(process.name)",
-                    sizeBytes: 0,
-                    note: "CPU hog \(String(format: "%.1f", process.cpuPercent))%",
+                    sizeBytes: process.memoryBytes,
+                    note: "Impact: CPU \(String(format: "%.1f", process.cpuPercent))% • RAM \(ByteCountFormatter.string(fromByteCount: Int64(process.memoryBytes), countStyle: .memory))",
                     safeByDefault: false
                 )
             }
     }
 
-    private func scanPrivacyCaches() -> [SmartScanItem] {
+    private static func scanPrivacyCaches() -> [SmartScanItem] {
+        let fm = FileManager.default
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let candidates = [
             home.appendingPathComponent("Library/Caches/com.apple.Safari"),
@@ -266,27 +551,113 @@ final class SmartScanService {
         ]
 
         return candidates.compactMap { url in
-            guard fileManager.fileExists(atPath: url.path) else { return nil }
+            if Task.isCancelled { return nil }
+            guard fm.fileExists(atPath: url.path) else { return nil }
             let size = directoryOrFileSize(url: url)
             guard size > 0 else { return nil }
             return SmartScanItem(
                 module: .privacy,
                 path: url.path,
                 sizeBytes: size,
-                note: "User browser data",
+                note: "User browser cache data",
                 safeByDefault: false
             )
         }
         .sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private func directoryOrFileSize(url: URL) -> UInt64 {
+    private func quickSHA256(url: URL) -> String? {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              let size = values.fileSize,
+              size <= 32 * 1_024 * 1_024 else {
+            return nil
+        }
+
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
+            return nil
+        }
+
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func topLevelGroupName(root: URL, child: URL) -> String {
+        let relative = child.path.replacingOccurrences(of: root.path, with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let first = relative.split(separator: "/").first
+        return first.map(String.init) ?? root.lastPathComponent
+    }
+
+    private static func appSupportCruiseControlRoot() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("CruiseControl", isDirectory: true)
+    }
+
+    private func quarantineRootURL() -> URL {
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("CruiseControl/Quarantine", isDirectory: true)
+    }
+
+    private func quarantineFolder(batchID: String) -> URL? {
+        let root = quarantineRootURL()
+        guard fileManager.fileExists(atPath: root.path) else { return nil }
+        let folder = root.appendingPathComponent(batchID, isDirectory: true)
+        return fileManager.fileExists(atPath: folder.path) ? folder : nil
+    }
+
+    private static func defaultAllowlistedRoots() -> [URL] {
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        return [
+            home.appendingPathComponent("Library/Caches"),
+            home.appendingPathComponent("Library/Logs"),
+            home.appendingPathComponent("Library/Saved Application State"),
+            home.appendingPathComponent(".Trash"),
+            appSupportCruiseControlRoot()
+        ]
+    }
+
+    private func defaultAllowlistedRoots() -> [URL] {
+        Self.defaultAllowlistedRoots()
+    }
+
+    private static func isPathWithinAllowlist(_ path: String, allowlistedRoots: [URL]) -> Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        for root in allowlistedRoots {
+            let rootPath = root.standardizedFileURL.path
+            if standardized == rootPath || standardized.hasPrefix(rootPath + "/") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isPathWithinAllowlist(_ path: String, allowlistedRoots: [URL]) -> Bool {
+        Self.isPathWithinAllowlist(path, allowlistedRoots: allowlistedRoots)
+    }
+
+    private static func isProtectedSystemPath(_ path: String) -> Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let blockedPrefixes = ["/System", "/Library", "/private/var/vm"]
+        return blockedPrefixes.contains { prefix in
+            standardized == prefix || standardized.hasPrefix(prefix + "/")
+        }
+    }
+
+    private func isProtectedSystemPath(_ path: String) -> Bool {
+        Self.isProtectedSystemPath(path)
+    }
+
+    private static func directoryOrFileSize(url: URL) -> UInt64 {
+        let fm = FileManager.default
+
         if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
            values.isRegularFile == true {
             return UInt64(max(values.fileSize ?? 0, 0))
         }
 
-        let enumerator = fileManager.enumerator(
+        let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
             options: [.skipsPackageDescendants]
@@ -294,6 +665,7 @@ final class SmartScanService {
 
         var total: UInt64 = 0
         while let fileURL = enumerator?.nextObject() as? URL {
+            if Task.isCancelled { break }
             guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   values.isRegularFile == true else {
                 continue
@@ -303,46 +675,8 @@ final class SmartScanService {
         return total
     }
 
-    private func appCacheRoot() -> URL {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("CruiseControl/Cache", isDirectory: true)
-    }
-
-    private func quarantineRootURL() -> URL {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("CruiseControl/Quarantine", isDirectory: true)
-    }
-
-    private func defaultAllowlistedRoots() -> [URL] {
-        let home = URL(fileURLWithPath: NSHomeDirectory())
-        return [
-            home.appendingPathComponent("Library/Caches"),
-            home.appendingPathComponent("Library/Logs"),
-            home.appendingPathComponent(".Trash"),
-            appCacheRoot()
-        ]
-    }
-
-    private func latestManifestURL() -> URL? {
-        guard let folder = latestQuarantineFolderURL() else { return nil }
-        let manifest = folder.appendingPathComponent("manifest.json")
-        return fileManager.fileExists(atPath: manifest.path) ? manifest : nil
-    }
-
-    private func latestQuarantineFolderURL() -> URL? {
-        let root = quarantineRootURL()
-        guard fileManager.fileExists(atPath: root.path),
-              let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-
-        return folders.sorted {
-            let left = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            let right = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            return left > right
-        }.first
+    private func directoryOrFileSize(url: URL) -> UInt64 {
+        Self.directoryOrFileSize(url: url)
     }
 
     private func isoTimestamp(_ date: Date) -> String {

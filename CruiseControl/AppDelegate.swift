@@ -2,12 +2,19 @@ import Foundation
 import AppKit
 import Combine
 import UserNotifications
+#if canImport(Sparkle)
+import Sparkle
+#endif
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let settingsStore = SettingsStore()
     let featureStore = V112FeatureStore()
     lazy var sampler = PerformanceSampler()
+
+    #if canImport(Sparkle)
+    var sparkleUpdaterController: SPUStandardUpdaterController?
+    #endif
 
     private var cancellables: Set<AnyCancellable> = []
     private var previousSimActive: Bool = false
@@ -18,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         configureNotifications()
+        configureSparkleIfAvailable()
 
         #if DEBUG
         GovernorPolicyEngineSelfTests.run()
@@ -106,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func checkForUpdatesFromMenu() {
         Task {
             let current = AppMaintenanceService.currentVersionString()
-            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
+            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: true)
 
             let alert = NSAlert()
             alert.messageText = "CruiseControl Update Check"
@@ -131,6 +139,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let effectiveConfig = featureStore.effectiveGovernorConfig(base: baseConfig, telemetryICAO: telemetryICAO)
         sampler.configureGovernor(config: effectiveConfig)
         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
+    }
+
+    private func configureSparkleIfAvailable() {
+        #if canImport(Sparkle)
+        guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+              !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let _ = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
+            return
+        }
+
+        sparkleUpdaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        #endif
     }
 
     private func focusMainWindow() {

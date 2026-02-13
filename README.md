@@ -1,118 +1,103 @@
-# CruiseControl v1.1.3
+# CruiseControl v1.1.4
 
 CruiseControl is a macOS SwiftUI desktop performance companion for X-Plane on Apple Silicon.
 
 ## What it does
 
-- Monitors CPU, memory pressure, compressed memory, swap, disk I/O, thermal state, and top processes.
-- Tracks X-Plane UDP telemetry with clear connection state (`IDLE`, `LISTENING`, `ACTIVE`, `MISCONFIG`).
-- Provides user-approved actions only (quit/force quit with confirmation, guidance, diagnostics export).
-- Uses a FlyWithLua companion for in-sim LOD control. The macOS app does not write XP private datarefs directly.
+- Real-time system telemetry: CPU, memory pressure, compressed memory, swap, disk I/O, thermal state, top processes.
+- X-Plane UDP monitoring with explicit connection states: `IDLE`, `LISTENING`, `ACTIVE`, `MISCONFIG`.
+- Regulator bridge diagnostics for FlyWithLua (UDP ACK path + file fallback).
+- Cleaner Suite (safe, reversible by default):
+  - Smart Scan
+  - Cleaner
+  - Large Files
+  - Optimization
+  - Quarantine
 
-## Build and run
+## Smart Scan v1.1.4
 
-1. Open `CruiseControl.xcodeproj` in Xcode.
-2. Select scheme `CruiseControl`.
-3. Build and Run.
-4. For an installable copy, use `Preferences > Install to /Applications`.
+Smart Scan runs these modules asynchronously with progress and cancellation:
+
+1. System Junk (safe user paths only)
+2. Trash Bins
+3. Large Files (selected scope only)
+4. Optimization
+5. Optional privacy cache scan
+
+`Run Clean` defaults to **Quarantine first**.
+
+## Quarantine / Restore model
+
+Quarantine root:
+
+`~/Library/Application Support/CruiseControl/Quarantine/<timestamp>/`
+
+Each batch writes `manifest.json` with metadata:
+
+- `batchId`
+- `createdAt`
+- `totalBytes`
+- entries: `originalPath`, `quarantinedPath`, `sizeBytes`, `timestamp`, optional `sha256`
+
+From the Quarantine section you can:
+
+- Restore batch
+- Delete batch permanently
+- View total quarantined size
+
+## Memory Relief (honest behavior)
+
+CruiseControl does **not** claim fake global RAM purges.
+
+Memory Relief focuses on useful actions:
+
+- shows pressure/swap/compressed memory trends
+- suggests top memory offenders
+- user-confirmed quit actions
+- optional limited purge clears CruiseControl-owned local cache only
+
+## Safe path policy
+
+Included by default:
+
+- `~/Library/Caches`
+- `~/Library/Logs`
+- `~/Library/Application Support/CruiseControl`
+- `~/Library/Saved Application State` (itemized)
+- `~/.Trash`
+
+Excluded by default:
+
+- `/System`
+- `/Library`
+- `/private/var/vm`
+
+Advanced mode is required for out-of-allowlist actions.
+
+## Update checks and install
+
+- `Check for Updates…` uses Sparkle when configured (`SUFeedURL` + `SUPublicEDKey`), otherwise falls back to GitHub Releases HTTPS check.
+- `Show App in Finder`, `Open Applications Folder`, and `Install to /Applications` are available in app commands and Preferences.
+
+## Build
+
+```bash
+xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj" \
+  -scheme "CruiseControl" \
+  -configuration Debug \
+  CODE_SIGNING_ALLOWED=NO build
+```
 
 ## Bundle Identifier Migration
 
-- New bundle identifier: `jahrix.CruiseControl`
-- Previous bundle identifier: `jahrix.Speed-for-Mac`
-- macOS treats this as a different app identity. Existing settings in `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported.
+- Current: `jahrix.CruiseControl`
+- Legacy: `jahrix.Speed-for-Mac`
 
-## Connection Wizard (X-Plane + Lua)
-
-In CruiseControl, the Connection Wizard verifies:
-
-1. X-Plane process detection.
-2. UDP telemetry state + last packet age + packet rate.
-3. Control bridge mode (`UDP`, `File Fallback`, or `None`).
-4. ACK state (`ACK OK`, `Waiting`, or expected no-ACK in file mode).
-
-Helpful actions:
-
-- `Copy 127.0.0.1:<telemetry-port>`
-- `Copy Lua listen port`
-- `Test PING`
-- `Open Bridge Folder in Finder`
-
-## X-Plane UDP setup
-
-In X-Plane:
-
-1. `Settings > Data Output`
-2. Check `Send network data output`
-3. Set IP to `127.0.0.1`
-4. Set Port to CruiseControl listening port (default `49005`)
-5. Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)
-
-Ports are shown without grouping commas (for example `49005`, not `49,005`).
-
-## Regulator bridge folder (file fallback)
-
-CruiseControl uses this folder for file bridge mode:
-
-- `~/Library/Application Support/CruiseControl/`
-
-Files:
-
-- `lod_target.txt` (app writes target LOD)
-- `lod_mode.txt` (app writes enable/disable)
-- `lod_status.txt` (optional, Lua writes current state/evidence)
-
-## Test controls
-
-In `Regulator Proof` and `LOD Regulator`:
-
-- `Test: FPS Mode (shorter draw distance)` sends temporary LOD bias `1.30`.
-- `Test: Visual Mode (longer draw distance)` sends temporary LOD bias `0.75`.
-- Tests run for 10 seconds, then auto-restore to the active Regulator target (or neutral fallback).
-
-## Proof Panel interpretation
-
-`Regulator Proof` shows:
-
-- Bridge mode (`UDP`, `File Fallback`, `None`)
-- Telemetry freshness + packets/sec
-- Last command + age
-- ACK line (or expected no-ACK in file mode)
-- Applied LOD evidence:
-  - UDP ACK payload when available
-  - File bridge `lod_status.txt` values when available
-- `LOD CHANGING: YES/NO`
-
-`LOD CHANGING` is `YES` when ACK-applied values are changing (UDP) or file bridge status updates/LOD changes are observed.
-
-## FlyWithLua protocol
-
-Companion script path:
-
-- `X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/`
-
-Command protocol:
-
-- App -> Lua: `PING`, `ENABLE`, `DISABLE`, `SET_LOD <float>`
-- Lua -> App: `PONG`, `ACK ENABLE`, `ACK DISABLE`, `ACK SET_LOD <float>`, `ERR <message>`
-
-Dataref applied by Lua:
-
-- `sim/private/controls/reno/LOD_bias_rat`
-
-## Memory Pressure Relief (what it is and is not)
-
-CruiseControl does not do fake global RAM cleaning. It provides:
-
-- Pressure/swap/compressed-memory visibility
-- Suggestions to close heavy apps
-- User-confirmed quit actions
-- Optional limited purge attempt that only clears CruiseControl local caches
+macOS treats these as different app identities; old preference domains are not auto-migrated.
 
 ## Limitations
 
 - No kernel extensions.
-- No private macOS APIs.
-- No scheduler/GPU clock control.
-- Process actions can fail due sandboxing, app protections, or permissions.
-- X-Plane telemetry and Regulator behavior depend on correct sim/data output setup.
+- No private macOS scheduler/GPU controls.
+- Process terminate/force-quit can fail due permissions/app behavior.
+- X-Plane companion features depend on correct sim UDP/FlyWithLua setup.
