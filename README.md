@@ -16,6 +16,14 @@ CruiseControl is a macOS SwiftUI desktop performance companion for X-Plane on Ap
 3. Build and Run.
 4. For an installable copy, use `Preferences > Install to /Applications`.
 
+## Bundle Identifier Migration
+
+- New bundle identifier: `jahrix.CruiseControl`
+- Previous bundle identifier: `jahrix.Speed-for-Mac`
+- macOS treats this as a different app identity. Existing settings in `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported.
+- If both app copies are installed, keep only CruiseControl in `/Applications` to avoid duplicate notifications or Launch Services entries.
+
+
 ## Connection Wizard (X-Plane + Lua)
 
 In CruiseControl, the Connection Wizard verifies:

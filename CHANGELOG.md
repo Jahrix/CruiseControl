@@ -41,6 +41,8 @@
 
 ### Changed
 - App version bumped to `1.1.2` (build `112`).
+- Bundle identifier migrated from `jahrix.Speed-for-Mac` to `jahrix.CruiseControl`.
+- Migration note: settings under `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported into the new domain.
 - App delegate now applies combined runtime config from settings + v1.1.2 feature store.
 - Documentation refreshed for ACK protocol, wizard flow, and quarantine safety.
 

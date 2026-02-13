@@ -31,6 +31,14 @@ with clamping and restore-on-disable/exit behavior.
 2. Build + Run.
 3. In app settings, verify telemetry and governor ports.
 
+## Bundle Identifier Migration
+
+- New bundle identifier: `jahrix.CruiseControl`
+- Previous bundle identifier: `jahrix.Speed-for-Mac`
+- macOS treats this as a different app identity. Existing settings in `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported.
+- If both app copies are installed, keep only CruiseControl in `/Applications` to avoid duplicate notifications or Launch Services entries.
+
+
 ## Safety constraints
 
 - Monitoring + user-approved automation only.
