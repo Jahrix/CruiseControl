@@ -22,6 +22,7 @@ final class GovernorCommandBridge {
     private(set) var lastAckAt: Date?
     private(set) var lastAckAppliedLOD: Double?
     private(set) var ackState: GovernorAckState = .noAck
+    private(set) var usingFileFallback: Bool = false
 
     private var enabledCommandSent: Bool = false
     private var disableSent: Bool = false
@@ -126,6 +127,7 @@ final class GovernorCommandBridge {
             lastSentAt = Date()
             lastError = nil
             ackState = .disabled
+            usingFileFallback = false
         } else {
             lastError = result.error
         }
@@ -139,9 +141,14 @@ final class GovernorCommandBridge {
 
     func setDisabledState() {
         ackState = .disabled
+        usingFileFallback = false
     }
 
     func commandStatusText(now: Date) -> String {
+        if usingFileFallback, ackState != .disabled, ackState != .paused {
+            return "Connected (file fallback)"
+        }
+
         switch ackState {
         case .disabled:
             return GovernorAckState.disabled.displayName
@@ -168,6 +175,7 @@ final class GovernorCommandBridge {
 
         let fallbackError = writeFallbackCommand(command: normalized)
         let udpResult = sendUDP(message: normalized + "\n", host: host, port: port, waitForResponse: expectAck)
+        let usingFallbackThisCommand = udpResult.sendError != nil && fallbackError == nil
 
         var sent = false
         if udpResult.sendError == nil || fallbackError == nil {
@@ -176,6 +184,7 @@ final class GovernorCommandBridge {
 
         if let sendError = udpResult.sendError, fallbackError != nil {
             ackState = .noAck
+            usingFileFallback = false
             noAckCounter += 1
             let message = "\(sendError) Fallback file write failed: \(fallbackError ?? "unknown")"
             lastError = message
@@ -189,19 +198,31 @@ final class GovernorCommandBridge {
         }
 
         if let response = udpResult.response {
+            usingFileFallback = false
             handleAck(response: response, now: now)
         } else if expectAck {
-            noAckCounter += 1
-            if noAckCounter >= 2 {
-                ackState = .noAck
-            } else {
+            if usingFallbackThisCommand {
+                usingFileFallback = true
                 ackState = .connected
+                noAckCounter = 0
+                lastAckMessage = "Fallback transport active (ACK unavailable)"
+                lastAckAt = now
+            } else {
+                noAckCounter += 1
+                if noAckCounter >= 2 {
+                    ackState = .noAck
+                } else {
+                    ackState = .connected
+                }
             }
         } else {
             ackState = .connected
         }
 
-        if let sendError = udpResult.sendError {
+        if usingFallbackThisCommand {
+            lastError = nil
+            lastSuccessfulSendAt = now
+        } else if let sendError = udpResult.sendError {
             lastError = sendError
         } else {
             lastError = nil
@@ -209,7 +230,9 @@ final class GovernorCommandBridge {
         }
 
         let errorText: String?
-        if expectAck, udpResult.sendError == nil, udpResult.response == nil {
+        if usingFallbackThisCommand {
+            errorText = nil
+        } else if expectAck, udpResult.sendError == nil, udpResult.response == nil {
             errorText = "No ACK received from Lua bridge."
         } else {
             errorText = udpResult.sendError

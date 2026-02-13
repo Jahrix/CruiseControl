@@ -49,6 +49,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         .store(in: &cancellables)
 
+        sampler.$snapshot
+            .map { $0.xplaneTelemetry?.nearestAirportICAO ?? "" }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyRuntimeConfigs()
+            }
+            .store(in: &cancellables)
+
         sampler.$isSimActive
             .receive(on: RunLoop.main)
             .sink { [weak self] simActive in

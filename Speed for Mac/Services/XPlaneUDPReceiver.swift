@@ -31,30 +31,64 @@ final class XPlaneUDPReceiver {
     private var lastDetail: String?
 
     func configure(enabled: Bool, host: String = "127.0.0.1", port: Int, queue: DispatchQueue) {
-        listenHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        listenPort = min(max(port, 1_024), 65_535)
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clampedPort = min(max(port, 1_024), 65_535)
+        let previousNormalizedHost = normalizedListenHost(from: listenHost)
+        let normalizedHost = normalizedListenHost(from: trimmedHost)
+
+        let endpointChanged =
+            normalizedHost != previousNormalizedHost ||
+            clampedPort != listenPort
+
+        listenHost = trimmedHost
+        listenPort = clampedPort
         effectiveListenHost = listenAddressLabel(for: listenHost)
         effectiveListenPort = listenPort
         listeningEnabled = enabled
 
         guard enabled else {
-            stop()
+            stop(resetState: true)
             return
         }
 
         if socketFD >= 0 {
+            if endpointChanged {
+                stop(resetState: true)
+                startListening(queue: queue)
+            }
             return
         }
 
+        resetPacketStats()
         startListening(queue: queue)
     }
 
-    func stop() {
+    func stop(resetState: Bool = false) {
+        if socketFD >= 0 {
+            Darwin.close(socketFD)
+            socketFD = -1
+        }
+
         readSource?.cancel()
         readSource = nil
-        socketFD = -1
+
+        if resetState {
+            resetPacketStats()
+            lastDetail = listeningEnabled ? nil : "UDP listening is disabled."
+        }
     }
 
+    private func resetPacketStats() {
+        totalPackets = 0
+        invalidPackets = 0
+        datasetMismatchPackets = 0
+        packetsInWindow = 0
+        packetsPerSecond = 0
+        lastWindowDate = nil
+        lastPacketDate = nil
+        lastValidPacketDate = nil
+        latestTelemetry = nil
+    }
     func snapshot(now: Date) -> (telemetry: SimTelemetrySnapshot?, status: XPlaneUDPStatus) {
         if let lastWindowDate {
             let elapsed = now.timeIntervalSince(lastWindowDate)
@@ -195,9 +229,7 @@ final class XPlaneUDPReceiver {
         source.setEventHandler { [weak self] in
             self?.readPackets()
         }
-        source.setCancelHandler {
-            Darwin.close(fd)
-        }
+        source.setCancelHandler { }
         source.resume()
 
         socketFD = fd

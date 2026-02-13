@@ -86,6 +86,8 @@ struct MenuContentView: View {
     @State private var selectedSmartScanItemIDs: Set<UUID> = []
     @State private var confirmQuarantineSelection = false
     @State private var confirmDeleteLatestQuarantine = false
+    @State private var isSmartScanRunning = false
+
 
     @State private var updateCheckStatus: String?
 
@@ -152,13 +154,13 @@ struct MenuContentView: View {
         .onReceive(clockTimer) { newDate in
             now = newDate
         }
-        .onChange(of: settings.selectedProfile) { _ in
+        .onChange(of: settings.selectedProfile) {
             refreshProfileLists()
         }
-        .onChange(of: selectedAirportProfileICAO) { _ in
+        .onChange(of: selectedAirportProfileICAO) {
             loadAirportProfileEditor()
         }
-        .onChange(of: featureStore.airportProfiles) { _ in
+        .onChange(of: featureStore.airportProfiles) {
             syncAirportProfileEditorSelection()
         }
         .alert("Force Quit Process", isPresented: forceQuitBinding) {
@@ -313,8 +315,8 @@ struct MenuContentView: View {
                     )
                     wizardStep(
                         title: "3) FlyWithLua ACK",
-                        good: sampler.governorAckState == .ackOK,
-                        detail: "\(sampler.governorAckState.displayName)\(sampler.governorLastACKText.map { "  -  \($0)" } ?? "")"
+                        good: sampler.governorAckState == .ackOK || sampler.governorAckState == .connected,
+                        detail: "\(sampler.governorCommandStatus)\(sampler.governorLastACKText.map { "  -  \($0)" } ?? "")"
                     )
 
                     HStack {
@@ -957,10 +959,11 @@ struct MenuContentView: View {
                         }
                         .buttonStyle(.bordered)
 
-                        Button("Run Smart Scan") {
+                        Button(isSmartScanRunning ? "Scanning..." : "Run Smart Scan") {
                             runSmartScan()
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(isSmartScanRunning)
                     }
 
                     if !smartScanRoots.isEmpty {
@@ -1523,17 +1526,27 @@ struct MenuContentView: View {
     }
 
     private func runSmartScan() {
+        guard !isSmartScanRunning else { return }
+
+        isSmartScanRunning = true
+        processActionResult = "Smart Scan in progress..."
+
         let options = SmartScanService.ScanOptions(
             includePrivacy: smartScanIncludePrivacy,
             selectedLargeFileRoots: smartScanRoots,
             topLargeFilesCount: 25
         )
+        let topCPU = sampler.topCPUProcesses
 
-        smartScanSummary = smartScanService.runSmartScan(options: options, topCPUProcesses: sampler.topCPUProcesses)
-        selectedSmartScanItemIDs.removeAll()
+        DispatchQueue.global(qos: .utility).async {
+            let summary = smartScanService.runSmartScan(options: options, topCPUProcesses: topCPU)
 
-        if let summary = smartScanSummary {
-            processActionResult = "Smart Scan complete: \(summary.items.count) items found, total \(byteCountString(summary.totalBytes))."
+            DispatchQueue.main.async {
+                smartScanSummary = summary
+                selectedSmartScanItemIDs.removeAll()
+                isSmartScanRunning = false
+                processActionResult = "Smart Scan complete: \(summary.items.count) items found, total \(byteCountString(summary.totalBytes))."
+            }
         }
     }
 
