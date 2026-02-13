@@ -26,6 +26,11 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var governorLastSentLOD: Double?
     @Published private(set) var governorCommandStatus: String = "Not connected"
     @Published private(set) var governorPauseReason: String?
+    @Published private(set) var governorAckState: GovernorAckState = .noAck
+    @Published private(set) var governorLastCommandText: String?
+    @Published private(set) var governorLastACKText: String?
+    @Published private(set) var governorLastACKDate: Date?
+    @Published private(set) var stutterEvents: [StutterEvent] = []
 
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "ProjectSpeed.PerformanceSampler", qos: .utility)
@@ -57,6 +62,13 @@ final class PerformanceSampler: ObservableObject {
     private var governorLockedTierSince: Date?
     private var governorSmoothedLODInternal: Double?
     private var governorLastUpdateAt: Date?
+
+    private var stutterHeuristics: StutterHeuristicConfig = .default
+    private var stutterBuffer: [StutterEvent] = []
+    private var previousFrameTimeMS: Double?
+    private var previousFPS: Double?
+    private var previousCPUTotalPercent: Double?
+    private var previousThermalState: ProcessInfo.ThermalState = .nominal
 
     func configureSampling(interval: TimeInterval, alpha: Double) {
         let clampedInterval = max(0.5, min(interval, 2.0))
@@ -90,6 +102,10 @@ final class PerformanceSampler: ObservableObject {
         if !config.enabled {
             resetGovernorRuntimeState()
         }
+    }
+
+    func configureStutterHeuristics(_ config: StutterHeuristicConfig) {
+        stutterHeuristics = config
     }
 
     func start() {
@@ -133,6 +149,7 @@ final class PerformanceSampler: ObservableObject {
             let topCPUProcesses: [ProcessSample]
             let topMemoryProcesses: [ProcessSample]
             let recentHistory: [MetricHistoryPoint]
+            let stutterEvents: [StutterEvent]
             let governorDecision: GovernorDecision?
 
             struct SnapshotBody: Codable {
@@ -161,6 +178,9 @@ final class PerformanceSampler: ObservableObject {
                 let udpInvalidPackets: UInt64
                 let udpDetail: String?
                 let governorStatusLine: String
+                let governorAckState: String
+                let governorLastCommand: String?
+                let governorLastACK: String?
             }
         }
 
@@ -192,13 +212,17 @@ final class PerformanceSampler: ObservableObject {
                 udpTotalPackets: snapshot.udpStatus.totalPackets,
                 udpInvalidPackets: snapshot.udpStatus.invalidPackets,
                 udpDetail: snapshot.udpStatus.detail,
-                governorStatusLine: snapshot.governorStatusLine
+                governorStatusLine: snapshot.governorStatusLine,
+                governorAckState: governorAckState.rawValue,
+                governorLastCommand: governorLastCommandText,
+                governorLastACK: governorLastACKText
             ),
             warnings: warnings,
             culprits: culprits,
             topCPUProcesses: topCPUProcesses,
             topMemoryProcesses: topMemoryProcesses,
-            recentHistory: Array(history.suffix(180)),
+            recentHistory: Array(history.suffix(1800)),
+            stutterEvents: Array(stutterEvents.suffix(80)),
             governorDecision: governorDecision
         )
 
@@ -260,14 +284,6 @@ final class PerformanceSampler: ObservableObject {
         let processDetected = isXPlaneProcessRunning(processes: scannedProcesses)
         let simActive = processDetected || udpStatus.state == .active
 
-        let historyPoint = MetricHistoryPoint(
-            timestamp: now,
-            cpuTotalPercent: cpu.user + cpu.system,
-            swapUsedBytes: swapUsedBytes,
-            memoryPressure: memoryPressure
-        )
-        historyBuffer.append(historyPoint)
-        trimHistory(reference: now)
 
         let swapDelta5Min = computeSwapDelta(windowSeconds: 300, now: now)
         let swapRapidIncrease = computeSwapDelta(windowSeconds: 90, now: now) > Int64(256 * 1_024 * 1_024)
@@ -280,7 +296,21 @@ final class PerformanceSampler: ObservableObject {
 
         let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus, simActive: simActive, now: now)
 
-        let warningItems = buildWarnings(
+        let historyPoint = MetricHistoryPoint(
+            timestamp: now,
+            cpuTotalPercent: cpu.user + cpu.system,
+            swapUsedBytes: swapUsedBytes,
+            memoryPressure: memoryPressure,
+            diskReadMBps: diskRate.readMBps,
+            diskWriteMBps: diskRate.writeMBps,
+            thermalStateRawValue: thermal.rawValue,
+            governorTargetLOD: governorResult.smoothedLOD,
+            governorAckState: governorResult.ackState
+        )
+        historyBuffer.append(historyPoint)
+        trimHistory(reference: now)
+
+        var warningItems = buildWarnings(
             memoryPressure: memoryPressure,
             thermalState: thermal,
             swapRapidIncrease: swapRapidIncrease,
@@ -291,6 +321,10 @@ final class PerformanceSampler: ObservableObject {
             udpStatus: udpStatus
         )
 
+        if governorResult.ackState == .noAck {
+            warningItems.append("Governor bridge has no ACK from FlyWithLua. Use Connection Wizard > Test PING.")
+        }
+
         let culpritItems = buildCulprits(
             memoryPressure: memoryPressure,
             thermalState: thermal,
@@ -300,6 +334,27 @@ final class PerformanceSampler: ObservableObject {
             topCPUProcesses: scannedProcesses ?? topCPUProcesses,
             simTelemetry: telemetry
         )
+
+        if let stutterEvent = detectStutterEvent(
+            now: now,
+            cpuTotalPercent: cpu.user + cpu.system,
+            memoryPressure: memoryPressure,
+            compressedBytes: compressedBytes,
+            swapUsedBytes: swapUsedBytes,
+            diskReadMBps: diskRate.readMBps,
+            diskWriteMBps: diskRate.writeMBps,
+            thermalState: thermal,
+            telemetry: telemetry,
+            udpStatus: udpStatus,
+            rankedCulprits: culpritItems,
+            topCPU: Array((scannedProcesses ?? topCPUProcesses).prefix(5)),
+            topMemory: Array((scannedProcesses ?? topMemoryProcesses).prefix(5))
+        ) {
+            stutterBuffer.append(stutterEvent)
+            if stutterBuffer.count > 120 {
+                stutterBuffer.removeFirst(stutterBuffer.count - 120)
+            }
+        }
 
         Task { @MainActor in
             snapshot = PerformanceSnapshot(
@@ -348,6 +403,11 @@ final class PerformanceSampler: ObservableObject {
             governorLastSentLOD = governorResult.lastSentLOD
             governorCommandStatus = governorResult.commandStatus
             governorPauseReason = governorResult.pauseReason
+            governorAckState = governorResult.ackState
+            governorLastCommandText = governorResult.lastCommand
+            governorLastACKText = governorResult.lastACK
+            governorLastACKDate = governorResult.lastACKDate
+            stutterEvents = stutterBuffer
 
             alertFlags = AlertFlags(
                 memoryPressureRed: memoryPressure == .red,
@@ -373,6 +433,10 @@ final class PerformanceSampler: ObservableObject {
         activeAGLFeet: Double?,
         lastSentLOD: Double?,
         commandStatus: String,
+        ackState: GovernorAckState,
+        lastCommand: String?,
+        lastACK: String?,
+        lastACKDate: Date?,
         pauseReason: String?
     ) {
         func pausedResult(reason: String) -> (
@@ -384,12 +448,31 @@ final class PerformanceSampler: ObservableObject {
             activeAGLFeet: Double?,
             lastSentLOD: Double?,
             commandStatus: String,
+            ackState: GovernorAckState,
+            lastCommand: String?,
+            lastACK: String?,
+            lastACKDate: Date?,
             pauseReason: String?
         ) {
             _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
+            governorBridge.setPausedState()
             governorPreviouslyEnabled = false
             resetGovernorRuntimeState()
-            return (nil, "Governor: \(reason)", nil, nil, nil, nil, governorBridge.lastSentLOD, "Paused", reason)
+            return (
+                nil,
+                "Governor: \(reason)",
+                nil,
+                nil,
+                nil,
+                nil,
+                governorBridge.lastSentLOD,
+                GovernorAckState.paused.displayName,
+                .paused,
+                governorBridge.lastCommand,
+                governorBridge.lastAckMessage,
+                governorBridge.lastAckAt,
+                reason
+            )
         }
 
         guard governorConfig.enabled else {
@@ -397,8 +480,23 @@ final class PerformanceSampler: ObservableObject {
                 _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
                 governorPreviouslyEnabled = false
             }
+            governorBridge.setDisabledState()
             resetGovernorRuntimeState()
-            return (nil, "Governor: Disabled", nil, nil, nil, nil, governorBridge.lastSentLOD, "Disabled", nil)
+            return (
+                nil,
+                "Governor: Disabled",
+                nil,
+                nil,
+                nil,
+                nil,
+                governorBridge.lastSentLOD,
+                GovernorAckState.disabled.displayName,
+                .disabled,
+                governorBridge.lastCommand,
+                governorBridge.lastAckMessage,
+                governorBridge.lastAckAt,
+                nil
+            )
         }
 
         guard simActive else {
@@ -486,7 +584,7 @@ final class PerformanceSampler: ObservableObject {
             statusLine += " | AGL fallback: MSL heuristic"
         }
         if let bridgeError = sendResult.error {
-            statusLine += " | Bridge error: \(bridgeError)"
+            statusLine += " | Bridge: \(bridgeError)"
         }
 
         return (
@@ -498,6 +596,10 @@ final class PerformanceSampler: ObservableObject {
             aglFeet,
             governorBridge.lastSentLOD,
             sendResult.statusText,
+            sendResult.ackState,
+            governorBridge.lastCommand,
+            governorBridge.lastAckMessage,
+            governorBridge.lastAckAt,
             nil
         )
     }
@@ -520,15 +622,45 @@ final class PerformanceSampler: ObservableObject {
             governorBridge.sendTestLOD(lod: clampedLOD, host: host, port: port, now: now)
         }
 
+        governorLastSentLOD = clampedLOD
+        governorCommandStatus = result.statusText
+        governorAckState = result.ackState
+        governorLastCommandText = governorBridge.lastCommand
+        governorLastACKText = governorBridge.lastAckMessage
+        governorLastACKDate = governorBridge.lastAckAt
+
         if result.sent {
-            governorLastSentLOD = clampedLOD
-            governorCommandStatus = result.statusText
             return ActionOutcome(success: true, message: "Test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)) to \(host):\(port).")
         }
 
         let detail = result.error ?? "Unknown send failure."
-        governorCommandStatus = result.statusText
         return ActionOutcome(success: false, message: "Test command failed: \(detail)")
+    }
+
+    @MainActor
+    func sendGovernorPing() -> ActionOutcome {
+        let host = governorConfig.commandHost
+        let port = governorConfig.commandPort
+        let now = Date()
+
+        let result = queue.sync {
+            governorBridge.sendPing(host: host, port: port, now: now)
+        }
+
+        governorCommandStatus = result.statusText
+        governorAckState = result.ackState
+        governorLastCommandText = governorBridge.lastCommand
+        governorLastACKText = governorBridge.lastAckMessage
+        governorLastACKDate = governorBridge.lastAckAt
+
+        if result.sent {
+            if result.ackState == .ackOK {
+                return ActionOutcome(success: true, message: "PING succeeded. Received \(result.ackMessage ?? "ACK").")
+            }
+            return ActionOutcome(success: false, message: "PING sent but no ACK/PONG received.")
+        }
+
+        return ActionOutcome(success: false, message: result.error ?? "PING failed.")
     }
 
     private func isXPlaneProcessRunning(processes: [ProcessSample]?) -> Bool {
@@ -640,7 +772,7 @@ final class PerformanceSampler: ObservableObject {
     }
 
     private func trimHistory(reference: Date) {
-        let cutoff = reference.addingTimeInterval(-900)
+        let cutoff = reference.addingTimeInterval(-1800)
         if let firstValidIndex = historyBuffer.firstIndex(where: { $0.timestamp >= cutoff }) {
             if firstValidIndex > 0 {
                 historyBuffer.removeFirst(firstValidIndex)
@@ -747,6 +879,107 @@ final class PerformanceSampler: ObservableObject {
         }
 
         return Array(ranked.prefix(3))
+    }
+
+    private func detectStutterEvent(
+        now: Date,
+        cpuTotalPercent: Double,
+        memoryPressure: MemoryPressureLevel,
+        compressedBytes: UInt64,
+        swapUsedBytes: UInt64,
+        diskReadMBps: Double,
+        diskWriteMBps: Double,
+        thermalState: ProcessInfo.ThermalState,
+        telemetry: SimTelemetrySnapshot?,
+        udpStatus: XPlaneUDPStatus,
+        rankedCulprits: [String],
+        topCPU: [ProcessSample],
+        topMemory: [ProcessSample]
+    ) -> StutterEvent? {
+        var triggerReasons: [String] = []
+
+        if let frameTime = telemetry?.frameTimeMS,
+           frameTime >= stutterHeuristics.frameTimeSpikeMS {
+            triggerReasons.append("Frame-time spike")
+        }
+
+        if let fps = telemetry?.fps,
+           let previousFPS,
+           fps <= max(15, previousFPS - stutterHeuristics.fpsDropThreshold) {
+            triggerReasons.append("FPS drop")
+        }
+
+        if let previousCPU = previousCPUTotalPercent,
+           cpuTotalPercent - previousCPU >= stutterHeuristics.cpuSpikePercent {
+            triggerReasons.append("CPU spike")
+        }
+
+        if diskReadMBps + diskWriteMBps >= stutterHeuristics.diskSpikeMBps {
+            triggerReasons.append("Disk I/O spike")
+        }
+
+        if computeSwapDelta(windowSeconds: 90, now: now) >= Int64(stutterHeuristics.swapJumpBytes) {
+            triggerReasons.append("Swap jump")
+        }
+
+        if previousThermalState.rawValue < thermalState.rawValue,
+           thermalState == .serious || thermalState == .critical {
+            triggerReasons.append("Thermal escalation")
+        }
+
+        if memoryPressure == .red {
+            triggerReasons.append("Memory pressure red")
+        }
+
+        previousCPUTotalPercent = cpuTotalPercent
+        previousFrameTimeMS = telemetry?.frameTimeMS
+        previousFPS = telemetry?.fps
+        previousThermalState = thermalState
+
+        guard !triggerReasons.isEmpty else {
+            return nil
+        }
+
+        let freshness: Double
+        if let last = udpStatus.lastValidPacketDate {
+            freshness = max(now.timeIntervalSince(last), 0)
+        } else {
+            freshness = .infinity
+        }
+
+        return StutterEvent(
+            timestamp: now,
+            reason: triggerReasons.joined(separator: ", "),
+            rankedCulprits: rankedCulprits,
+            memoryPressure: memoryPressure,
+            swapUsedBytes: swapUsedBytes,
+            compressedMemoryBytes: compressedBytes,
+            diskReadMBps: diskReadMBps,
+            diskWriteMBps: diskWriteMBps,
+            thermalStateRaw: thermalStateDescription(thermalState),
+            telemetryPacketsPerSecond: udpStatus.packetsPerSecond,
+            telemetryFreshnessSeconds: freshness,
+            topCPUProcesses: topCPU,
+            topMemoryProcesses: topMemory
+        )
+    }
+
+    @MainActor
+    func memoryReliefSuggestions(maxCount: Int = 3) -> [ProcessSample] {
+        let shouldSuggest = snapshot.memoryPressure == .yellow || snapshot.memoryPressure == .red || snapshot.swapDelta5MinBytes > Int64(128 * 1_024 * 1_024)
+        guard shouldSuggest else { return [] }
+
+        return Array(
+            topMemoryProcesses
+                .filter { !$0.name.localizedCaseInsensitiveContains("X-Plane") && !$0.name.localizedCaseInsensitiveContains("Project Speed") }
+                .prefix(max(maxCount, 1))
+        )
+    }
+
+    @MainActor
+    func historyPoints(for duration: HistoryDurationOption) -> [MetricHistoryPoint] {
+        let cutoff = Date().addingTimeInterval(-duration.seconds)
+        return history.filter { $0.timestamp >= cutoff }
     }
 
     static func thermalStateDescription(_ state: ProcessInfo.ThermalState) -> String {

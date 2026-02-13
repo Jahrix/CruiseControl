@@ -49,6 +49,18 @@ local function clamp(value, min_value, max_value)
     return value
 end
 
+local function send_response(message, ip, port)
+    if not udp_enabled or udp == nil then
+        return
+    end
+    if ip == nil or port == nil then
+        return
+    end
+
+    local payload = tostring(message) .. "\n"
+    udp:sendto(payload, ip, port)
+end
+
 local function restore_original_lod()
     if original_lod ~= nil then
         if write_lod(original_lod) then
@@ -62,7 +74,7 @@ end
 local function apply_lod(value)
     local clamped = clamp(value, CLAMP_MIN, CLAMP_MAX)
     if not write_lod(clamped) then
-        return
+        return nil
     end
 
     if last_applied_lod == nil or math.abs(last_applied_lod - clamped) >= 0.01 then
@@ -71,6 +83,7 @@ local function apply_lod(value)
 
     last_applied_lod = clamped
     governor_enabled = true
+    return clamped
 end
 
 local function parse_set_lod(message)
@@ -91,28 +104,40 @@ local function parse_set_lod(message)
     return nil
 end
 
-local function handle_message(raw_message)
-    if raw_message == nil then return end
+local function handle_message(raw_message, ip, port)
+    if raw_message == nil then
+        return "ERR empty command"
+    end
 
     local message = string.gsub(raw_message, "[%c%s]+$", "")
-    if message == "" then return end
+    if message == "" then
+        return "ERR empty command"
+    end
+
+    if message == "PING" then
+        return "PONG"
+    end
 
     if message == "ENABLE" or message == "PROJECT_SPEED|ENABLE" then
         governor_enabled = true
-        return
+        return "ACK ENABLE"
     end
 
     if message == "DISABLE" or message == "PROJECT_SPEED|DISABLE" then
         restore_original_lod()
-        return
+        return "ACK DISABLE"
     end
 
     local lod_value = parse_set_lod(message)
-    if lod_value == nil then
-        return
+    if lod_value ~= nil then
+        local applied = apply_lod(lod_value)
+        if applied == nil then
+            return "ERR failed to apply LOD"
+        end
+        return string.format("ACK SET_LOD %.3f", applied)
     end
 
-    apply_lod(lod_value)
+    return "ERR unknown command"
 end
 
 local function poll_udp()
@@ -120,10 +145,11 @@ local function poll_udp()
         return
     end
 
-    local data, _ = udp:receivefrom()
+    local data, ip, port = udp:receivefrom()
     while data ~= nil do
-        handle_message(data)
-        data, _ = udp:receivefrom()
+        local response = handle_message(data, ip, port)
+        send_response(response, ip, port)
+        data, ip, port = udp:receivefrom()
     end
 end
 
@@ -163,12 +189,12 @@ local function poll_file_commands()
             return
         end
         file_sequence = seq
-        handle_message(message)
+        handle_message(message, nil, nil)
         return
     end
 
     -- Legacy/plain command without sequence.
-    handle_message(line)
+    handle_message(line, nil, nil)
 end
 
 if socket_ok then

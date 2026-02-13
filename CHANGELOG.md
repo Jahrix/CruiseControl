@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.1.2 - Memory Relief + ACK + Smart Scan
+
+### Added
+- Memory Pressure Relief panel with:
+  - pressure/swap/compressed memory visibility
+  - top memory process suggestions
+  - user-confirmed close selected apps action
+- FlyWithLua ACK handshake plumbing and UI:
+  - command/ACK tracking for `PING`, `ENABLE`, `DISABLE`, `SET_LOD`
+  - explicit governor ACK state (`Connected`, `No ACK`, `ACK OK`, paused/disabled)
+- Connection Wizard card with actionable checks:
+  - X-Plane detection
+  - UDP endpoint + packet rate status
+  - FlyWithLua handshake test (`PING`/`PONG`)
+- Stutter Detective:
+  - heuristic stutter event capture
+  - culprit ranking snapshots and what-to-fix context
+- Mini history features:
+  - ring-buffer history support up to 30 minutes
+  - lightweight sparkline charts for CPU/swap/disk/governor ACK
+  - selectable duration: `10m` / `20m` / `30m`
+- Per-airport governor profile model:
+  - ICAO keyed profile overrides
+  - JSON import/export support
+  - default example profiles (heavy hub / medium / GA field)
+- Smart Scan suite (safe scope):
+  - system junk (user-safe paths)
+  - trash bins
+  - large files (user-selected roots)
+  - optimization and optional privacy modules
+- Quarantine safety model:
+  - move selected files to app quarantine folder
+  - manifest JSON for restore
+  - restore + permanent delete actions
+- App maintenance service:
+  - show app in Finder
+  - install to `/Applications`
+  - GitHub Releases update check action
+
+### Changed
+- App version bumped to `1.1.2` (build `112`).
+- App delegate now applies combined runtime config from settings + v1.1.2 feature store.
+- Documentation refreshed for ACK protocol, wizard flow, and quarantine safety.
+
+### Fixed
+- `V112FeatureStore` now imports `Combine` for `ObservableObject`/`@Published` conformance.
+- Governor runtime status fields in sampler are now published so UI updates correctly.
+
 ## v1.1.1 - Automatic LOD Governor
 
 ### Added

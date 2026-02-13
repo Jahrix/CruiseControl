@@ -14,35 +14,23 @@ enum DashboardSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .overview:
-            return "Overview"
-        case .processes:
-            return "Top Processes"
-        case .simMode:
-            return "Sim Mode"
-        case .history:
-            return "History"
-        case .diagnostics:
-            return "Diagnostics"
-        case .settings:
-            return "Preferences"
+        case .overview: return "Overview"
+        case .processes: return "Top Processes"
+        case .simMode: return "Sim Mode"
+        case .history: return "History"
+        case .diagnostics: return "Diagnostics"
+        case .settings: return "Preferences"
         }
     }
 
     var icon: String {
         switch self {
-        case .overview:
-            return "speedometer"
-        case .processes:
-            return "list.bullet.rectangle.portrait"
-        case .simMode:
-            return "airplane"
-        case .history:
-            return "clock.arrow.circlepath"
-        case .diagnostics:
-            return "waveform.path.ecg"
-        case .settings:
-            return "gearshape"
+        case .overview: return "speedometer"
+        case .processes: return "list.bullet.rectangle.portrait"
+        case .simMode: return "airplane"
+        case .history: return "clock.arrow.circlepath"
+        case .diagnostics: return "waveform.path.ecg"
+        case .settings: return "gearshape"
         }
     }
 }
@@ -55,6 +43,7 @@ struct RunningAppChoice: Identifiable {
 struct MenuContentView: View {
     @EnvironmentObject private var sampler: PerformanceSampler
     @EnvironmentObject private var settings: SettingsStore
+    @EnvironmentObject private var featureStore: V112FeatureStore
 
     @State private var selectedSection: DashboardSection? = .overview
 
@@ -77,6 +66,30 @@ struct MenuContentView: View {
     @State private var showUDPSetupGuide: Bool = true
     @State private var now: Date = Date()
 
+    @State private var selectedReliefPIDs: Set<Int32> = []
+    @State private var confirmCloseSelectedApps = false
+
+    @State private var selectedAirportProfileICAO: String = ""
+    @State private var airportProfileName: String = ""
+    @State private var airportGroundMax: Double = 1500
+    @State private var airportCruiseMin: Double = 10000
+    @State private var airportTargetGround: Double = 1.4
+    @State private var airportTargetTransition: Double = 1.1
+    @State private var airportTargetCruise: Double = 0.95
+    @State private var airportClampMin: Double = 0.20
+    @State private var airportClampMax: Double = 3.00
+    @State private var airportImportJSONText: String = ""
+
+    @State private var smartScanIncludePrivacy = false
+    @State private var smartScanRoots: [URL] = []
+    @State private var smartScanSummary: SmartScanSummary?
+    @State private var selectedSmartScanItemIDs: Set<UUID> = []
+    @State private var confirmQuarantineSelection = false
+    @State private var confirmDeleteLatestQuarantine = false
+
+    @State private var updateCheckStatus: String?
+
+    private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -101,6 +114,10 @@ struct MenuContentView: View {
 
                         if let diagnosticsExportResult {
                             feedbackCard(title: "Diagnostics", text: diagnosticsExportResult)
+                        }
+
+                        if let updateCheckStatus {
+                            feedbackCard(title: "Update Check", text: updateCheckStatus)
                         }
 
                         if let lastActionReport {
@@ -129,12 +146,20 @@ struct MenuContentView: View {
             udpPortText = String(settings.xPlaneUDPPort)
             governorPortText = String(settings.governorCommandPort)
             governorHostText = settings.governorCommandHost
+            syncAirportProfileEditorSelection()
+            airportImportJSONText = ""
         }
         .onReceive(clockTimer) { newDate in
             now = newDate
         }
         .onChange(of: settings.selectedProfile) { _ in
             refreshProfileLists()
+        }
+        .onChange(of: selectedAirportProfileICAO) { _ in
+            loadAirportProfileEditor()
+        }
+        .onChange(of: featureStore.airportProfiles) { _ in
+            syncAirportProfileEditorSelection()
         }
         .alert("Force Quit Process", isPresented: forceQuitBinding) {
             Button("Cancel", role: .cancel) {
@@ -147,6 +172,31 @@ struct MenuContentView: View {
             }
         } message: {
             Text(forceQuitMessage)
+        }
+        .confirmationDialog("Close selected apps?", isPresented: $confirmCloseSelectedApps, titleVisibility: .visible) {
+            Button("Close Selected", role: .destructive) {
+                closeSelectedReliefApps()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This sends graceful terminate to selected apps. Unsaved data may be lost if apps ignore state restoration.")
+        }
+        .confirmationDialog("Quarantine selected files?", isPresented: $confirmQuarantineSelection, titleVisibility: .visible) {
+            Button("Quarantine", role: .destructive) {
+                quarantineSelectedScanItems()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Files are moved to Project Speed quarantine with manifest metadata for restore.")
+        }
+        .confirmationDialog("Permanently delete latest quarantine?", isPresented: $confirmDeleteLatestQuarantine, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                let outcome = smartScanService.permanentlyDeleteLatestQuarantine()
+                processActionResult = outcome.message
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone.")
         }
     }
 
@@ -253,6 +303,46 @@ struct MenuContentView: View {
                 }
             }
 
+            dashboardCard(title: "Connection Wizard") {
+                VStack(alignment: .leading, spacing: 8) {
+                    wizardStep(title: "1) X-Plane process", good: sampler.isSimActive, detail: sampler.isSimActive ? "Detected" : "Not detected")
+                    wizardStep(
+                        title: "2) UDP telemetry",
+                        good: sampler.snapshot.udpStatus.state == .active,
+                        detail: "\(sampler.snapshot.udpStatus.listenHost):\(String(sampler.snapshot.udpStatus.listenPort))  -  \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)) pkt/s"
+                    )
+                    wizardStep(
+                        title: "3) FlyWithLua ACK",
+                        good: sampler.governorAckState == .ackOK,
+                        detail: "\(sampler.governorAckState.displayName)\(sampler.governorLastACKText.map { "  -  \($0)" } ?? "")"
+                    )
+
+                    HStack {
+                        Button("Copy 127.0.0.1:\(String(settings.xPlaneUDPPort))") {
+                            copyToClipboard("127.0.0.1:\(String(settings.xPlaneUDPPort))")
+                            processActionResult = "Copied telemetry endpoint."
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Copy Lua listen port") {
+                            copyToClipboard(String(settings.governorCommandPort))
+                            processActionResult = "Copied Lua listen port."
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Test PING") {
+                            let outcome = sampler.sendGovernorPing()
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+
+                    Text("Install Lua script at X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             dashboardCard(title: "X-Plane UDP Setup") {
                 DisclosureGroup(isExpanded: $showUDPSetupGuide) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -268,8 +358,7 @@ struct MenuContentView: View {
                             Spacer()
                             Button("Copy setup line") {
                                 let line = "127.0.0.1:\(String(settings.xPlaneUDPPort))"
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(line, forType: .string)
+                                copyToClipboard(line)
                                 diagnosticsExportResult = "Copied \(line)"
                             }
                             .buttonStyle(.bordered)
@@ -293,10 +382,53 @@ struct MenuContentView: View {
             LazyVGrid(columns: columns, spacing: 12) {
                 statTile("CPU Total", percentString(sampler.snapshot.cpuTotalPercent), color: .blue)
                 statTile("Memory", "\(sampler.snapshot.memoryPressure.displayName) \(sampler.snapshot.memoryPressureTrend.icon)", color: color(for: sampler.snapshot.memoryPressure))
-                statTile("Swap Δ 5m", deltaByteString(sampler.snapshot.swapDelta5MinBytes), color: .orange)
+                statTile("Swap delta 5m", deltaByteString(sampler.snapshot.swapDelta5MinBytes), color: .orange)
                 statTile("Disk Read", String(format: "%.1f MB/s", sampler.snapshot.diskReadMBps), color: .teal)
                 statTile("Disk Write", String(format: "%.1f MB/s", sampler.snapshot.diskWriteMBps), color: .teal)
                 statTile("Thermal", PerformanceSampler.thermalStateDescription(sampler.snapshot.thermalState), color: (sampler.snapshot.thermalState == .serious || sampler.snapshot.thermalState == .critical) ? .red : .green)
+            }
+
+            dashboardCard(title: "Memory Pressure Relief") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Pressure: \(sampler.snapshot.memoryPressure.displayName) \(sampler.snapshot.memoryPressureTrend.icon)")
+                    Text("Swap: \(byteCountString(sampler.snapshot.swapUsedBytes))  -  delta5m: \(deltaByteString(sampler.snapshot.swapDelta5MinBytes))")
+                    Text("Compressed: \(byteCountString(sampler.snapshot.compressedMemoryBytes))")
+                        .foregroundStyle(.secondary)
+
+                    let suggestions = sampler.memoryReliefSuggestions(maxCount: 3)
+                    if suggestions.isEmpty {
+                        Text("No immediate memory-relief suggestions.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Relief suggestions")
+                            .font(.headline)
+                        ForEach(suggestions) { process in
+                            Toggle(
+                                "\(process.name) (\(byteCountString(process.memoryBytes)))",
+                                isOn: reliefSelectionBinding(pid: process.pid)
+                            )
+                            .toggleStyle(.checkbox)
+                        }
+
+                        HStack {
+                            Button("Close selected apps") {
+                                confirmCloseSelectedApps = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(selectedReliefPIDs.isEmpty)
+
+                            Button("Run limited purge attempt") {
+                                runLimitedPurgeAttempt()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        Text("Limited purge only clears Project Speed local caches and pauses internal work briefly. It does not purge protected system caches.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             dashboardCard(title: "Warnings") {
@@ -356,7 +488,7 @@ struct MenuContentView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        Text("CPU \(percentString(process.cpuPercent)) · RAM \(byteCountString(process.memoryBytes))")
+                        Text("CPU \(percentString(process.cpuPercent))  -  RAM \(byteCountString(process.memoryBytes))")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
@@ -400,9 +532,17 @@ struct MenuContentView: View {
                         metricPill(label: "Last Sent", value: sampler.governorLastSentLOD.map { String(format: "%.2f", $0) } ?? "-")
                     }
 
+                    Text("ACK state: \(sampler.governorAckState.displayName)")
+                        .font(.subheadline)
+                        .foregroundStyle(sampler.governorAckState == .ackOK ? .green : .orange)
+                    if let lastACK = sampler.governorLastACKText {
+                        Text("Last ACK: \(lastACK)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("Command status: \(sampler.governorCommandStatus)")
                         .font(.subheadline)
-                        .foregroundStyle(sampler.governorCommandStatus.hasPrefix("Connected") ? .green : .orange)
+                        .foregroundStyle(sampler.governorCommandStatus.hasPrefix("Connected") || sampler.governorAckState == .ackOK ? .green : .orange)
 
                     if let pauseReason = sampler.governorPauseReason {
                         Text(pauseReason)
@@ -412,18 +552,8 @@ struct MenuContentView: View {
 
                     Text("Altitude thresholds (feet AGL)")
                         .font(.headline)
-                    sliderRow(
-                        label: "GROUND upper (ft)",
-                        value: $settings.governorGroundMaxAGLFeet,
-                        range: 500...5000,
-                        step: 100
-                    )
-                    sliderRow(
-                        label: "CRUISE lower (ft)",
-                        value: $settings.governorCruiseMinAGLFeet,
-                        range: 6000...45000,
-                        step: 250
-                    )
+                    sliderRow(label: "GROUND upper (ft)", value: $settings.governorGroundMaxAGLFeet, range: 500...5000, step: 100)
+                    sliderRow(label: "CRUISE lower (ft)", value: $settings.governorCruiseMinAGLFeet, range: 6000...45000, step: 250)
 
                     Text("Per-tier LOD targets")
                         .font(.headline)
@@ -456,6 +586,12 @@ struct MenuContentView: View {
                             applyGovernorBridgeEndpoint()
                         }
                         .buttonStyle(.bordered)
+
+                        Button("Test PING") {
+                            let outcome = sampler.sendGovernorPing()
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     HStack {
@@ -480,17 +616,89 @@ struct MenuContentView: View {
                 }
             }
 
+            dashboardCard(title: "Per-Airport Governor Profiles") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Active ICAO source: \(resolvedActiveICAO)")
+                        .font(.subheadline)
+                    HStack {
+                        Text("Manual ICAO")
+                        TextField("e.g. KATL", text: $featureStore.manualAirportICAO)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                    }
+
+                    if !featureStore.airportProfiles.isEmpty {
+                        Picker("Profile", selection: $selectedAirportProfileICAO) {
+                            ForEach(featureStore.airportProfiles) { profile in
+                                Text("\(profile.icao) - \(profile.name)").tag(profile.icao)
+                            }
+                        }
+                    }
+
+                    HStack {
+                        TextField("ICAO", text: $selectedAirportProfileICAO)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                        TextField("Profile name", text: $airportProfileName)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 180)
+                    }
+
+                    sliderRow(label: "GROUND upper (ft)", value: $airportGroundMax, range: 500...5000, step: 100)
+                    sliderRow(label: "CRUISE lower (ft)", value: $airportCruiseMin, range: 6000...45000, step: 250)
+                    sliderRow(label: "GROUND LOD", value: $airportTargetGround, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "TRANSITION LOD", value: $airportTargetTransition, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "CRUISE LOD", value: $airportTargetCruise, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "Min clamp", value: $airportClampMin, range: 0.20...2.00, step: 0.05)
+                    sliderRow(label: "Max clamp", value: $airportClampMax, range: 0.50...3.00, step: 0.05)
+
+                    HStack {
+                        Button("Save / Update Profile") {
+                            saveAirportProfileFromEditor()
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Delete") {
+                            let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
+                            featureStore.deleteAirportProfile(icao: normalized)
+                            processActionResult = "Deleted airport profile \(normalized)."
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    HStack {
+                        Button("Export Profiles JSON") {
+                            let outcome = featureStore.exportAirportProfiles()
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Import Profiles JSON") {
+                            let outcome = featureStore.importAirportProfiles(from: airportImportJSONText)
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    TextEditor(text: $airportImportJSONText)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .frame(minHeight: 120)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+
             dashboardCard(title: "Setup FlyWithLua Companion") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Install to: X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua")
                     Text("Companion listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
-                    Text("In FlyWithLua log, confirm: [ProjectSpeed_Governor] Listening on ...")
-                    Text("Troubleshooting: if LuaSocket is missing, Project Speed writes fallback commands to /tmp/ProjectSpeed_lod_target.txt.")
-                    Text("If not connected, verify UDP host/port and check FlyWithLua log for fallback mode.")
+                    Text("ACK protocol: PING/PONG, ACK ENABLE, ACK DISABLE, ACK SET_LOD <value>, ERR <message>.")
+                    Text("If LuaSocket is missing, Project Speed writes fallback commands to /tmp/ProjectSpeed_lod_target.txt.")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             }
+
             dashboardCard(title: "Sim Mode Profiles") {
                 VStack(alignment: .leading, spacing: 12) {
                     Picker("Profile", selection: $settings.selectedProfile) {
@@ -601,19 +809,85 @@ struct MenuContentView: View {
     }
 
     private var historySection: some View {
-        dashboardCard(title: "History (Last 15 Minutes)") {
-            let recent = Array(sampler.history.suffix(120).reversed())
-            if recent.isEmpty {
-                Text("No history yet.")
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(recent) { point in
-                        Text("\(timeOnly(point.timestamp)) · CPU \(percentString(point.cpuTotalPercent)) · Swap \(byteCountString(point.swapUsedBytes)) · \(point.memoryPressure.displayName)")
-                            .font(.caption)
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Mini History") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Duration", selection: $featureStore.historyDuration) {
+                        ForEach(HistoryDurationOption.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    let points = sampler.historyPoints(for: featureStore.historyDuration)
+
+                    historyChartRow(
+                        title: "CPU %",
+                        values: points.map { $0.cpuTotalPercent },
+                        color: .blue
+                    )
+
+                    historyChartRow(
+                        title: "Swap Used",
+                        values: points.map { Double($0.swapUsedBytes) / 1_073_741_824.0 },
+                        color: .orange,
+                        suffix: "GB"
+                    )
+
+                    historyChartRow(
+                        title: "Disk Read",
+                        values: points.map { $0.diskReadMBps },
+                        color: .teal,
+                        suffix: "MB/s"
+                    )
+
+                    historyChartRow(
+                        title: "Disk Write",
+                        values: points.map { $0.diskWriteMBps },
+                        color: .cyan,
+                        suffix: "MB/s"
+                    )
+
+                    historyChartRow(
+                        title: "Governor ACK",
+                        values: points.map { $0.governorAckState.score },
+                        color: .green
+                    )
+                }
+            }
+
+            dashboardCard(title: "Recent Samples") {
+                let points = Array(sampler.historyPoints(for: featureStore.historyDuration).suffix(50).reversed())
+                if points.isEmpty {
+                    Text("No history yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(points) { point in
+                            Text("\(timeOnly(point.timestamp))  -  CPU \(percentString(point.cpuTotalPercent))  -  Swap \(byteCountString(point.swapUsedBytes))  -  \(point.memoryPressure.displayName)")
+                                .font(.caption)
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private func historyChartRow(title: String, values: [Double], color: Color, suffix: String = "") -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                    .font(.subheadline)
+                Spacer()
+                if let last = values.last {
+                    Text(suffix.isEmpty ? String(format: "%.2f", last) : String(format: "%.2f %@", last, suffix))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            SparklineView(values: values, color: color)
+                .frame(height: 36)
         }
     }
 
@@ -627,20 +901,132 @@ struct MenuContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Text("Snapshot includes metrics, warnings, top processes, recent history, UDP state, and governor policy status.")
+                    Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and governor ACK status.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            dashboardCard(title: "FlyWithLua Governor Bridge") {
+            dashboardCard(title: "Stutter Detective") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Install Scripts/ProjectSpeed_Governor.lua in your X-Plane FlyWithLua Scripts folder.")
-                    Text("The mac app sends UDP commands to \(settings.governorCommandHost):\(settings.governorCommandPort).")
-                    Text("The script applies LOD bias with bounds checks and restores original value when disabled.")
+                    Text("Heuristics")
+                        .font(.headline)
+                    sliderRow(label: "Frame-time spike (ms)", value: Binding(
+                        get: { featureStore.stutterHeuristics.frameTimeSpikeMS },
+                        set: { featureStore.stutterHeuristics.frameTimeSpikeMS = $0 }
+                    ), range: 20...100, step: 1)
+                    sliderRow(label: "FPS drop threshold", value: Binding(
+                        get: { featureStore.stutterHeuristics.fpsDropThreshold },
+                        set: { featureStore.stutterHeuristics.fpsDropThreshold = $0 }
+                    ), range: 5...40, step: 1)
+                    sliderRow(label: "CPU spike %", value: Binding(
+                        get: { featureStore.stutterHeuristics.cpuSpikePercent },
+                        set: { featureStore.stutterHeuristics.cpuSpikePercent = $0 }
+                    ), range: 5...60, step: 1)
+                    sliderRow(label: "Disk spike MB/s", value: Binding(
+                        get: { featureStore.stutterHeuristics.diskSpikeMBps },
+                        set: { featureStore.stutterHeuristics.diskSpikeMBps = $0 }
+                    ), range: 40...400, step: 5)
+
+                    if sampler.stutterEvents.isEmpty {
+                        Text("No stutter events detected yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(sampler.stutterEvents.suffix(8).reversed())) { event in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(timeOnly(event.timestamp))  -  \(event.reason)")
+                                    .font(.subheadline)
+                                Text("Top culprits: \(event.rankedCulprits.joined(separator: " > "))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            }
+
+            dashboardCard(title: "Smart Scan") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Include privacy data scan (user profile only)", isOn: $smartScanIncludePrivacy)
+                    Toggle("Advanced mode (allow quarantine outside safe defaults)", isOn: $featureStore.advancedModeEnabled)
+
+                    HStack {
+                        Button("Pick Large Files Folder") {
+                            pickLargeFileFolder()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Run Smart Scan") {
+                            runSmartScan()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+
+                    if !smartScanRoots.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(smartScanRoots, id: \.path) { root in
+                                Text("Large file scope: \(root.path)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    if let summary = smartScanSummary {
+                        Text("Found \(summary.items.count) items, total \(byteCountString(summary.totalBytes)).")
+                            .font(.subheadline)
+
+                        ForEach(summary.items.prefix(40)) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Toggle(
+                                    "[\(item.module.rawValue)] \(item.path)",
+                                    isOn: smartScanSelectionBinding(itemID: item.id)
+                                )
+                                .toggleStyle(.checkbox)
+
+                                Text("\(item.note)  -  \(byteCountString(item.sizeBytes))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                HStack {
+                                    if !item.path.hasPrefix("pid:") {
+                                        Button("Reveal in Finder") {
+                                            smartScanService.revealInFinder(path: item.path)
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+
+                        HStack {
+                            Button("Quarantine Selected") {
+                                confirmQuarantineSelection = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(selectedSmartScanItems.isEmpty)
+
+                            Button("Restore Latest Quarantine") {
+                                let outcome = smartScanService.restoreLatestQuarantine()
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Permanently Delete Latest Quarantine") {
+                                confirmDeleteLatestQuarantine = true
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+
+                            Button("Open Trash in Finder") {
+                                smartScanService.openTrashInFinder()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
             }
         }
     }
@@ -664,6 +1050,7 @@ struct MenuContentView: View {
 
                 Toggle("Listen for X-Plane UDP", isOn: $settings.xPlaneUDPListeningEnabled)
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
+                Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
 
                 HStack {
                     Text("X-Plane UDP Port")
@@ -676,11 +1063,41 @@ struct MenuContentView: View {
                     .buttonStyle(.bordered)
                 }
 
+                HStack {
+                    Button("Show App in Finder") {
+                        let outcome = AppMaintenanceService.showAppInFinder()
+                        processActionResult = outcome.message
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Install to /Applications") {
+                        let outcome = AppMaintenanceService.installToApplications()
+                        processActionResult = outcome.message
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Check for Updates...") {
+                        Task {
+                            let current = AppMaintenanceService.currentVersionString()
+                            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
+                            await MainActor.run {
+                                updateCheckStatus = outcome.message
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Open Releases") {
+                        AppMaintenanceService.openReleasesPage()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 Text("UDP state: \(sampler.snapshot.udpStatus.state.displayName)")
                 Text("Last updated: \(lastUpdatedText)")
                     .foregroundStyle(isStale ? .orange : .secondary)
 
-                Text("Project Speed performs monitoring and user-approved actions only. It does not control scheduler internals, GPU clocks, or protected kernel paths.")
+                Text("Project Speed performs monitoring and user-approved actions only. It does not control scheduler internals, GPU clocks, kernel paths, or private macOS internals.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -708,6 +1125,21 @@ struct MenuContentView: View {
         dashboardCard(title: title) {
             Text(text)
                 .font(.subheadline)
+        }
+    }
+
+    private func wizardStep(title: String, good: Bool, detail: String) -> some View {
+        HStack {
+            Image(systemName: good ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(good ? .green : .orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
         }
     }
 
@@ -817,6 +1249,22 @@ struct MenuContentView: View {
             return ""
         }
         return "Force quit \(process.name) (PID \(process.pid))? Unsaved data can be lost."
+    }
+
+    private var resolvedActiveICAO: String {
+        if let telemetryICAO = sampler.snapshot.xplaneTelemetry?.nearestAirportICAO,
+           !telemetryICAO.isEmpty {
+            return telemetryICAO
+        }
+
+        let manual = AirportGovernorProfile.normalizeICAO(featureStore.manualAirportICAO)
+        return manual.isEmpty ? "N/A" : "\(manual) (manual)"
+    }
+
+    private var selectedSmartScanItems: [SmartScanItem] {
+        guard let summary = smartScanSummary else { return [] }
+        let idSet = selectedSmartScanItemIDs
+        return summary.items.filter { idSet.contains($0.id) }
     }
 
     private func runProcessAction(process: ProcessSample, force: Bool) {
@@ -950,5 +1398,208 @@ struct MenuContentView: View {
             return "CPU"
         }
         return "Balanced"
+    }
+
+    private func reliefSelectionBinding(pid: Int32) -> Binding<Bool> {
+        Binding(
+            get: { selectedReliefPIDs.contains(pid) },
+            set: { isSelected in
+                if isSelected {
+                    selectedReliefPIDs.insert(pid)
+                } else {
+                    selectedReliefPIDs.remove(pid)
+                }
+            }
+        )
+    }
+
+    private func closeSelectedReliefApps() {
+        let targets = sampler.topMemoryProcesses.filter { selectedReliefPIDs.contains($0.pid) }
+        guard !targets.isEmpty else {
+            processActionResult = "No selected memory-relief targets."
+            return
+        }
+
+        var lines: [String] = []
+        for target in targets {
+            let outcome = settings.terminateProcess(pid: target.pid, force: false)
+            lines.append("\(target.name): \(outcome.message)")
+        }
+
+        selectedReliefPIDs.removeAll()
+        refreshRunningApps()
+        processActionResult = lines.joined(separator: "\n")
+    }
+
+    private func runLimitedPurgeAttempt() {
+        guard featureStore.purgeAttemptEnabled else {
+            processActionResult = "Enable optional purge attempt in Preferences first."
+            return
+        }
+
+        let fm = FileManager.default
+        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        let cacheRoot = base.appendingPathComponent("Project Speed/Cache", isDirectory: true)
+
+        do {
+            if fm.fileExists(atPath: cacheRoot.path) {
+                let children = try fm.contentsOfDirectory(at: cacheRoot, includingPropertiesForKeys: nil)
+                for child in children {
+                    try? fm.removeItem(at: child)
+                }
+            }
+            processActionResult = "Limited purge completed: cleared Project Speed local cache only."
+        } catch {
+            processActionResult = "Limited purge attempt failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func syncAirportProfileEditorSelection() {
+        if featureStore.airportProfiles.isEmpty {
+            selectedAirportProfileICAO = ""
+            airportProfileName = ""
+            return
+        }
+
+        if selectedAirportProfileICAO.isEmpty || !featureStore.airportProfiles.contains(where: { $0.icao == selectedAirportProfileICAO }) {
+            selectedAirportProfileICAO = featureStore.airportProfiles[0].icao
+        }
+
+        loadAirportProfileEditor()
+    }
+
+    private func loadAirportProfileEditor() {
+        let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
+        guard let profile = featureStore.airportProfiles.first(where: { $0.icao == normalized }) else {
+            return
+        }
+
+        selectedAirportProfileICAO = profile.icao
+        airportProfileName = profile.name
+        airportGroundMax = profile.groundMaxAGLFeet
+        airportCruiseMin = profile.cruiseMinAGLFeet
+        airportTargetGround = profile.targetLODGround
+        airportTargetTransition = profile.targetLODTransition
+        airportTargetCruise = profile.targetLODCruise
+        airportClampMin = profile.clampMinLOD
+        airportClampMax = profile.clampMaxLOD
+    }
+
+    private func saveAirportProfileFromEditor() {
+        let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
+        guard normalized.count >= 3 else {
+            processActionResult = "ICAO must be at least 3 characters."
+            return
+        }
+
+        let profile = AirportGovernorProfile(
+            icao: normalized,
+            name: airportProfileName.isEmpty ? "Custom" : airportProfileName,
+            groundMaxAGLFeet: max(500, airportGroundMax),
+            cruiseMinAGLFeet: max(airportCruiseMin, airportGroundMax + 200),
+            targetLODGround: airportTargetGround,
+            targetLODTransition: airportTargetTransition,
+            targetLODCruise: airportTargetCruise,
+            clampMinLOD: min(airportClampMin, airportClampMax),
+            clampMaxLOD: max(airportClampMin, airportClampMax)
+        )
+
+        featureStore.upsertAirportProfile(profile)
+        selectedAirportProfileICAO = normalized
+        processActionResult = "Saved airport profile \(normalized)."
+    }
+
+    private func pickLargeFileFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Select"
+
+        if panel.runModal() == .OK {
+            smartScanRoots = panel.urls
+        }
+    }
+
+    private func runSmartScan() {
+        let options = SmartScanService.ScanOptions(
+            includePrivacy: smartScanIncludePrivacy,
+            selectedLargeFileRoots: smartScanRoots,
+            topLargeFilesCount: 25
+        )
+
+        smartScanSummary = smartScanService.runSmartScan(options: options, topCPUProcesses: sampler.topCPUProcesses)
+        selectedSmartScanItemIDs.removeAll()
+
+        if let summary = smartScanSummary {
+            processActionResult = "Smart Scan complete: \(summary.items.count) items found, total \(byteCountString(summary.totalBytes))."
+        }
+    }
+
+    private func smartScanSelectionBinding(itemID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { selectedSmartScanItemIDs.contains(itemID) },
+            set: { selected in
+                if selected {
+                    selectedSmartScanItemIDs.insert(itemID)
+                } else {
+                    selectedSmartScanItemIDs.remove(itemID)
+                }
+            }
+        )
+    }
+
+    private func quarantineSelectedScanItems() {
+        let outcome = smartScanService.quarantine(
+            items: selectedSmartScanItems,
+            advancedModeEnabled: featureStore.advancedModeEnabled
+        )
+        processActionResult = outcome.message
+    }
+
+    private func copyToClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+private struct SparklineView: View {
+    let values: [Double]
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let normalized = normalizedPoints(width: geo.size.width, height: geo.size.height)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+
+                Path { path in
+                    guard normalized.count > 1 else { return }
+                    path.move(to: normalized[0])
+                    for point in normalized.dropFirst() {
+                        path.addLine(to: point)
+                    }
+                }
+                .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            }
+        }
+    }
+
+    private func normalizedPoints(width: CGFloat, height: CGFloat) -> [CGPoint] {
+        guard values.count > 1 else { return [] }
+
+        let minValue = values.min() ?? 0
+        let maxValue = values.max() ?? 1
+        let span = max(maxValue - minValue, 0.0001)
+
+        return values.enumerated().map { index, value in
+            let x = CGFloat(index) / CGFloat(max(values.count - 1, 1)) * max(width, 1)
+            let yRatio = (value - minValue) / span
+            let y = max(height, 1) - CGFloat(yRatio) * max(height, 1)
+            return CGPoint(x: x, y: y)
+        }
     }
 }

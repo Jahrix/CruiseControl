@@ -9,6 +9,7 @@ struct ProjectSpeedApp: App {
             MenuContentView()
                 .environmentObject(appDelegate.sampler)
                 .environmentObject(appDelegate.settingsStore)
+                .environmentObject(appDelegate.featureStore)
                 .frame(minWidth: 1120, minHeight: 760)
         }
 
@@ -23,6 +24,22 @@ struct ProjectSpeedApp: App {
             }
             .padding(20)
             .frame(width: 440)
+        }
+
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    appDelegate.checkForUpdatesFromMenu()
+                }
+
+                Button("Show App in Finder") {
+                    _ = AppMaintenanceService.showAppInFinder()
+                }
+
+                Button("Install to /Applications") {
+                    _ = AppMaintenanceService.installToApplications()
+                }
+            }
         }
     }
 }

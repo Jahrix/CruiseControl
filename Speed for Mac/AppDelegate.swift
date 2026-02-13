@@ -6,6 +6,7 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let settingsStore = SettingsStore()
+    let featureStore = V112FeatureStore()
     lazy var sampler = PerformanceSampler()
 
     private var cancellables: Set<AnyCancellable> = []
@@ -38,13 +39,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             .store(in: &cancellables)
 
-        settingsStore.objectWillChange
-            .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                sampler.configureGovernor(config: settingsStore.governorConfig)
-            }
-            .store(in: &cancellables)
+        Publishers.Merge(
+            settingsStore.objectWillChange.map { _ in () },
+            featureStore.objectWillChange.map { _ in () }
+        )
+        .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
+        .sink { [weak self] _ in
+            self?.applyRuntimeConfigs()
+        }
+        .store(in: &cancellables)
 
         sampler.$isSimActive
             .receive(on: RunLoop.main)
@@ -68,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         sampler.configureSampling(interval: settingsStore.samplingInterval.seconds, alpha: settingsStore.smoothingAlpha)
         sampler.configureXPlaneUDP(enabled: settingsStore.xPlaneUDPListeningEnabled, port: settingsStore.xPlaneUDPPort)
-        sampler.configureGovernor(config: settingsStore.governorConfig)
+        applyRuntimeConfigs()
         sampler.start()
     }
 
@@ -89,6 +92,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         default:
             focusMainWindow()
         }
+    }
+
+    func checkForUpdatesFromMenu() {
+        Task {
+            let current = AppMaintenanceService.currentVersionString()
+            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
+
+            let alert = NSAlert()
+            alert.messageText = "Project Speed Update Check"
+            alert.informativeText = outcome.message
+            if outcome.releaseURL != nil {
+                alert.addButton(withTitle: "Open Releases")
+                alert.addButton(withTitle: "OK")
+            } else {
+                alert.addButton(withTitle: "OK")
+            }
+
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn, let url = outcome.releaseURL {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    private func applyRuntimeConfigs() {
+        let baseConfig = settingsStore.governorConfig
+        let telemetryICAO = sampler.snapshot.xplaneTelemetry?.nearestAirportICAO
+        let effectiveConfig = featureStore.effectiveGovernorConfig(base: baseConfig, telemetryICAO: telemetryICAO)
+        sampler.configureGovernor(config: effectiveConfig)
+        sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
     }
 
     private func focusMainWindow() {

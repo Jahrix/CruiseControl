@@ -299,6 +299,7 @@ final class XPlaneUDPReceiver {
             frameTimeMS: frameTime,
             altitudeAGLFeet: altitude.aglFeet,
             altitudeMSLFeet: altitude.mslFeet,
+            nearestAirportICAO: nil,
             lastPacketDate: now
         )
 

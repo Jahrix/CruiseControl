@@ -101,6 +101,7 @@ struct SimTelemetrySnapshot: Codable {
     var frameTimeMS: Double?
     var altitudeAGLFeet: Double?
     var altitudeMSLFeet: Double?
+    var nearestAirportICAO: String?
     var lastPacketDate: Date?
 }
 
@@ -166,6 +167,11 @@ struct MetricHistoryPoint: Identifiable, Codable {
     let cpuTotalPercent: Double
     let swapUsedBytes: UInt64
     let memoryPressure: MemoryPressureLevel
+    let diskReadMBps: Double
+    let diskWriteMBps: Double
+    let thermalStateRawValue: Int
+    let governorTargetLOD: Double?
+    let governorAckState: GovernorAckState
 
     var id: Date { timestamp }
 }
