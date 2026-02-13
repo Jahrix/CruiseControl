@@ -22,6 +22,30 @@ private struct GitHubReleaseFetch {
 }
 
 enum AppMaintenanceService {
+    private static var githubOwner: String {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "CCGitHubOwner") as? String,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+        return "Jahrix"
+    }
+
+    private static var githubRepo: String {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "CCGitHubRepo") as? String,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+        return "Speed-for-Mac"
+    }
+
+    private static var githubReleasesPageURL: URL? {
+        URL(string: "https://github.com/\(githubOwner)/\(githubRepo)/releases")
+    }
+
+    private static var githubLatestReleaseAPIURL: URL? {
+        URL(string: "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases/latest")
+    }
+
     static func showAppInFinder() -> ActionOutcome {
         let url = Bundle.main.bundleURL
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -79,7 +103,7 @@ enum AppMaintenanceService {
     }
 
     static func openReleasesPage() {
-        guard let url = URL(string: "https://github.com/Jahrix/Speed-for-Mac/releases") else { return }
+        guard let url = githubReleasesPageURL else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -201,8 +225,8 @@ enum AppMaintenanceService {
     }
 
     private static func fetchGitHubReleaseInfo(currentVersion: String) async -> GitHubReleaseFetch {
-        guard let url = URL(string: "https://api.github.com/repos/Jahrix/Speed-for-Mac/releases/latest") else {
-            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Invalid releases URL.", latestVersion: nil, releaseURL: nil))
+        guard let url = githubLatestReleaseAPIURL else {
+            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Invalid releases URL configuration.", latestVersion: nil, releaseURL: githubReleasesPageURL))
         }
 
         var request = URLRequest(url: url)
@@ -211,8 +235,47 @@ enum AppMaintenanceService {
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1).", latestVersion: nil, releaseURL: nil))
+            guard let http = response as? HTTPURLResponse else {
+                return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: invalid server response.", latestVersion: nil, releaseURL: githubReleasesPageURL))
+            }
+
+            if !(200...299).contains(http.statusCode) {
+                let statusCode = http.statusCode
+                if statusCode == 404 {
+                    return GitHubReleaseFetch(
+                        info: nil,
+                        outcome: UpdateCheckOutcome(
+                            success: false,
+                            message: "No GitHub release is published yet for \(githubOwner)/\(githubRepo). Publish your first release to enable in-app updates.",
+                            latestVersion: nil,
+                            releaseURL: githubReleasesPageURL
+                        )
+                    )
+                }
+
+                if statusCode == 403,
+                   let remaining = http.value(forHTTPHeaderField: "X-RateLimit-Remaining"),
+                   remaining == "0" {
+                    return GitHubReleaseFetch(
+                        info: nil,
+                        outcome: UpdateCheckOutcome(
+                            success: false,
+                            message: "GitHub API rate limit reached. Try again later or configure Sparkle.",
+                            latestVersion: nil,
+                            releaseURL: githubReleasesPageURL
+                        )
+                    )
+                }
+
+                return GitHubReleaseFetch(
+                    info: nil,
+                    outcome: UpdateCheckOutcome(
+                        success: false,
+                        message: "Update check failed: HTTP \(statusCode).",
+                        latestVersion: nil,
+                        releaseURL: githubReleasesPageURL
+                    )
+                )
             }
 
             struct ReleasePayload: Decodable {
@@ -229,7 +292,7 @@ enum AppMaintenanceService {
             let payload = try JSONDecoder().decode(ReleasePayload.self, from: data)
             let latest = normalizedVersion(payload.tag_name)
             let current = normalizedVersion(currentVersion)
-            let releaseURL = URL(string: payload.html_url)
+            let releaseURL = URL(string: payload.html_url) ?? githubReleasesPageURL
 
             let preferredZip = payload.assets.first {
                 let lower = $0.name.lowercased()
@@ -249,7 +312,7 @@ enum AppMaintenanceService {
                 outcome: nil
             )
         } catch {
-            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: \(error.localizedDescription)", latestVersion: nil, releaseURL: nil))
+            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: \(error.localizedDescription)", latestVersion: nil, releaseURL: githubReleasesPageURL))
         }
     }
 

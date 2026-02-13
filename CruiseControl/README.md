@@ -37,3 +37,4 @@ Quarantine-first is the default clean flow.
 - GitHub fallback path: CruiseControl fetches latest release metadata, downloads a `.zip` app asset, installs to a writable app location, and relaunches.
 - If `/Applications` is not writable, fallback install target is `~/Applications`.
 - Release requirement for fallback updater: publish a zip that contains `CruiseControl.app`.
+- If updater says no GitHub release is published, create your first release in `Jahrix/Speed-for-Mac`.

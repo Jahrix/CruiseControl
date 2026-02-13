@@ -82,6 +82,7 @@ Advanced mode is required for out-of-allowlist actions.
   - CruiseControl checks latest release, finds a `.zip` app asset, downloads it, installs to a writable app location, then relaunches.
   - If `/Applications` is not writable, it installs to `~/Applications` automatically.
 - Required release asset naming: publish a zip containing `CruiseControl.app` (for example `CruiseControl-v1.1.4-macOS.zip`).
+- If update check says no GitHub release published yet, create your first GitHub Release for `Jahrix/Speed-for-Mac`.
 - `Show App in Finder`, `Open Applications Folder`, and `Install to /Applications` are available in app commands and Preferences.
 
 ## Build

@@ -30,5 +30,9 @@
 	<string>https://example.com/cruisecontrol/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>REPLACE_WITH_SPARKLE_PUBLIC_ED_KEY</string>
+	<key>CCGitHubOwner</key>
+	<string>Jahrix</string>
+	<key>CCGitHubRepo</key>
+	<string>Speed-for-Mac</string>
 </dict>
 </plist>
