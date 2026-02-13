@@ -101,7 +101,7 @@ final class V112FeatureStore: ObservableObject {
             let data = try encoder.encode(airportProfiles)
             let destination = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 ?? FileManager.default.temporaryDirectory
-            let fileURL = destination.appendingPathComponent("ProjectSpeed-airport-profiles.json")
+            let fileURL = destination.appendingPathComponent("CruiseControl-airport-profiles.json")
             try data.write(to: fileURL, options: .atomic)
             return ActionOutcome(success: true, message: "Exported airport profiles to \(fileURL.path).")
         } catch {

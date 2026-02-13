@@ -33,7 +33,7 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var stutterEvents: [StutterEvent] = []
 
     private let processScanner = ProcessScanner()
-    private let queue = DispatchQueue(label: "ProjectSpeed.PerformanceSampler", qos: .utility)
+    private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
     private let xPlaneReceiver = XPlaneUDPReceiver()
     private let governorBridge = GovernorCommandBridge()
 
@@ -236,7 +236,7 @@ final class PerformanceSampler: ObservableObject {
                 ?? FileManager.default.temporaryDirectory
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let fileURL = destination.appendingPathComponent("ProjectSpeed-diagnostics-\(formatter.string(from: Date())).json")
+            let fileURL = destination.appendingPathComponent("CruiseControl-diagnostics-\(formatter.string(from: Date())).json")
             try data.write(to: fileURL, options: .atomic)
             return DiagnosticsExportOutcome(success: true, fileURL: fileURL, message: "Diagnostics exported to \(fileURL.path).")
         } catch {
@@ -971,7 +971,7 @@ final class PerformanceSampler: ObservableObject {
 
         return Array(
             topMemoryProcesses
-                .filter { !$0.name.localizedCaseInsensitiveContains("X-Plane") && !$0.name.localizedCaseInsensitiveContains("Project Speed") }
+                .filter { !$0.name.localizedCaseInsensitiveContains("X-Plane") && !$0.name.localizedCaseInsensitiveContains("CruiseControl") }
                 .prefix(max(maxCount, 1))
         )
     }

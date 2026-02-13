@@ -379,7 +379,7 @@ final class SettingsStore: ObservableObject {
             let configuration = NSWorkspace.OpenConfiguration()
             NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
                 if let error {
-                    NSLog("ProjectSpeed: Failed to relaunch app at path \(path): \(error.localizedDescription)")
+                    NSLog("CruiseControl: Failed to relaunch app at path \(path): \(error.localizedDescription)")
                 }
             }
             detailLines.append("Requested relaunch: \(url.lastPathComponent)")

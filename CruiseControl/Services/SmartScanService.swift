@@ -306,13 +306,13 @@ final class SmartScanService {
     private func appCacheRoot() -> URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("Project Speed/Cache", isDirectory: true)
+        return base.appendingPathComponent("CruiseControl/Cache", isDirectory: true)
     }
 
     private func quarantineRootURL() -> URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("Project Speed/Quarantine", isDirectory: true)
+        return base.appendingPathComponent("CruiseControl/Quarantine", isDirectory: true)
     }
 
     private func defaultAllowlistedRoots() -> [URL] {

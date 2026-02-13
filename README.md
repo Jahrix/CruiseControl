@@ -1,6 +1,6 @@
-# Project Speed v1.1.2
+# CruiseControl v1.1.2
 
-Project Speed is a macOS SwiftUI desktop performance companion for X-Plane on Apple Silicon.
+CruiseControl is a macOS SwiftUI desktop performance companion for X-Plane on Apple Silicon.
 
 ## What it does
 
@@ -11,14 +11,14 @@ Project Speed is a macOS SwiftUI desktop performance companion for X-Plane on Ap
 
 ## Build and run
 
-1. Open `Speed for Mac.xcodeproj` in Xcode.
-2. Select scheme `Speed for Mac`.
+1. Open `CruiseControl.xcodeproj` in Xcode.
+2. Select scheme `CruiseControl`.
 3. Build and Run.
 4. For an installable copy, use `Preferences > Install to /Applications`.
 
 ## Connection Wizard (X-Plane + Lua)
 
-In Project Speed, the Connection Wizard verifies:
+In CruiseControl, the Connection Wizard verifies:
 
 1. X-Plane process detection.
 2. UDP telemetry endpoint and packet rate.
@@ -37,7 +37,7 @@ In X-Plane:
 1. `Settings > Data Output`
 2. Check `Send network data output`
 3. Set IP to `127.0.0.1`
-4. Set Port to Project Speed listening port (default `49005`)
+4. Set Port to CruiseControl listening port (default `49005`)
 5. Enable frame-rate and position datasets
 
 Ports are shown without grouping commas (for example `49005`, not `49,005`).
@@ -46,7 +46,7 @@ Ports are shown without grouping commas (for example `49005`, not `49,005`).
 
 Script path:
 
-- `X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua`
+- `X-Plane 12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua`
 
 Command protocol:
 
@@ -80,7 +80,7 @@ Smart Scan is non-destructive by default and reports:
 
 Quarantine behavior:
 
-- Moves selected files to `~/Library/Application Support/Project Speed/Quarantine/<timestamp>/`
+- Moves selected files to `~/Library/Application Support/CruiseControl/Quarantine/<timestamp>/`
 - Writes `manifest.json` for restore
 - Restore and permanent delete are explicit user actions
 - By default, quarantine is restricted to safe allowlisted directories
@@ -88,12 +88,12 @@ Quarantine behavior:
 
 ## Memory Pressure Relief (what it is and is not)
 
-Project Speed does not do fake global RAM cleaning. It provides:
+CruiseControl does not do fake global RAM cleaning. It provides:
 
 - Pressure/swap/compressed-memory visibility
 - Suggestions to close heavy apps
 - User-confirmed quit actions
-- Optional limited purge attempt that only clears Project Speed local caches
+- Optional limited purge attempt that only clears CruiseControl local caches
 
 ## Limitations
 

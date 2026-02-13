@@ -189,7 +189,7 @@ struct MenuContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Files are moved to Project Speed quarantine with manifest metadata for restore.")
+            Text("Files are moved to CruiseControl quarantine with manifest metadata for restore.")
         }
         .confirmationDialog("Permanently delete latest quarantine?", isPresented: $confirmDeleteLatestQuarantine, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -205,7 +205,7 @@ struct MenuContentView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Project Speed")
+                Text("CruiseControl")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
@@ -339,7 +339,7 @@ struct MenuContentView: View {
                         .buttonStyle(.borderedProminent)
                     }
 
-                    Text("Install Lua script at X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua")
+                    Text("Install Lua script at X-Plane 12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -426,7 +426,7 @@ struct MenuContentView: View {
                             .buttonStyle(.bordered)
                         }
 
-                        Text("Limited purge only clears Project Speed local caches and pauses internal work briefly. It does not purge protected system caches.")
+                        Text("Limited purge only clears CruiseControl local caches and pauses internal work briefly. It does not purge protected system caches.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -692,10 +692,10 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Setup FlyWithLua Companion") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Install to: X-Plane 12/Resources/plugins/FlyWithLua/Scripts/ProjectSpeed_Governor.lua")
+                    Text("Install to: X-Plane 12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
                     Text("Companion listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
                     Text("ACK protocol: PING/PONG, ACK ENABLE, ACK DISABLE, ACK SET_LOD <value>, ERR <message>.")
-                    Text("If LuaSocket is missing, Project Speed writes fallback commands to /tmp/ProjectSpeed_lod_target.txt.")
+                    Text("If LuaSocket is missing, CruiseControl writes fallback commands to /tmp/CruiseControl_lod_target.txt.")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -1100,7 +1100,7 @@ struct MenuContentView: View {
                 Text("Last updated: \(lastUpdatedText)")
                     .foregroundStyle(isStale ? .orange : .secondary)
 
-                Text("Project Speed performs monitoring and user-approved actions only. It does not control scheduler internals, GPU clocks, kernel paths, or private macOS internals.")
+                Text("CruiseControl performs monitoring and user-approved actions only. It does not control scheduler internals, GPU clocks, kernel paths, or private macOS internals.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -1329,7 +1329,7 @@ struct MenuContentView: View {
                 !app.isTerminated &&
                 app.bundleIdentifier != ownBundleID &&
                 !(app.localizedName ?? "").localizedCaseInsensitiveContains("X-Plane") &&
-                !(app.localizedName ?? "").localizedCaseInsensitiveContains("Project Speed") &&
+                !(app.localizedName ?? "").localizedCaseInsensitiveContains("CruiseControl") &&
                 app.bundleIdentifier != nil
             }
             .compactMap { app in
@@ -1443,7 +1443,7 @@ struct MenuContentView: View {
         let fm = FileManager.default
         let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let cacheRoot = base.appendingPathComponent("Project Speed/Cache", isDirectory: true)
+        let cacheRoot = base.appendingPathComponent("CruiseControl/Cache", isDirectory: true)
 
         do {
             if fm.fileExists(atPath: cacheRoot.path) {
@@ -1452,7 +1452,7 @@ struct MenuContentView: View {
                     try? fm.removeItem(at: child)
                 }
             }
-            processActionResult = "Limited purge completed: cleared Project Speed local cache only."
+            processActionResult = "Limited purge completed: cleared CruiseControl local cache only."
         } catch {
             processActionResult = "Limited purge attempt failed: \(error.localizedDescription)"
         }

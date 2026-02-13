@@ -1,12 +1,12 @@
--- ProjectSpeed_Governor.lua
--- FlyWithLua companion for Project Speed LOD Governor.
+-- CruiseControl_Governor.lua
+-- FlyWithLua companion for CruiseControl LOD Governor.
 -- Applies private XP12 LOD dataref inside X-Plane:
 --   set("sim/private/controls/reno/LOD_bias_rat", value)
 
 local LOD_DATAREF = "sim/private/controls/reno/LOD_bias_rat"
 local UDP_HOST = "127.0.0.1"
 local UDP_PORT = 49006
-local COMMAND_FILE_PATH = "/tmp/ProjectSpeed_lod_target.txt"
+local COMMAND_FILE_PATH = "/tmp/CruiseControl_lod_target.txt"
 
 -- User-adjustable script-side safety bounds.
 local CLAMP_MIN = 0.20
@@ -31,7 +31,7 @@ end
 local function write_lod(value)
     local ok, err = pcall(set, LOD_DATAREF, value)
     if not ok then
-        logMsg("[ProjectSpeed_Governor] Failed to set LOD dataref: " .. tostring(err))
+        logMsg("[CruiseControl_Governor] Failed to set LOD dataref: " .. tostring(err))
         return false
     end
     return true
@@ -39,7 +39,7 @@ end
 
 local original_lod = read_lod()
 if original_lod == nil then
-    logMsg("[ProjectSpeed_Governor] Could not read " .. LOD_DATAREF .. "; governor disabled.")
+    logMsg("[CruiseControl_Governor] Could not read " .. LOD_DATAREF .. "; governor disabled.")
     return
 end
 
@@ -58,7 +58,7 @@ local function send_response(message, ip, port)
     end
     if ip == nil or port == nil then
         if ACK_DEBUG then
-            logMsg("[ProjectSpeed_Governor] ACK skipped: sender ip/port missing")
+            logMsg("[CruiseControl_Governor] ACK skipped: sender ip/port missing")
         end
         return
     end
@@ -66,7 +66,7 @@ local function send_response(message, ip, port)
     local port_number = tonumber(port)
     if port_number == nil then
         if ACK_DEBUG then
-            logMsg("[ProjectSpeed_Governor] ACK skipped: invalid sender port '" .. tostring(port) .. "'")
+            logMsg("[CruiseControl_Governor] ACK skipped: invalid sender port '" .. tostring(port) .. "'")
         end
         return
     end
@@ -74,9 +74,9 @@ local function send_response(message, ip, port)
     local payload = tostring(message) .. "\n"
     local ok, err = udp:sendto(payload, tostring(ip), port_number)
     if ok == nil then
-        logMsg("[ProjectSpeed_Governor] ACK send failed to " .. tostring(ip) .. ":" .. tostring(port_number) .. " err=" .. tostring(err))
+        logMsg("[CruiseControl_Governor] ACK send failed to " .. tostring(ip) .. ":" .. tostring(port_number) .. " err=" .. tostring(err))
     elseif ACK_DEBUG then
-        logMsg("[ProjectSpeed_Governor] ACK -> " .. tostring(ip) .. ":" .. tostring(port_number) .. " :: " .. tostring(message))
+        logMsg("[CruiseControl_Governor] ACK -> " .. tostring(ip) .. ":" .. tostring(port_number) .. " :: " .. tostring(message))
     end
 end
 
@@ -87,7 +87,7 @@ local function restore_original_lod()
         end
     end
     governor_enabled = false
-    logMsg("[ProjectSpeed_Governor] Restored original LOD_bias_rat=" .. string.format("%.3f", last_applied_lod))
+    logMsg("[CruiseControl_Governor] Restored original LOD_bias_rat=" .. string.format("%.3f", last_applied_lod))
 end
 
 local function apply_lod(value)
@@ -97,7 +97,7 @@ local function apply_lod(value)
     end
 
     if last_applied_lod == nil or math.abs(last_applied_lod - clamped) >= 0.01 then
-        logMsg("[ProjectSpeed_Governor] Applied LOD_bias_rat=" .. string.format("%.3f", clamped))
+        logMsg("[CruiseControl_Governor] Applied LOD_bias_rat=" .. string.format("%.3f", clamped))
     end
 
     last_applied_lod = clamped
@@ -134,7 +134,7 @@ local function handle_message(raw_message, ip, port)
     end
 
     if ACK_DEBUG then
-        logMsg("[ProjectSpeed_Governor] RX <- " .. tostring(ip) .. ":" .. tostring(port) .. " :: " .. tostring(message))
+        logMsg("[CruiseControl_Governor] RX <- " .. tostring(ip) .. ":" .. tostring(port) .. " :: " .. tostring(message))
     end
 
     if message == "PING" then
@@ -226,16 +226,16 @@ if socket_ok then
     if bind_ok ~= nil then
         udp:settimeout(0)
         udp_enabled = true
-        logMsg("[ProjectSpeed_Governor] UDP listening on " .. UDP_HOST .. ":" .. UDP_PORT .. " clamp=" .. CLAMP_MIN .. "-" .. CLAMP_MAX)
+        logMsg("[CruiseControl_Governor] UDP listening on " .. UDP_HOST .. ":" .. UDP_PORT .. " clamp=" .. CLAMP_MIN .. "-" .. CLAMP_MAX)
     else
-        logMsg("[ProjectSpeed_Governor] UDP bind failed on " .. UDP_HOST .. ":" .. UDP_PORT .. " error=" .. tostring(bind_error) .. " | using file fallback")
+        logMsg("[CruiseControl_Governor] UDP bind failed on " .. UDP_HOST .. ":" .. UDP_PORT .. " error=" .. tostring(bind_error) .. " | using file fallback")
     end
 else
-    logMsg("[ProjectSpeed_Governor] LuaSocket not available; using file fallback")
+    logMsg("[CruiseControl_Governor] LuaSocket not available; using file fallback")
 end
 
 initialize_file_sequence()
-logMsg("[ProjectSpeed_Governor] File command path: " .. COMMAND_FILE_PATH)
+logMsg("[CruiseControl_Governor] File command path: " .. COMMAND_FILE_PATH)
 
 function project_speed_governor_update()
     poll_udp()

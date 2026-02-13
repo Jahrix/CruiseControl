@@ -29,7 +29,7 @@ final class GovernorCommandBridge {
     private var commandSequence: UInt64 = 0
     private var noAckCounter: Int = 0
 
-    private let fallbackFileURL = URL(fileURLWithPath: "/tmp/ProjectSpeed_lod_target.txt")
+    private let fallbackFileURL = URL(fileURLWithPath: "/tmp/CruiseControl_lod_target.txt")
 
     func send(
         lod: Double,

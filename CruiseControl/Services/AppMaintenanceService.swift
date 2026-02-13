@@ -34,18 +34,18 @@ enum AppMaintenanceService {
     }
 
     static func openReleasesPage() {
-        guard let url = URL(string: "https://github.com/Jahrix/Speed-for-Mac/releases") else { return }
+        guard let url = URL(string: "https://github.com/Jahrix/CruiseControl/releases") else { return }
         NSWorkspace.shared.open(url)
     }
 
     static func checkForUpdates(currentVersion: String) async -> UpdateCheckOutcome {
-        guard let url = URL(string: "https://api.github.com/repos/Jahrix/Speed-for-Mac/releases/latest") else {
+        guard let url = URL(string: "https://api.github.com/repos/Jahrix/CruiseControl/releases/latest") else {
             return UpdateCheckOutcome(success: false, message: "Invalid releases URL.", latestVersion: nil, releaseURL: nil)
         }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
-        request.setValue("ProjectSpeed/1.1.2", forHTTPHeaderField: "User-Agent")
+        request.setValue("CruiseControl/1.1.2", forHTTPHeaderField: "User-Agent")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

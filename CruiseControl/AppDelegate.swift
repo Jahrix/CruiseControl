@@ -109,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
 
             let alert = NSAlert()
-            alert.messageText = "Project Speed Update Check"
+            alert.messageText = "CruiseControl Update Check"
             alert.informativeText = outcome.message
             if outcome.releaseURL != nil {
                 alert.addButton(withTitle: "Open Releases")
@@ -147,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let center = UNUserNotificationCenter.current()
         center.delegate = self
 
-        let openAppAction = UNNotificationAction(identifier: "OPEN_PROJECT_SPEED", title: "Open Project Speed", options: [.foreground])
+        let openAppAction = UNNotificationAction(identifier: "OPEN_PROJECT_SPEED", title: "Open CruiseControl", options: [.foreground])
         let openActivityAction = UNNotificationAction(identifier: "OPEN_ACTIVITY_MONITOR", title: "Open Activity Monitor", options: [])
         let category = UNNotificationCategory(
             identifier: warningCategoryIdentifier,
@@ -158,10 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
-                NSLog("ProjectSpeed notification permission error: \(error.localizedDescription)")
+                NSLog("CruiseControl notification permission error: \(error.localizedDescription)")
             }
             if !granted {
-                NSLog("ProjectSpeed notifications were not granted by the user.")
+                NSLog("CruiseControl notifications were not granted by the user.")
             }
         }
     }
@@ -174,21 +174,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         if flags.memoryPressureRed && !previousAlertFlags.memoryPressureRed {
             enqueueWarningNotification(
-                title: "Project Speed: Memory Pressure High",
-                body: "Memory pressure turned red. Review top memory users in Project Speed."
+                title: "CruiseControl: Memory Pressure High",
+                body: "Memory pressure turned red. Review top memory users in CruiseControl."
             )
         }
 
         if flags.thermalCritical && !previousAlertFlags.thermalCritical {
             enqueueWarningNotification(
-                title: "Project Speed: Thermal Warning",
+                title: "CruiseControl: Thermal Warning",
                 body: "Thermal state is serious/critical. Reduce graphics settings or frame cap."
             )
         }
 
         if flags.swapRisingFast && !previousAlertFlags.swapRisingFast {
             enqueueWarningNotification(
-                title: "Project Speed: Swap Rising Fast",
+                title: "CruiseControl: Swap Rising Fast",
                 body: "Swap growth is high. Paging may be causing frame-time spikes."
             )
         }
@@ -211,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error {
-                NSLog("ProjectSpeed failed to schedule notification: \(error.localizedDescription)")
+                NSLog("CruiseControl failed to schedule notification: \(error.localizedDescription)")
             }
         }
     }
@@ -224,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         do {
             try process.run()
         } catch {
-            NSLog("ProjectSpeed failed to open Activity Monitor: \(error.localizedDescription)")
+            NSLog("CruiseControl failed to open Activity Monitor: \(error.localizedDescription)")
         }
     }
 }

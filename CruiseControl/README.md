@@ -1,6 +1,6 @@
-# Project Speed v1.1.2 (Desktop App)
+# CruiseControl v1.1.2 (Desktop App)
 
-Project Speed is a Swift/SwiftUI desktop app for monitoring and guiding flight-sim performance on macOS.
+CruiseControl is a Swift/SwiftUI desktop app for monitoring and guiding flight-sim performance on macOS.
 
 ## Highlights in v1.1.2
 
@@ -15,7 +15,7 @@ Project Speed is a Swift/SwiftUI desktop app for monitoring and guiding flight-s
 
 ## LOD Governor architecture
 
-Project Speed computes target LOD from altitude tiers and sends commands to a FlyWithLua script.
+CruiseControl computes target LOD from altitude tiers and sends commands to a FlyWithLua script.
 
 The app does not write X-Plane private datarefs directly.
 
@@ -27,7 +27,7 @@ with clamping and restore-on-disable/exit behavior.
 
 ## Build
 
-1. Open `Speed for Mac.xcodeproj`.
+1. Open `CruiseControl.xcodeproj`.
 2. Build + Run.
 3. In app settings, verify telemetry and governor ports.
 

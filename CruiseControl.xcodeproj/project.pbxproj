@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		3397B0302F3E68BB0033EBD8 /* Speed for Mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Speed for Mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		3397B0302F3E68BB0033EBD8 /* CruiseControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "CruiseControl.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		3397B0322F3E68BB0033EBD8 /* Speed for Mac */ = {
+		3397B0322F3E68BB0033EBD8 /* CruiseControl */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Speed for Mac";
+			path = "CruiseControl";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -32,7 +32,7 @@
 		3397B0272F3E68BB0033EBD8 = {
 			isa = PBXGroup;
 			children = (
-				3397B0322F3E68BB0033EBD8 /* Speed for Mac */,
+				3397B0322F3E68BB0033EBD8 /* CruiseControl */,
 				3397B0312F3E68BB0033EBD8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -40,7 +40,7 @@
 		3397B0312F3E68BB0033EBD8 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				3397B0302F3E68BB0033EBD8 /* Speed for Mac.app */,
+				3397B0302F3E68BB0033EBD8 /* CruiseControl.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		3397B02F2F3E68BB0033EBD8 /* Speed for Mac */ = {
+		3397B02F2F3E68BB0033EBD8 /* CruiseControl */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 3397B03B2F3E68BE0033EBD8 /* Build configuration list for PBXNativeTarget "Speed for Mac" */;
+			buildConfigurationList = 3397B03B2F3E68BE0033EBD8 /* Build configuration list for PBXNativeTarget "CruiseControl" */;
 			buildPhases = (
 				3397B02C2F3E68BB0033EBD8 /* Sources */,
 				3397B02D2F3E68BB0033EBD8 /* Frameworks */,
@@ -61,13 +61,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				3397B0322F3E68BB0033EBD8 /* Speed for Mac */,
+				3397B0322F3E68BB0033EBD8 /* CruiseControl */,
 			);
-			name = "Speed for Mac";
+			name = "CruiseControl";
 			packageProductDependencies = (
 			);
-			productName = "Speed for Mac";
-			productReference = 3397B0302F3E68BB0033EBD8 /* Speed for Mac.app */;
+			productName = "CruiseControl";
+			productReference = 3397B0302F3E68BB0033EBD8 /* CruiseControl.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -85,7 +85,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 3397B02B2F3E68BB0033EBD8 /* Build configuration list for PBXProject "Speed for Mac" */;
+			buildConfigurationList = 3397B02B2F3E68BB0033EBD8 /* Build configuration list for PBXProject "CruiseControl" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -99,7 +99,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				3397B02F2F3E68BB0033EBD8 /* Speed for Mac */,
+				3397B02F2F3E68BB0033EBD8 /* CruiseControl */,
 			);
 		};
 /* End PBXProject section */
@@ -310,7 +310,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		3397B02B2F3E68BB0033EBD8 /* Build configuration list for PBXProject "Speed for Mac" */ = {
+		3397B02B2F3E68BB0033EBD8 /* Build configuration list for PBXProject "CruiseControl" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				3397B0392F3E68BE0033EBD8 /* Debug */,
@@ -319,7 +319,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		3397B03B2F3E68BE0033EBD8 /* Build configuration list for PBXNativeTarget "Speed for Mac" */ = {
+		3397B03B2F3E68BE0033EBD8 /* Build configuration list for PBXNativeTarget "CruiseControl" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				3397B03C2F3E68BE0033EBD8 /* Debug */,

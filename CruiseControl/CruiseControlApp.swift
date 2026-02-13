@@ -1,11 +1,11 @@
 import SwiftUI
 
 @main
-struct ProjectSpeedApp: App {
+struct CruiseControlApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup("Project Speed") {
+        WindowGroup("CruiseControl") {
             MenuContentView()
                 .environmentObject(appDelegate.sampler)
                 .environmentObject(appDelegate.settingsStore)
@@ -15,7 +15,7 @@ struct ProjectSpeedApp: App {
 
         Settings {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Project Speed")
+                Text("CruiseControl")
                     .font(.title2)
                     .fontWeight(.semibold)
                 Text("Desktop performance control center for flight simulator sessions.")

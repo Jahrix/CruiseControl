@@ -73,7 +73,7 @@
   - `ENABLE`
   - `SET_LOD <float>`
   - `DISABLE`
-- File fallback channel (`/tmp/ProjectSpeed_lod_target.txt`) when LuaSocket is unavailable in FlyWithLua.
+- File fallback channel (`/tmp/CruiseControl_lod_target.txt`) when LuaSocket is unavailable in FlyWithLua.
 - Debug self-tests for tier selection pure function.
 
 ### Changed
@@ -93,7 +93,7 @@
 - Governor Mode with altitude-based tier logic.
 - User-configurable governor thresholds, per-tier LOD targets, and clamp bounds.
 - Governor UDP bridge command sender in macOS app.
-- FlyWithLua script: `Scripts/ProjectSpeed_Governor.lua` to receive UDP commands and apply LOD safely.
+- FlyWithLua script: `Scripts/CruiseControl_Governor.lua` to receive UDP commands and apply LOD safely.
 - UDP session status model and UI (`IDLE`, `LISTENING`, `ACTIVE`, `MISCONFIG`).
 
 ### Changed
