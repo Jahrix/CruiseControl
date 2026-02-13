@@ -1779,7 +1779,7 @@ struct MenuContentView: View {
                     Button("Check for Updates...") {
                         Task {
                             let current = AppMaintenanceService.currentVersionString()
-                            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
+                            let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(currentVersion: current)
                             await MainActor.run {
                                 updateCheckStatus = outcome.message
                             }

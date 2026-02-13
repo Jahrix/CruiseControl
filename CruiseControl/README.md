@@ -30,11 +30,10 @@ Default exclusions:
 
 Quarantine-first is the default clean flow.
 
-## Sparkle placeholders
+## Updates
 
-Add these in `Info.plist` for Sparkle path:
-
-- `SUFeedURL`
-- `SUPublicEDKey`
-
-If not configured, CruiseControl falls back to GitHub release API checks.
+- `Check for Updates…` supports no-rebuild updates.
+- Sparkle path: configure `SUFeedURL` and `SUPublicEDKey` in `Info.plist`.
+- GitHub fallback path: CruiseControl fetches latest release metadata, downloads a `.zip` app asset, installs to a writable app location, and relaunches.
+- If `/Applications` is not writable, fallback install target is `~/Applications`.
+- Release requirement for fallback updater: publish a zip that contains `CruiseControl.app`.

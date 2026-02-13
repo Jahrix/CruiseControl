@@ -76,7 +76,12 @@ Advanced mode is required for out-of-allowlist actions.
 
 ## Update checks and install
 
-- `Check for Updates…` uses Sparkle when configured (`SUFeedURL` + `SUPublicEDKey`), otherwise falls back to GitHub Releases HTTPS check.
+- `Check for Updates…` now supports no-rebuild updates.
+- Primary path: Sparkle (`SUFeedURL` + `SUPublicEDKey`) when configured.
+- Fallback path: GitHub Releases auto-installer.
+  - CruiseControl checks latest release, finds a `.zip` app asset, downloads it, installs to a writable app location, then relaunches.
+  - If `/Applications` is not writable, it installs to `~/Applications` automatically.
+- Required release asset naming: publish a zip containing `CruiseControl.app` (for example `CruiseControl-v1.1.4-macOS.zip`).
 - `Show App in Finder`, `Open Applications Folder`, and `Install to /Applications` are available in app commands and Preferences.
 
 ## Build

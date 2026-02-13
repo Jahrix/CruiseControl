@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased - Updater Pipeline
+
+### Added
+- Interactive updater flow: `Check for Updates…` can now install updates without rebuilding in Xcode.
+- GitHub Releases fallback auto-installer:
+  - fetch latest release
+  - find a `.zip` CruiseControl asset
+  - download + extract + install + relaunch
+- Writable destination fallback for updates:
+  - uses current app location when writable
+  - otherwise installs to `~/Applications`
+
+### Changed
+- App menu and Preferences update action now use install-capable update flow instead of check-only flow.
+- Sparkle remains first priority when configured; fallback auto-installer runs when Sparkle is unavailable.
+
 ## v1.1.4 - Smart Scan + Safe Performance Cleaner
 
 ### Added

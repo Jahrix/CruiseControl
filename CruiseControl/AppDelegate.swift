@@ -114,7 +114,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func checkForUpdatesFromMenu() {
         Task {
             let current = AppMaintenanceService.currentVersionString()
-            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: true)
+            let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(currentVersion: current, preferSparkle: true)
+
+            // Sparkle presents its own update UI once triggered.
+            if outcome.message.contains("Sparkle update check triggered") {
+                return
+            }
 
             let alert = NSAlert()
             alert.messageText = "CruiseControl Update Check"
