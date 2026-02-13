@@ -33,6 +33,6 @@
 	<key>CCGitHubOwner</key>
 	<string>Jahrix</string>
 	<key>CCGitHubRepo</key>
-	<string>Speed-for-Mac</string>
+	<string>CruiseControl</string>
 </dict>
 </plist>

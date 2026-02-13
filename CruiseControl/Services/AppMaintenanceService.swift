@@ -35,7 +35,7 @@ enum AppMaintenanceService {
            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return value
         }
-        return "Speed-for-Mac"
+        return "CruiseControl"
     }
 
     private static var githubReleasesPageURL: URL? {
