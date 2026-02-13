@@ -28,10 +28,16 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var governorPauseReason: String?
     @Published private(set) var governorAckState: GovernorAckState = .noAck
     @Published private(set) var governorLastCommandText: String?
+    @Published private(set) var governorLastCommandDate: Date?
     @Published private(set) var governorLastACKText: String?
     @Published private(set) var governorLastACKDate: Date?
+    @Published private(set) var regulatorControlState: RegulatorControlState = .disconnected
+    @Published private(set) var regulatorFileBridgeStatus: GovernorFileBridgeStatus?
+    @Published private(set) var regulatorLODChanging: Bool = false
+    @Published private(set) var regulatorRecentActions: [RegulatorActionLog] = []
+    @Published private(set) var regulatorTestActive: Bool = false
+    @Published private(set) var regulatorTestCountdownSeconds: Int = 0
     @Published private(set) var stutterEvents: [StutterEvent] = []
-
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
     private let xPlaneReceiver = XPlaneUDPReceiver()
@@ -62,6 +68,19 @@ final class PerformanceSampler: ObservableObject {
     private var governorLockedTierSince: Date?
     private var governorSmoothedLODInternal: Double?
     private var governorLastUpdateAt: Date?
+
+    private struct RegulatorTestSession {
+        var startedAt: Date
+        var endsAt: Date
+        var restoreLOD: Double
+        var modeLabel: String
+    }
+
+    private var pendingRegulatorTest: RegulatorTestSession?
+    private var lastObservedAckAppliedLOD: Double?
+    private var lastAckAppliedLODChangeAt: Date?
+    private var lastObservedFileStatusLOD: Double?
+    private var lastFileLODChangeAt: Date?
 
     private var stutterHeuristics: StutterHeuristicConfig = .default
     private var stutterBuffer: [StutterEvent] = []
@@ -294,7 +313,12 @@ final class PerformanceSampler: ObservableObject {
             swapRapidIncrease &&
             memoryPressure == .red
 
+        maybeCompleteRegulatorTestIfNeeded(now: now)
         let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus, simActive: simActive, now: now)
+        let fileBridgeStatus = governorBridge.readFileBridgeStatus()
+        let controlState = deriveRegulatorControlState(now: now, fileBridgeStatus: fileBridgeStatus)
+        let lodChanging = evaluateRegulatorLODChanging(now: now, controlState: controlState, fileBridgeStatus: fileBridgeStatus)
+        let testCountdown = pendingRegulatorTest.map { max(Int(ceil($0.endsAt.timeIntervalSince(now))), 0) } ?? 0
 
         let historyPoint = MetricHistoryPoint(
             timestamp: now,
@@ -322,7 +346,7 @@ final class PerformanceSampler: ObservableObject {
         )
 
         if governorResult.ackState == .noAck {
-            warningItems.append("Governor bridge has no ACK from FlyWithLua. Use Connection Wizard > Test PING.")
+            warningItems.append("Regulator bridge has no ACK from FlyWithLua. Use Connection Wizard > Test PING.")
         }
 
         let culpritItems = buildCulprits(
@@ -405,8 +429,14 @@ final class PerformanceSampler: ObservableObject {
             governorPauseReason = governorResult.pauseReason
             governorAckState = governorResult.ackState
             governorLastCommandText = governorResult.lastCommand
+            governorLastCommandDate = governorBridge.lastCommandAt
             governorLastACKText = governorResult.lastACK
             governorLastACKDate = governorResult.lastACKDate
+            regulatorControlState = controlState
+            regulatorFileBridgeStatus = fileBridgeStatus
+            regulatorLODChanging = lodChanging
+            regulatorTestActive = pendingRegulatorTest != nil
+            regulatorTestCountdownSeconds = testCountdown
             stutterEvents = stutterBuffer
 
             alertFlags = AlertFlags(
@@ -460,7 +490,7 @@ final class PerformanceSampler: ObservableObject {
             resetGovernorRuntimeState()
             return (
                 nil,
-                "Governor: \(reason)",
+                "Regulator: \(reason)",
                 nil,
                 nil,
                 nil,
@@ -484,7 +514,7 @@ final class PerformanceSampler: ObservableObject {
             resetGovernorRuntimeState()
             return (
                 nil,
-                "Governor: Disabled",
+                "Regulator: Disabled",
                 nil,
                 nil,
                 nil,
@@ -499,21 +529,40 @@ final class PerformanceSampler: ObservableObject {
             )
         }
 
+        if let test = pendingRegulatorTest, now < test.endsAt {
+            let remaining = max(Int(ceil(test.endsAt.timeIntervalSince(now))), 0)
+            return (
+                nil,
+                "Regulator test active (\(test.modeLabel), \(remaining)s remaining)",
+                governorLockedTier,
+                governorSmoothedLODInternal,
+                governorSmoothedLODInternal,
+                governorActiveAGLFeet,
+                governorBridge.lastSentLOD,
+                governorBridge.commandStatusText(now: now),
+                governorBridge.ackState,
+                governorBridge.lastCommand,
+                governorBridge.lastAckMessage,
+                governorBridge.lastAckAt,
+                nil
+            )
+        }
+
         guard simActive else {
-            return pausedResult(reason: "No sim data; governor paused")
+            return pausedResult(reason: "No sim data; regulator paused")
         }
 
         guard udpStatus.state == .active else {
-            return pausedResult(reason: "No sim data; governor paused")
+            return pausedResult(reason: "No sim data; regulator paused")
         }
 
         guard let telemetry else {
-            return pausedResult(reason: "No sim data; governor paused")
+            return pausedResult(reason: "No sim data; regulator paused")
         }
 
         let resolved = GovernorPolicyEngine.resolveAGL(telemetry: telemetry)
         guard let aglFeet = resolved.feet else {
-            return pausedResult(reason: "AGL unavailable; governor paused")
+            return pausedResult(reason: "AGL unavailable; regulator paused")
         }
 
         governorPreviouslyEnabled = true
@@ -610,7 +659,135 @@ final class PerformanceSampler: ObservableObject {
         governorSmoothedLODInternal = nil
         governorLastUpdateAt = nil
     }
-    
+
+    private func deriveRegulatorControlState(now: Date, fileBridgeStatus: GovernorFileBridgeStatus?) -> RegulatorControlState {
+        if governorBridge.usingFileFallback,
+           let updateDate = fileBridgeStatus?.lastUpdateDate ?? governorBridge.lastFileBridgeWriteAt,
+           now.timeIntervalSince(updateDate) < 20 {
+            return .fileBridge(lastUpdate: updateDate)
+        }
+
+        if governorBridge.ackState == .ackOK,
+           let lastAck = governorBridge.lastAckAt {
+            return .udpAckOK(lastAck: lastAck, payload: governorBridge.lastAckMessage ?? "ACK")
+        }
+
+        if governorConfig.enabled || governorBridge.lastCommandAt != nil {
+            if governorBridge.ackState == .disabled {
+                return .disconnected
+            }
+            return .udpNoAck
+        }
+
+        return .disconnected
+    }
+
+    private func evaluateRegulatorLODChanging(now: Date, controlState: RegulatorControlState, fileBridgeStatus: GovernorFileBridgeStatus?) -> Bool {
+        if let appliedLOD = governorBridge.lastAckAppliedLOD {
+            if let previous = lastObservedAckAppliedLOD, abs(previous - appliedLOD) >= 0.01 {
+                lastAckAppliedLODChangeAt = now
+            }
+            lastObservedAckAppliedLOD = appliedLOD
+        }
+
+        if let currentLOD = fileBridgeStatus?.currentLOD {
+            if let previous = lastObservedFileStatusLOD, abs(previous - currentLOD) >= 0.01 {
+                lastFileLODChangeAt = now
+            }
+            lastObservedFileStatusLOD = currentLOD
+        }
+
+        switch controlState {
+        case .udpAckOK:
+            guard let changedAt = lastAckAppliedLODChangeAt else { return false }
+            return now.timeIntervalSince(changedAt) <= 20
+        case .fileBridge(let updateDate):
+            let changedRecently = lastFileLODChangeAt.map { now.timeIntervalSince($0) <= 20 } ?? false
+            let updatedRecently = now.timeIntervalSince(updateDate) <= max(samplingIntervalSeconds * 4.0, 6.0)
+            return changedRecently || updatedRecently
+        case .udpNoAck, .disconnected:
+            return false
+        }
+    }
+
+    private func maybeCompleteRegulatorTestIfNeeded(now: Date) {
+        guard let test = pendingRegulatorTest, now >= test.endsAt else { return }
+
+        let clampedRestore = governorConfig.clampLOD(test.restoreLOD)
+        let restoreResult = governorBridge.sendTestLOD(
+            lod: clampedRestore,
+            host: governorConfig.commandHost,
+            port: governorConfig.commandPort,
+            now: now
+        )
+
+        pendingRegulatorTest = nil
+
+        if restoreResult.sent {
+            logRegulatorAction("Test complete. Restored LOD to \(String(format: "%.2f", clampedRestore)).", at: now)
+        } else {
+            logRegulatorAction("Test restore failed: \(restoreResult.error ?? "Unknown error").", at: now)
+        }
+    }
+
+    private func logRegulatorAction(_ message: String, at date: Date = Date()) {
+        Task { @MainActor in
+            var lines = self.regulatorRecentActions
+            lines.append(RegulatorActionLog(timestamp: date, message: message))
+            if lines.count > 40 {
+                lines.removeFirst(lines.count - 40)
+            }
+            self.regulatorRecentActions = lines
+        }
+    }
+
+    @MainActor
+    func runRegulatorTimedTest(lodValue: Double, modeLabel: String, durationSeconds: TimeInterval = 10.0) -> ActionOutcome {
+        if pendingRegulatorTest != nil {
+            return ActionOutcome(success: false, message: "A regulator test is already running.")
+        }
+
+        let clampedLOD = governorConfig.clampLOD(lodValue)
+        let host = governorConfig.commandHost
+        let port = governorConfig.commandPort
+        let now = Date()
+        let restoreLOD = governorConfig.enabled ? (governorSmoothedLODInternal ?? governorCurrentTargetLOD ?? 1.0) : 1.0
+
+        let result = queue.sync {
+            governorBridge.sendTestLOD(lod: clampedLOD, host: host, port: port, now: now)
+        }
+
+        governorLastSentLOD = clampedLOD
+        governorCommandStatus = result.statusText
+        governorAckState = result.ackState
+        governorLastCommandText = governorBridge.lastCommand
+        governorLastCommandDate = governorBridge.lastCommandAt
+        governorLastACKText = governorBridge.lastAckMessage
+        governorLastACKDate = governorBridge.lastAckAt
+
+        guard result.sent else {
+            let detail = result.error ?? "Unknown send failure."
+            logRegulatorAction("Test start failed: \(detail)", at: now)
+            return ActionOutcome(success: false, message: "Test command failed: \(detail)")
+        }
+
+        pendingRegulatorTest = RegulatorTestSession(
+            startedAt: now,
+            endsAt: now.addingTimeInterval(max(durationSeconds, 1.0)),
+            restoreLOD: restoreLOD,
+            modeLabel: modeLabel
+        )
+
+        let displayLOD = String(format: "%.2f", clampedLOD)
+        let restoreDisplay = String(format: "%.2f", governorConfig.clampLOD(restoreLOD))
+        logRegulatorAction("Test started (\(modeLabel)): LOD \(displayLOD) for \(Int(durationSeconds))s. Auto-restore \(restoreDisplay).", at: now)
+
+        regulatorTestActive = true
+        regulatorTestCountdownSeconds = Int(durationSeconds)
+
+        return ActionOutcome(success: true, message: "Test running for \(Int(durationSeconds))s: \(modeLabel), LOD \(displayLOD). Auto-restore \(restoreDisplay).")
+    }
+
     @MainActor
     func sendGovernorTestCommand(lodValue: Double) -> ActionOutcome {
         let clampedLOD = governorConfig.clampLOD(lodValue)
@@ -626,14 +803,17 @@ final class PerformanceSampler: ObservableObject {
         governorCommandStatus = result.statusText
         governorAckState = result.ackState
         governorLastCommandText = governorBridge.lastCommand
+        governorLastCommandDate = governorBridge.lastCommandAt
         governorLastACKText = governorBridge.lastAckMessage
         governorLastACKDate = governorBridge.lastAckAt
 
         if result.sent {
-            return ActionOutcome(success: true, message: "Test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)) to \(host):\(port).")
+            logRegulatorAction("Manual test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)).", at: now)
+            return ActionOutcome(success: true, message: "Manual test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)) to \(host):\(port).")
         }
 
         let detail = result.error ?? "Unknown send failure."
+        logRegulatorAction("Manual test failed: \(detail)", at: now)
         return ActionOutcome(success: false, message: "Test command failed: \(detail)")
     }
 
@@ -650,6 +830,7 @@ final class PerformanceSampler: ObservableObject {
         governorCommandStatus = result.statusText
         governorAckState = result.ackState
         governorLastCommandText = governorBridge.lastCommand
+        governorLastCommandDate = governorBridge.lastCommandAt
         governorLastACKText = governorBridge.lastAckMessage
         governorLastACKDate = governorBridge.lastAckAt
 
@@ -657,10 +838,27 @@ final class PerformanceSampler: ObservableObject {
             if result.ackState == .ackOK {
                 return ActionOutcome(success: true, message: "PING succeeded. Received \(result.ackMessage ?? "ACK").")
             }
+
+            if governorBridge.usingFileFallback {
+                return ActionOutcome(success: true, message: "PING sent via file bridge. ACK is not expected in file mode.")
+            }
+
             return ActionOutcome(success: false, message: "PING sent but no ACK/PONG received.")
         }
 
         return ActionOutcome(success: false, message: result.error ?? "PING failed.")
+    }
+
+    @MainActor
+    func openRegulatorBridgeFolderInFinder() -> ActionOutcome {
+        let folderURL = queue.sync { governorBridge.ensureBridgeFolderExists() }
+        let opened = NSWorkspace.shared.open(folderURL)
+
+        if opened {
+            return ActionOutcome(success: true, message: "Opened bridge folder: \(folderURL.path)")
+        }
+
+        return ActionOutcome(success: false, message: "Unable to open bridge folder: \(folderURL.path)")
     }
 
     private func isXPlaneProcessRunning(processes: [ProcessSample]?) -> Bool {

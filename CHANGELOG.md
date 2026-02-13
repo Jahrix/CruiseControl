@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.1.3 - Regulator Proof + Bridge UX
+
+### Added
+- Header branding update: `CruiseControl by Jahrix`.
+- New `Regulator Proof` panel with:
+  - bridge mode (`UDP` / `File Fallback` / `None`)
+  - telemetry freshness + packets/sec
+  - last command + timestamp age
+  - ACK status line with file-bridge expected no-ACK handling
+  - applied LOD evidence from UDP ACK payload or `lod_status.txt`
+  - `LOD CHANGING: YES/NO` indicator
+- Bridge folder action in UI:
+  - `Open Bridge Folder in Finder`
+  - auto-creates `~/Library/Application Support/CruiseControl/` if missing
+- Temporary test controls with auto-restore:
+  - `Test: FPS Mode (shorter draw distance)` -> LOD `1.30`
+  - `Test: Visual Mode (longer draw distance)` -> LOD `0.75`
+  - 10s timed run with automatic restore and recent action logging
+
+### Changed
+- User-facing terminology in UI moved from `Governor` to `Regulator` (labels, cards, wizard text).
+- Connection Wizard now separates:
+  - X-Plane running
+  - telemetry health
+  - control bridge mode
+  - ACK status
+- File fallback bridge path standardized to:
+  - `~/Library/Application Support/CruiseControl/lod_target.txt`
+  - `~/Library/Application Support/CruiseControl/lod_mode.txt`
+  - `~/Library/Application Support/CruiseControl/lod_status.txt` (optional Lua output)
+- LOD direction labeling clarified in UI:
+  - higher bias = shorter draw distance (more FPS)
+  - lower bias = longer draw distance (more visuals)
+- App version bumped to `1.1.3` (build `113`).
+
+### Fixed
+- Bridge status contradictions reduced by introducing shared `RegulatorControlState` in sampler/UI.
+- File bridge mode no longer presents missing ACK as an automatic error in wizard/proof contexts.
+
 ## v1.1.2 - Memory Relief + ACK + Smart Scan
 
 ### Added

@@ -145,7 +145,7 @@ extension PerformanceSnapshot {
         lastUpdated: nil,
         xplaneTelemetry: nil,
         udpStatus: .idle(),
-        governorStatusLine: "Governor: Disabled"
+        governorStatusLine: "Regulator: Disabled"
     )
 }
 

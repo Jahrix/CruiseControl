@@ -292,7 +292,7 @@ struct MenuContentView: View {
                 quickMetric(title: "CPU", value: percentString(sampler.snapshot.cpuTotalPercent))
                 quickMetric(title: "Pressure", value: "\(sampler.snapshot.memoryPressure.displayName) \(sampler.snapshot.memoryPressureTrend.icon)")
                 quickMetric(title: "UDP", value: sampler.snapshot.udpStatus.state.displayName)
-                quickMetric(title: "Governor", value: settings.governorModeEnabled ? "ON" : "OFF")
+                quickMetric(title: "Regulator", value: settings.governorModeEnabled ? "ON" : "OFF")
             }
             .padding(12)
             .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -343,11 +343,14 @@ struct MenuContentView: View {
                         .foregroundStyle(sampler.snapshot.udpStatus.state == .active ? neonMint : .orange)
                 }
 
-                Text("CruiseControl Operations")
+                Text("CruiseControl")
                     .font(.system(size: 40, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
+                Text("by Jahrix")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.68))
 
-                Text("Real-time simulator performance monitoring, governor controls, and diagnostics tuned for long-haul sessions.")
+                Text("Real-time simulator performance monitoring, regulator controls, and diagnostics tuned for long-haul sessions.")
                     .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.68))
                     .fixedSize(horizontal: false, vertical: true)
@@ -451,18 +454,24 @@ struct MenuContentView: View {
                 }
             }
 
+
             dashboardCard(title: "Connection Wizard") {
                 VStack(alignment: .leading, spacing: 8) {
-                    wizardStep(title: "1) X-Plane process", good: sampler.isSimActive, detail: sampler.isSimActive ? "Detected" : "Not detected")
+                    wizardStep(title: "1) X-Plane running", good: sampler.isSimActive, detail: sampler.isSimActive ? "Detected" : "Not detected")
                     wizardStep(
-                        title: "2) UDP telemetry",
-                        good: sampler.snapshot.udpStatus.state == .active,
-                        detail: "\(sampler.snapshot.udpStatus.listenHost):\(String(sampler.snapshot.udpStatus.listenPort))  -  \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)) pkt/s"
+                        title: "2) Telemetry",
+                        good: sampler.snapshot.udpStatus.state == .active || sampler.snapshot.udpStatus.state == .listening,
+                        detail: "\(sampler.snapshot.udpStatus.state.displayName) | \(telemetryFreshnessText) | \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)) pkt/s"
                     )
                     wizardStep(
-                        title: "3) FlyWithLua ACK",
-                        good: sampler.governorAckState == .ackOK || sampler.governorAckState == .connected,
-                        detail: "\(sampler.governorCommandStatus)\(sampler.governorLastACKText.map { "  -  \($0)" } ?? "")"
+                        title: "3) Control Bridge",
+                        good: regulatorBridgeConnected,
+                        detail: regulatorControlWizardDetail
+                    )
+                    wizardStep(
+                        title: "4) ACK",
+                        good: regulatorAckWizardHealthy,
+                        detail: regulatorAckWizardDetail
                     )
 
                     HStack {
@@ -483,14 +492,109 @@ struct MenuContentView: View {
                             processActionResult = outcome.message
                         }
                         .buttonStyle(.borderedProminent)
+
+                        Button("Open Bridge Folder in Finder") {
+                            let outcome = sampler.openRegulatorBridgeFolderInFinder()
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.bordered)
                     }
 
-                    Text("Install Lua script at X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
+                    Text("Install Lua script in X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
+            dashboardCard(title: "Regulator Proof") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("LOD CHANGING: \(sampler.regulatorLODChanging ? "YES" : "NO")")
+                            .font(.headline)
+                            .foregroundStyle(sampler.regulatorLODChanging ? .green : .orange)
+                        Spacer()
+                        Text(regulatorControlStateBadge)
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background((sampler.regulatorLODChanging ? Color.green : Color.orange).opacity(0.15), in: Capsule())
+                    }
+
+                    Text("Bridge mode: \(sampler.regulatorControlState.modeLabel)")
+                        .font(.subheadline)
+                    Text("Telemetry freshness: \(telemetryFreshnessText) | \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)) pkt/s")
+                        .font(.subheadline)
+
+                    if let lastCommand = sampler.governorLastCommandText {
+                        Text("Last command sent: \(lastCommand) | \(lastCommandAgeText)")
+                            .font(.subheadline)
+                    } else {
+                        Text("Last command sent: none")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("ACK status: \(regulatorAckProofLine)")
+                        .font(.subheadline)
+
+                    if let evidence = appliedLODEvidenceLine {
+                        Text("Applied LOD evidence: \(evidence)")
+                            .font(.subheadline)
+                    } else {
+                        Text("Applied LOD evidence: No confirmation available")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack {
+                        Button("Open Bridge Folder in Finder") {
+                            let outcome = sampler.openRegulatorBridgeFolderInFinder()
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Test: FPS Mode (shorter draw distance)") {
+                            let outcome = sampler.runRegulatorTimedTest(
+                                lodValue: 1.30,
+                                modeLabel: "More FPS (shorter draw distance)",
+                                durationSeconds: 10
+                            )
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(sampler.regulatorTestActive)
+
+                        Button("Test: Visual Mode (longer draw distance)") {
+                            let outcome = sampler.runRegulatorTimedTest(
+                                lodValue: 0.75,
+                                modeLabel: "More visuals (longer draw distance)",
+                                durationSeconds: 10
+                            )
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(sampler.regulatorTestActive)
+                    }
+
+                    if sampler.regulatorTestActive {
+                        Text("Test running... \(sampler.regulatorTestCountdownSeconds)s")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    if !sampler.regulatorRecentActions.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Recent actions")
+                                .font(.headline)
+                            ForEach(Array(sampler.regulatorRecentActions.suffix(5).reversed())) { action in
+                                Text("\(timeOnly(action.timestamp))  -  \(action.message)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
             dashboardCard(title: "X-Plane UDP Setup") {
                 DisclosureGroup(isExpanded: $showUDPSetupGuide) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -668,9 +772,9 @@ struct MenuContentView: View {
 
     private var simModeSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            dashboardCard(title: "LOD Governor") {
+            dashboardCard(title: "LOD Regulator") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Enable LOD Governor", isOn: $settings.governorModeEnabled)
+                    Toggle("Enable LOD Regulator", isOn: $settings.governorModeEnabled)
 
                     HStack(spacing: 12) {
                         metricPill(label: "AGL", value: sampler.governorActiveAGLFeet.map { String(format: "%.0f ft", $0) } ?? "AGL unavailable")
@@ -680,18 +784,22 @@ struct MenuContentView: View {
                         metricPill(label: "Last Sent", value: sampler.governorLastSentLOD.map { String(format: "%.2f", $0) } ?? "-")
                     }
 
-                    Text("ACK state: \(sampler.governorAckState.displayName)")
+
+                    Text("Control state: \(regulatorControlStateBadge)")
                         .font(.subheadline)
-                        .foregroundStyle(sampler.governorAckState == .ackOK ? .green : .orange)
-                    if let lastACK = sampler.governorLastACKText {
-                        Text("Last ACK: \(lastACK)")
+                        .foregroundStyle(regulatorBridgeConnected ? .green : .orange)
+                    if case .udpAckOK(_, let payload) = sampler.regulatorControlState {
+                        Text("Last ACK: \(payload)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if case .fileBridge = sampler.regulatorControlState {
+                        Text("ACK not used in file bridge mode.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Text("Command status: \(sampler.governorCommandStatus)")
                         .font(.subheadline)
-                        .foregroundStyle(sampler.governorCommandStatus.hasPrefix("Connected") || sampler.governorAckState == .ackOK ? .green : .orange)
-
+                        .foregroundStyle(regulatorBridgeConnected ? .green : .orange)
                     if let pauseReason = sampler.governorPauseReason {
                         Text(pauseReason)
                             .font(.caption)
@@ -705,16 +813,19 @@ struct MenuContentView: View {
 
                     Text("Per-tier LOD targets")
                         .font(.headline)
-                    sliderRow(label: "GROUND target", value: $settings.governorTargetLODGround, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "TRANSITION target", value: $settings.governorTargetLODClimbDescent, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "CRUISE target", value: $settings.governorTargetLODCruise, range: 0.20...3.00, step: 0.05)
+                    Text("LOD bias: higher = shorter draw distance (more FPS), lower = longer draw distance (more visuals).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    sliderRow(label: "GROUND target (higher = more FPS)", value: $settings.governorTargetLODGround, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "TRANSITION target (higher = more FPS)", value: $settings.governorTargetLODClimbDescent, range: 0.20...3.00, step: 0.05)
+                    sliderRow(label: "CRUISE target (higher = more FPS)", value: $settings.governorTargetLODCruise, range: 0.20...3.00, step: 0.05)
 
                     Text("Safety clamps")
                         .font(.headline)
-                    sliderRow(label: "Min LOD", value: $settings.governorLODMinClamp, range: 0.20...2.00, step: 0.05)
-                    sliderRow(label: "Max LOD", value: $settings.governorLODMaxClamp, range: 0.50...3.00, step: 0.05)
+                    sliderRow(label: "Min LOD bias (visual floor)", value: $settings.governorLODMinClamp, range: 0.20...2.00, step: 0.05)
+                    sliderRow(label: "Max LOD bias (FPS ceiling)", value: $settings.governorLODMaxClamp, range: 0.50...3.00, step: 0.05)
 
-                    Text("Governor behavior")
+                    Text("Regulator behavior")
                         .font(.headline)
                     sliderRow(label: "Min time in tier (s)", value: $settings.governorMinimumTierHoldSeconds, range: 0...30, step: 1)
                     sliderRow(label: "Ramp duration (s)", value: $settings.governorSmoothingDurationSeconds, range: 0.5...12, step: 0.5)
@@ -742,20 +853,53 @@ struct MenuContentView: View {
                         .buttonStyle(.bordered)
                     }
 
-                    HStack {
-                        Text("Test LOD")
-                        TextField("1.00", text: $governorTestLODText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 90)
-                        Button("Test send") {
-                            guard let lod = Double(governorTestLODText) else {
-                                processActionResult = "Invalid LOD test value. Use a number like 0.95 or 1.25."
-                                return
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Button("Test: FPS Mode (shorter draw distance)") {
+                                let outcome = sampler.runRegulatorTimedTest(
+                                    lodValue: 1.30,
+                                    modeLabel: "More FPS (shorter draw distance)",
+                                    durationSeconds: 10
+                                )
+                                processActionResult = outcome.message
                             }
-                            let outcome = sampler.sendGovernorTestCommand(lodValue: lod)
-                            processActionResult = outcome.message
+                            .buttonStyle(.borderedProminent)
+                            .disabled(sampler.regulatorTestActive)
+
+                            Button("Test: Visual Mode (longer draw distance)") {
+                                let outcome = sampler.runRegulatorTimedTest(
+                                    lodValue: 0.75,
+                                    modeLabel: "More visuals (longer draw distance)",
+                                    durationSeconds: 10
+                                )
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(sampler.regulatorTestActive)
                         }
-                        .buttonStyle(.borderedProminent)
+
+                        HStack {
+                            Text("Manual test LOD")
+                            TextField("1.00", text: $governorTestLODText)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 90)
+                            Button("Send once") {
+                                guard let lod = Double(governorTestLODText) else {
+                                    processActionResult = "Invalid LOD test value. Use a number like 0.95 or 1.25."
+                                    return
+                                }
+                                let outcome = sampler.sendGovernorTestCommand(lodValue: lod)
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(sampler.regulatorTestActive)
+                        }
+
+                        if sampler.regulatorTestActive {
+                            Text("Test running... \(sampler.regulatorTestCountdownSeconds)s")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
 
                     Text(sampler.snapshot.governorStatusLine)
@@ -764,7 +908,7 @@ struct MenuContentView: View {
                 }
             }
 
-            dashboardCard(title: "Per-Airport Governor Profiles") {
+            dashboardCard(title: "Per-Airport Regulator Profiles") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Active ICAO source: \(resolvedActiveICAO)")
                         .font(.subheadline)
@@ -838,10 +982,10 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Setup FlyWithLua Companion") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Install to: X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/CruiseControl_Governor.lua")
-                    Text("Companion listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
+                    Text("Install to: X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/")
+                    Text("Companion regulator bridge listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
                     Text("ACK protocol: PING/PONG, ACK ENABLE, ACK DISABLE, ACK SET_LOD <value>, ERR <message>.")
-                    Text("If LuaSocket is missing, CruiseControl writes fallback commands to /tmp/CruiseControl_lod_target.txt.")
+                    Text("If LuaSocket is missing, CruiseControl writes fallback commands to ~/Library/Application Support/CruiseControl/lod_target.txt and lod_mode.txt.")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -997,7 +1141,7 @@ struct MenuContentView: View {
                     )
 
                     historyChartRow(
-                        title: "Governor ACK",
+                        title: "Regulator ACK",
                         values: points.map { $0.governorAckState.score },
                         color: .green
                     )
@@ -1049,7 +1193,7 @@ struct MenuContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and governor ACK status.")
+                    Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and regulator control status.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -1382,6 +1526,133 @@ struct MenuContentView: View {
         return "\(secondsAgo)s ago"
     }
 
+    private var telemetryFreshnessText: String {
+        guard let lastPacket = sampler.snapshot.udpStatus.lastPacketDate else {
+            return "No packets yet"
+        }
+        return "Last packet \(relativeAgeText(from: lastPacket))"
+    }
+
+    private var regulatorBridgeConnected: Bool {
+        switch sampler.regulatorControlState {
+        case .udpAckOK, .fileBridge:
+            return true
+        case .udpNoAck, .disconnected:
+            return false
+        }
+    }
+
+    private var regulatorControlWizardDetail: String {
+        switch sampler.regulatorControlState {
+        case .disconnected:
+            return "None"
+        case .udpNoAck:
+            return "UDP \(settings.governorCommandHost):\(String(settings.governorCommandPort)) (waiting)"
+        case .udpAckOK:
+            return "UDP \(settings.governorCommandHost):\(String(settings.governorCommandPort))"
+        case .fileBridge(let lastUpdate):
+            return "File fallback | update \(relativeAgeText(from: lastUpdate))"
+        }
+    }
+
+    private var regulatorAckWizardHealthy: Bool {
+        switch sampler.regulatorControlState {
+        case .udpAckOK, .fileBridge:
+            return true
+        case .udpNoAck, .disconnected:
+            return false
+        }
+    }
+
+    private var regulatorAckWizardDetail: String {
+        switch sampler.regulatorControlState {
+        case .udpAckOK(let lastAck, let payload):
+            return "OK | \(relativeAgeText(from: lastAck)) | \(payload)"
+        case .fileBridge(let lastUpdate):
+            return "Not configured (expected in file mode) | update \(relativeAgeText(from: lastUpdate))"
+        case .udpNoAck:
+            return "Waiting for ACK"
+        case .disconnected:
+            return "Not configured"
+        }
+    }
+
+    private var regulatorControlStateBadge: String {
+        switch sampler.regulatorControlState {
+        case .disconnected:
+            return "DISCONNECTED"
+        case .udpNoAck:
+            return "UDP NO ACK"
+        case .udpAckOK:
+            return "UDP ACK OK"
+        case .fileBridge:
+            return "FILE BRIDGE"
+        }
+    }
+
+    private var regulatorAckProofLine: String {
+        switch sampler.regulatorControlState {
+        case .udpAckOK(let lastAck, let payload):
+            return "ACK OK | \(relativeAgeText(from: lastAck)) | \(payload)"
+        case .fileBridge(let lastUpdate):
+            return "No ACK (file bridge) | Connected | update \(relativeAgeText(from: lastUpdate))"
+        case .udpNoAck:
+            return "No ACK yet (UDP)"
+        case .disconnected:
+            return "Bridge not connected"
+        }
+    }
+
+    private var appliedLODEvidenceLine: String? {
+        switch sampler.regulatorControlState {
+        case .udpAckOK(_, let payload):
+            if let applied = parseAppliedLOD(from: payload) {
+                return "UDP ACK applied \(String(format: "%.2f", applied))"
+            }
+            return payload
+        case .fileBridge(let lastUpdate):
+            guard let status = sampler.regulatorFileBridgeStatus else {
+                return "No ACK (file bridge). Waiting for lod_status.txt updates."
+            }
+
+            var parts: [String] = ["File bridge"]
+            if let current = status.currentLOD {
+                parts.append("current \(String(format: "%.2f", current))")
+            }
+            if let target = status.targetLOD {
+                parts.append("target \(String(format: "%.2f", target))")
+            }
+            if let tier = status.tier, !tier.isEmpty {
+                parts.append("tier \(tier)")
+            }
+            parts.append("update \(relativeAgeText(from: status.lastUpdateDate ?? lastUpdate))")
+            return parts.joined(separator: " | ")
+        case .udpNoAck, .disconnected:
+            return nil
+        }
+    }
+
+    private var lastCommandAgeText: String {
+        guard let lastCommandDate = sampler.governorLastCommandDate else {
+            return "time unknown"
+        }
+        return relativeAgeText(from: lastCommandDate)
+    }
+
+    private func parseAppliedLOD(from payload: String?) -> Double? {
+        guard let payload else { return nil }
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.uppercased().hasPrefix("ACK SET_LOD") else { return nil }
+        return trimmed.split(separator: " ").last.flatMap { Double($0) }
+    }
+
+    private func relativeAgeText(from date: Date) -> String {
+        let secondsAgo = Int(max(now.timeIntervalSince(date), 0))
+        if secondsAgo < 1 {
+            return "Just now"
+        }
+        return "\(secondsAgo)s ago"
+    }
     private var isStale: Bool {
         sampler.isSamplingStale(at: now)
     }
@@ -1537,19 +1808,19 @@ struct MenuContentView: View {
 
     private func applyGovernorBridgeEndpoint() {
         guard let port = Int(governorPortText), (1024...65535).contains(port) else {
-            processActionResult = "Governor command port must be between 1024 and 65535."
+            processActionResult = "Regulator command port must be between 1024 and 65535."
             return
         }
 
         let host = governorHostText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else {
-            processActionResult = "Governor host cannot be empty."
+            processActionResult = "Regulator host cannot be empty."
             return
         }
 
         settings.governorCommandHost = host
         settings.governorCommandPort = port
-        processActionResult = "Governor bridge set to \(host):\(String(port))."
+        processActionResult = "Regulator bridge set to \(host):\(String(port))."
     }
 
     private func simBoundHeuristic() -> String {

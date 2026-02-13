@@ -25,6 +25,30 @@ enum GovernorAckState: String, Codable {
     }
 }
 
+enum RegulatorControlState {
+    case disconnected
+    case udpNoAck
+    case udpAckOK(lastAck: Date, payload: String)
+    case fileBridge(lastUpdate: Date)
+
+    var modeLabel: String {
+        switch self {
+        case .disconnected:
+            return "None"
+        case .udpNoAck, .udpAckOK:
+            return "UDP"
+        case .fileBridge:
+            return "File Fallback"
+        }
+    }
+}
+
+struct RegulatorActionLog: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let message: String
+}
+
 struct StutterHeuristicConfig: Codable {
     var frameTimeSpikeMS: Double
     var fpsDropThreshold: Double

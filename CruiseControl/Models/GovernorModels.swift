@@ -88,7 +88,7 @@ struct GovernorDecision: Codable {
     var thresholdsText: String
 
     var statusLine: String {
-        "Governor: \(tier.rawValue) | Thresholds: \(thresholdsText) | Current LOD target: \(String(format: "%.2f", targetLOD))"
+        "Regulator: \(tier.rawValue) | Thresholds: \(thresholdsText) | Current LOD target: \(String(format: "%.2f", targetLOD))"
     }
 }
 
