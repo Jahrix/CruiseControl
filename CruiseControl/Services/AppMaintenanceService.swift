@@ -14,6 +14,7 @@ private struct GitHubReleaseInfo {
     let releaseURL: URL?
     let zipAssetURL: URL?
     let zipAssetName: String?
+    let isPrerelease: Bool
 }
 
 private struct GitHubReleaseFetch {
@@ -44,6 +45,10 @@ enum AppMaintenanceService {
 
     private static var githubLatestReleaseAPIURL: URL? {
         URL(string: "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases/latest")
+    }
+
+    private static var githubRecentReleasesAPIURL: URL? {
+        URL(string: "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases?per_page=1")
     }
 
     static func showAppInFinder() -> ActionOutcome {
@@ -242,6 +247,12 @@ enum AppMaintenanceService {
             if !(200...299).contains(http.statusCode) {
                 let statusCode = http.statusCode
                 if statusCode == 404 {
+                    // GitHub /releases/latest ignores prereleases. Fall back to newest release (including prereleases).
+                    let fallback = await fetchNewestReleaseIncludingPrereleases(currentVersion: currentVersion)
+                    if fallback.info != nil {
+                        return fallback
+                    }
+
                     return GitHubReleaseFetch(
                         info: nil,
                         outcome: UpdateCheckOutcome(
@@ -307,12 +318,72 @@ enum AppMaintenanceService {
                     currentVersion: current,
                     releaseURL: releaseURL,
                     zipAssetURL: preferredZip.flatMap { URL(string: $0.browser_download_url) },
-                    zipAssetName: preferredZip?.name
+                    zipAssetName: preferredZip?.name,
+                    isPrerelease: false
                 ),
                 outcome: nil
             )
         } catch {
             return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: \(error.localizedDescription)", latestVersion: nil, releaseURL: githubReleasesPageURL))
+        }
+    }
+
+    private static func fetchNewestReleaseIncludingPrereleases(currentVersion: String) async -> GitHubReleaseFetch {
+        guard let url = githubRecentReleasesAPIURL else {
+            return GitHubReleaseFetch(info: nil, outcome: nil)
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue("CruiseControl/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                return GitHubReleaseFetch(info: nil, outcome: nil)
+            }
+
+            struct ReleasePayload: Decodable {
+                let tag_name: String
+                let html_url: String
+                let prerelease: Bool
+                let assets: [Asset]
+            }
+
+            struct Asset: Decodable {
+                let name: String
+                let browser_download_url: String
+            }
+
+            let payloads = try JSONDecoder().decode([ReleasePayload].self, from: data)
+            guard let payload = payloads.first else {
+                return GitHubReleaseFetch(info: nil, outcome: nil)
+            }
+
+            let latest = normalizedVersion(payload.tag_name)
+            let current = normalizedVersion(currentVersion)
+            let releaseURL = URL(string: payload.html_url) ?? githubReleasesPageURL
+
+            let preferredZip = payload.assets.first {
+                let lower = $0.name.lowercased()
+                return lower.hasSuffix(".zip") && lower.contains("cruisecontrol")
+            } ?? payload.assets.first {
+                $0.name.lowercased().hasSuffix(".zip")
+            }
+
+            return GitHubReleaseFetch(
+                info: GitHubReleaseInfo(
+                    latestVersion: latest,
+                    currentVersion: current,
+                    releaseURL: releaseURL,
+                    zipAssetURL: preferredZip.flatMap { URL(string: $0.browser_download_url) },
+                    zipAssetName: preferredZip?.name,
+                    isPrerelease: payload.prerelease
+                ),
+                outcome: nil
+            )
+        } catch {
+            return GitHubReleaseFetch(info: nil, outcome: nil)
         }
     }
 
