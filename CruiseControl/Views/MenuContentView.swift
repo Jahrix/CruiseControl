@@ -1309,6 +1309,38 @@ struct MenuContentView: View {
                 }
             }
 
+            dashboardCard(title: "X-Plane Advisor") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("CruiseControl provides recommendations only. It does not modify X-Plane graphics settings automatically in v1.2.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    let advisor = xPlaneAdvisorItems()
+                    if advisor.isEmpty {
+                        Text("No high-risk symptoms right now. Keep monitoring frame-time and pressure trends.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(advisor.enumerated()), id: \.offset) { _, item in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.symptom)
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Likely cause: \(item.cause)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Recommended change: \(item.recommendation)")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                Text("Why: \(item.why)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 3)
+                        }
+                    }
+                }
+            }
+
             dashboardCard(title: "Per-Airport Regulator Profiles") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Active ICAO source: \(resolvedActiveICAO)")
@@ -2575,6 +2607,66 @@ struct MenuContentView: View {
         formatter.dateStyle = .none
         formatter.timeStyle = .medium
         return formatter.string(from: date)
+    }
+
+    private struct AdvisorItem {
+        let symptom: String
+        let cause: String
+        let recommendation: String
+        let why: String
+    }
+
+    private func xPlaneAdvisorItems() -> [AdvisorItem] {
+        var items: [AdvisorItem] = []
+        let telemetry = sampler.snapshot.xplaneTelemetry
+
+        if sampler.snapshot.memoryPressure == .red || sampler.snapshot.swapDelta5MinBytes > Int64(200 * 1_024 * 1_024) {
+            items.append(
+                AdvisorItem(
+                    symptom: "Memory pressure high or swap rising",
+                    cause: "Texture residency exceeds available memory bandwidth",
+                    recommendation: "Set Texture Resolution to Medium",
+                    why: "Lower texture residency reduces swap churn and paging stalls."
+                )
+            )
+        }
+
+        if let fps = telemetry?.fps, fps < 32, sampler.snapshot.cpuTotalPercent < 75 {
+            items.append(
+                AdvisorItem(
+                    symptom: "Low FPS with moderate CPU load",
+                    cause: "Likely GPU/graphics bound scenario",
+                    recommendation: "Reduce cloud quality and enable FSR if available",
+                    why: "GPU-side frame time can improve without major CPU changes."
+                )
+            )
+        }
+
+        if sampler.snapshot.cpuTotalPercent > 82,
+           let agl = telemetry?.altitudeAGLFeet,
+           agl < 3000 {
+            items.append(
+                AdvisorItem(
+                    symptom: "High CPU load near airports",
+                    cause: "World objects and CPU draw-call pressure",
+                    recommendation: "Lower world objects and keep ground regulator target higher",
+                    why: "Airport scenes are CPU-heavy; reducing object complexity smooths frame pacing."
+                )
+            )
+        }
+
+        if sampler.snapshot.thermalState == .serious || sampler.snapshot.thermalState == .critical {
+            items.append(
+                AdvisorItem(
+                    symptom: "Thermal state elevated",
+                    cause: "Sustained package heat and probable throttling",
+                    recommendation: "Reduce frame cap or graphics complexity for 5-10 minutes",
+                    why: "Thermal recovery can restore consistent clocks and frame-time stability."
+                )
+            )
+        }
+
+        return Array(items.prefix(4))
     }
 
     private func refreshRunningApps() {
