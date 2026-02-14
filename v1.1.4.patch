@@ -1,0 +1,2465 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e76e421..41fb02a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,39 @@
+ # Changelog
+ 
++## v1.1.4 - Smart Scan + Safe Performance Cleaner
++
++### Added
++- Cleaner Suite sidebar modules:
++  - Smart Scan
++  - Cleaner
++  - Large Files
++  - Optimization
++  - Quarantine
++- Async Smart Scan runner with module progress reporting and cancellation.
++- Quarantine batch management:
++  - batch list UI
++  - restore/delete by batch
++  - total quarantined size display
++- Trash module actions:
++  - open Trash in Finder
++  - empty Trash confirmation flow
++- Optimization allowlist persistence and process-level allowlist action.
++- `Open Applications Folder` app maintenance action.
++- Sparkle-compatible update bridge path with GitHub fallback.
++
++### Changed
++- Smart Scan moved to dedicated section with review deep-links into module pages.
++- Cleaner logic hardened with safe allowlist defaults and protected path exclusions.
++- Large Files scanning now requires explicit scope selection.
++- Memory Relief wording and controls now emphasize truthful pressure-reduction behavior.
++- GitHub update endpoint normalized to the active repository.
++- Version bumped to `1.1.4` (build `114`).
++
++### Fixed
++- Quarantine manifest expanded and written atomically per batch.
++- Destructive actions now route through section-aware selection and confirmation dialogs.
++- Port/endpoint formatting remains non-grouped numeric style.
++
+ ## v1.1.3 - Regulator Proof + Bridge UX
+ 
+ ### Added
+diff --git a/CruiseControl.xcodeproj/project.pbxproj b/CruiseControl.xcodeproj/project.pbxproj
+index 865a95c..076501c 100644
+--- a/CruiseControl.xcodeproj/project.pbxproj
++++ b/CruiseControl.xcodeproj/project.pbxproj
+@@ -7,13 +7,13 @@
+ 	objects = {
+ 
+ /* Begin PBXFileReference section */
+-		3397B0302F3E68BB0033EBD8 /* CruiseControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "CruiseControl.app"; sourceTree = BUILT_PRODUCTS_DIR; };
++		3397B0302F3E68BB0033EBD8 /* CruiseControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CruiseControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
+ /* End PBXFileReference section */
+ 
+ /* Begin PBXFileSystemSynchronizedRootGroup section */
+ 		3397B0322F3E68BB0033EBD8 /* CruiseControl */ = {
+ 			isa = PBXFileSystemSynchronizedRootGroup;
+-			path = "CruiseControl";
++			path = CruiseControl;
+ 			sourceTree = "<group>";
+ 		};
+ /* End PBXFileSystemSynchronizedRootGroup section */
+@@ -63,10 +63,10 @@
+ 			fileSystemSynchronizedGroups = (
+ 				3397B0322F3E68BB0033EBD8 /* CruiseControl */,
+ 			);
+-			name = "CruiseControl";
++			name = CruiseControl;
+ 			packageProductDependencies = (
+ 			);
+-			productName = "CruiseControl";
++			productName = CruiseControl;
+ 			productReference = 3397B0302F3E68BB0033EBD8 /* CruiseControl.app */;
+ 			productType = "com.apple.product-type.application";
+ 		};
+@@ -250,7 +250,7 @@
+ 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+ 				CODE_SIGN_STYLE = Automatic;
+ 				COMBINE_HIDPI_IMAGES = YES;
+-				CURRENT_PROJECT_VERSION = 113;
++				CURRENT_PROJECT_VERSION = 114;
+ 				ENABLE_APP_SANDBOX = YES;
+ 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+ 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+@@ -262,8 +262,8 @@
+ 					"$(inherited)",
+ 					"@executable_path/../Frameworks",
+ 				);
+-				MARKETING_VERSION = 1.1.3;
+-				PRODUCT_BUNDLE_IDENTIFIER = "jahrix.CruiseControl";
++				MARKETING_VERSION = 1.1.4;
++				PRODUCT_BUNDLE_IDENTIFIER = jahrix.CruiseControl;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				REGISTER_APP_GROUPS = YES;
+ 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+@@ -282,7 +282,7 @@
+ 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+ 				CODE_SIGN_STYLE = Automatic;
+ 				COMBINE_HIDPI_IMAGES = YES;
+-				CURRENT_PROJECT_VERSION = 113;
++				CURRENT_PROJECT_VERSION = 114;
+ 				ENABLE_APP_SANDBOX = YES;
+ 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+ 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
+@@ -294,8 +294,8 @@
+ 					"$(inherited)",
+ 					"@executable_path/../Frameworks",
+ 				);
+-				MARKETING_VERSION = 1.1.3;
+-				PRODUCT_BUNDLE_IDENTIFIER = "jahrix.CruiseControl";
++				MARKETING_VERSION = 1.1.4;
++				PRODUCT_BUNDLE_IDENTIFIER = jahrix.CruiseControl;
+ 				PRODUCT_NAME = "$(TARGET_NAME)";
+ 				REGISTER_APP_GROUPS = YES;
+ 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+diff --git a/CruiseControl/AppDelegate.swift b/CruiseControl/AppDelegate.swift
+index ffcd202..980caf2 100644
+--- a/CruiseControl/AppDelegate.swift
++++ b/CruiseControl/AppDelegate.swift
+@@ -2,6 +2,9 @@ import Foundation
+ import AppKit
+ import Combine
+ import UserNotifications
++#if canImport(Sparkle)
++import Sparkle
++#endif
+ 
+ @MainActor
+ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+@@ -9,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     let featureStore = V112FeatureStore()
+     lazy var sampler = PerformanceSampler()
+ 
++    #if canImport(Sparkle)
++    var sparkleUpdaterController: SPUStandardUpdaterController?
++    #endif
++
+     private var cancellables: Set<AnyCancellable> = []
+     private var previousSimActive: Bool = false
+     private var previousAlertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
+@@ -18,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     func applicationDidFinishLaunching(_ notification: Notification) {
+         NSApp.setActivationPolicy(.regular)
+         configureNotifications()
++        configureSparkleIfAvailable()
+ 
+         #if DEBUG
+         GovernorPolicyEngineSelfTests.run()
+@@ -106,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     func checkForUpdatesFromMenu() {
+         Task {
+             let current = AppMaintenanceService.currentVersionString()
+-            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
++            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: true)
+ 
+             let alert = NSAlert()
+             alert.messageText = "CruiseControl Update Check"
+@@ -133,6 +141,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
+     }
+ 
++    private func configureSparkleIfAvailable() {
++        #if canImport(Sparkle)
++        guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
++              !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
++              let _ = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
++            return
++        }
++
++        sparkleUpdaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
++        #endif
++    }
++
+     private func focusMainWindow() {
+         NSApp.activate(ignoringOtherApps: true)
+         if NSApp.windows.isEmpty {
+diff --git a/CruiseControl/CruiseControlApp.swift b/CruiseControl/CruiseControlApp.swift
+index 7a850f1..71db7fb 100644
+--- a/CruiseControl/CruiseControlApp.swift
++++ b/CruiseControl/CruiseControlApp.swift
+@@ -36,6 +36,10 @@ struct CruiseControlApp: App {
+                     _ = AppMaintenanceService.showAppInFinder()
+                 }
+ 
++                Button("Open Applications Folder") {
++                    _ = AppMaintenanceService.openApplicationsFolder()
++                }
++
+                 Button("Install to /Applications") {
+                     _ = AppMaintenanceService.installToApplications()
+                 }
+diff --git a/CruiseControl/Info.plist b/CruiseControl/Info.plist
+index 96e9a17..3eac86c 100644
+--- a/CruiseControl/Info.plist
++++ b/CruiseControl/Info.plist
+@@ -15,9 +15,9 @@
+ 	<key>CFBundlePackageType</key>
+ 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+ 	<key>CFBundleShortVersionString</key>
+-	<string>1.1.3</string>
++	<string>1.1.4</string>
+ 	<key>CFBundleVersion</key>
+-	<string>113</string>
++	<string>114</string>
+ 	<key>LSMinimumSystemVersion</key>
+ 	<string>13.0</string>
+ 	<key>LSUIElement</key>
+@@ -26,5 +26,9 @@
+ 	<string></string>
+ 	<key>NSPrincipalClass</key>
+ 	<string>NSApplication</string>
++	<key>SUFeedURL</key>
++	<string>https://example.com/cruisecontrol/appcast.xml</string>
++	<key>SUPublicEDKey</key>
++	<string>REPLACE_WITH_SPARKLE_PUBLIC_ED_KEY</string>
+ </dict>
+ </plist>
+diff --git a/CruiseControl/Models/SmartScanModels.swift b/CruiseControl/Models/SmartScanModels.swift
+index 41bfeab..eef7a07 100644
+--- a/CruiseControl/Models/SmartScanModels.swift
++++ b/CruiseControl/Models/SmartScanModels.swift
+@@ -28,9 +28,20 @@ struct SmartScanItem: Identifiable, Codable, Hashable {
+     }
+ }
+ 
++struct SmartScanModuleResult: Identifiable, Codable {
++    let module: SmartScanModule
++    let items: [SmartScanItem]
++    let bytes: UInt64
++    let duration: TimeInterval
++    let error: String?
++
++    var id: SmartScanModule { module }
++}
++
+ struct SmartScanSummary {
+     let generatedAt: Date
+     let duration: TimeInterval
++    let moduleResults: [SmartScanModuleResult]
+     let items: [SmartScanItem]
+ 
+     var totalBytes: UInt64 {
+@@ -38,14 +49,47 @@ struct SmartScanSummary {
+     }
+ }
+ 
++struct SmartScanRunState {
++    var isRunning: Bool
++    var overallProgress: Double
++    var moduleProgress: [SmartScanModule: Double]
++    var startedAt: Date?
++    var finishedAt: Date?
++    var cancellable: Bool
++    var completedModules: Set<SmartScanModule>
++
++    static let idle = SmartScanRunState(
++        isRunning: false,
++        overallProgress: 0,
++        moduleProgress: [:],
++        startedAt: nil,
++        finishedAt: nil,
++        cancellable: false,
++        completedModules: []
++    )
++}
++
++struct QuarantineBatchSummary: Identifiable, Hashable {
++    let batchID: String
++    let folderPath: String
++    let createdAt: Date
++    let entryCount: Int
++    let totalBytes: UInt64
++
++    var id: String { batchID }
++}
++
+ struct QuarantineManifestEntry: Codable, Hashable {
+     let originalPath: String
+     let quarantinedPath: String
+     let sizeBytes: UInt64
+     let timestamp: Date
++    let sha256: String?
+ }
+ 
+ struct QuarantineManifest: Codable {
++    let batchId: String
+     let createdAt: Date
++    let totalBytes: UInt64
+     let entries: [QuarantineManifestEntry]
+ }
+diff --git a/CruiseControl/Models/V112FeatureStore.swift b/CruiseControl/Models/V112FeatureStore.swift
+index 24116f4..d8f58f9 100644
+--- a/CruiseControl/Models/V112FeatureStore.swift
++++ b/CruiseControl/Models/V112FeatureStore.swift
+@@ -19,6 +19,10 @@ final class V112FeatureStore: ObservableObject {
+         didSet { save() }
+     }
+ 
++    @Published var advancedModeExtraConfirmation: Bool {
++        didSet { save() }
++    }
++
+     @Published var purgeAttemptEnabled: Bool {
+         didSet { save() }
+     }
+@@ -27,6 +31,25 @@ final class V112FeatureStore: ObservableObject {
+         didSet { save() }
+     }
+ 
++    @Published var optimizationProcessAllowlist: [String] {
++        didSet { save() }
++    }
++
++    @Published var largeFilesTopN: Int {
++        didSet {
++            largeFilesTopN = min(max(largeFilesTopN, 10), 200)
++            save()
++        }
++    }
++
++    @Published var largeFilesDefaultScopes: [String] {
++        didSet { save() }
++    }
++
++     var pauseBackgroundScansDuringSim: Bool {
++        didSet { save() }
++    }
++
+     private let defaults: UserDefaults
+ 
+     private enum Keys {
+@@ -34,8 +57,13 @@ final class V112FeatureStore: ObservableObject {
+         static let manualAirportICAO = "v112.airport.manualICAO"
+         static let airportProfiles = "v112.airport.profiles"
+         static let advancedModeEnabled = "v112.cleaner.advancedMode"
++        static let advancedModeExtraConfirmation = "v114.cleaner.advancedModeExtraConfirmation"
+         static let purgeAttemptEnabled = "v112.cleaner.purgeAttempt"
+         static let stutterHeuristics = "v112.stutter.heuristics"
++        static let optimizationProcessAllowlist = "v114.optimization.allowlist"
++        static let largeFilesTopN = "v114.largeFiles.topN"
++        static let largeFilesDefaultScopes = "v114.largeFiles.defaultScopes"
++        static let pauseBackgroundScansDuringSim = "v114.scans.pauseWhenSimActive"
+     }
+ 
+     init(defaults: UserDefaults = .standard) {
+@@ -59,6 +87,7 @@ final class V112FeatureStore: ObservableObject {
+         }
+ 
+         self.advancedModeEnabled = defaults.object(forKey: Keys.advancedModeEnabled) as? Bool ?? false
++        self.advancedModeExtraConfirmation = defaults.object(forKey: Keys.advancedModeExtraConfirmation) as? Bool ?? true
+         self.purgeAttemptEnabled = defaults.object(forKey: Keys.purgeAttemptEnabled) as? Bool ?? false
+ 
+         if let data = defaults.data(forKey: Keys.stutterHeuristics),
+@@ -67,6 +96,14 @@ final class V112FeatureStore: ObservableObject {
+         } else {
+             self.stutterHeuristics = .default
+         }
++
++        self.optimizationProcessAllowlist = defaults.array(forKey: Keys.optimizationProcessAllowlist) as? [String] ?? []
++
++        let storedTopN = defaults.object(forKey: Keys.largeFilesTopN) as? Int ?? 25
++        self.largeFilesTopN = min(max(storedTopN, 10), 200)
++
++        self.largeFilesDefaultScopes = defaults.array(forKey: Keys.largeFilesDefaultScopes) as? [String] ?? []
++        self.pauseBackgroundScansDuringSim = defaults.object(forKey: Keys.pauseBackgroundScansDuringSim) as? Bool ?? true
+     }
+ 
+     func upsertAirportProfile(_ profile: AirportGovernorProfile) {
+@@ -143,11 +180,30 @@ final class V112FeatureStore: ObservableObject {
+         return config
+     }
+ 
++    func isProcessAllowlisted(_ processName: String) -> Bool {
++        optimizationProcessAllowlist.contains { $0.caseInsensitiveCompare(processName) == .orderedSame }
++    }
++
++    func addProcessToAllowlist(_ processName: String) {
++        guard !isProcessAllowlisted(processName) else { return }
++        optimizationProcessAllowlist.append(processName)
++        optimizationProcessAllowlist.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
++    }
++
++    func removeProcessFromAllowlist(_ processName: String) {
++        optimizationProcessAllowlist.removeAll { $0.caseInsensitiveCompare(processName) == .orderedSame }
++    }
++
+     private func save() {
+         defaults.set(historyDuration.rawValue, forKey: Keys.historyDuration)
+         defaults.set(manualAirportICAO, forKey: Keys.manualAirportICAO)
+         defaults.set(advancedModeEnabled, forKey: Keys.advancedModeEnabled)
++        defaults.set(advancedModeExtraConfirmation, forKey: Keys.advancedModeExtraConfirmation)
+         defaults.set(purgeAttemptEnabled, forKey: Keys.purgeAttemptEnabled)
++        defaults.set(optimizationProcessAllowlist, forKey: Keys.optimizationProcessAllowlist)
++        defaults.set(largeFilesTopN, forKey: Keys.largeFilesTopN)
++        defaults.set(largeFilesDefaultScopes, forKey: Keys.largeFilesDefaultScopes)
++        defaults.set(pauseBackgroundScansDuringSim, forKey: Keys.pauseBackgroundScansDuringSim)
+ 
+         if let profilesData = try? JSONEncoder().encode(airportProfiles) {
+             defaults.set(profilesData, forKey: Keys.airportProfiles)
+diff --git a/CruiseControl/README.md b/CruiseControl/README.md
+index ef70f7d..86dff62 100644
+--- a/CruiseControl/README.md
++++ b/CruiseControl/README.md
+@@ -1,46 +1,40 @@
+-# CruiseControl v1.1.2 (Desktop App)
++# CruiseControl v1.1.4 (Desktop App)
+ 
+-CruiseControl is a Swift/SwiftUI desktop app for monitoring and guiding flight-sim performance on macOS.
++CruiseControl combines simulator telemetry and a safe Cleaner Suite.
+ 
+-## Highlights in v1.1.2
++## v1.1.4 highlights
+ 
+-- Memory Pressure Relief panel with safe user-confirmed process actions.
+-- Lua ACK handshake UI (`Connected` / `No ACK` / `ACK OK`) with `PING` test.
+-- Connection Wizard for X-Plane UDP + FlyWithLua setup validation.
+-- Stutter Detective event capture and culprit ranking.
+-- Mini history charts with 10m / 20m / 30m ranges.
+-- Per-airport governor profile system with JSON import/export.
+-- Smart Scan modules + quarantine/restore workflow.
+-- App maintenance actions: reveal app, install to `/Applications`, update check.
++- New sidebar sections: Smart Scan, Cleaner, Large Files, Optimization, Quarantine.
++- Async Smart Scan with per-module progress + cancel.
++- Hardened quarantine batches with restore/delete and manifest metadata.
++- Large Files scanning is scope-required (no full-disk default scans).
++- Optimization allowlist to avoid suggesting trusted apps.
++- Memory Relief messaging updated to be explicit and credible.
++- Update checks: Sparkle-configured path + GitHub fallback.
+ 
+-## LOD Governor architecture
++## Cleaner safety model
+ 
+-CruiseControl computes target LOD from altitude tiers and sends commands to a FlyWithLua script.
++Default allowlist:
+ 
+-The app does not write X-Plane private datarefs directly.
++- `~/Library/Caches`
++- `~/Library/Logs`
++- `~/Library/Application Support/CruiseControl`
++- `~/Library/Saved Application State`
++- `~/.Trash`
+ 
+-FlyWithLua script applies:
++Default exclusions:
+ 
+-- `set("sim/private/controls/reno/LOD_bias_rat", value)`
++- `/System`
++- `/Library`
++- `/private/var/vm`
+ 
+-with clamping and restore-on-disable/exit behavior.
++Quarantine-first is the default clean flow.
+ 
+-## Build
++## Sparkle placeholders
+ 
+-1. Open `CruiseControl.xcodeproj`.
+-2. Build + Run.
+-3. In app settings, verify telemetry and governor ports.
++Add these in `Info.plist` for Sparkle path:
+ 
+-## Bundle Identifier Migration
++- `SUFeedURL`
++- `SUPublicEDKey`
+ 
+-- New bundle identifier: `jahrix.CruiseControl`
+-- Previous bundle identifier: `jahrix.Speed-for-Mac`
+-- macOS treats this as a different app identity. Existing settings in `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported.
+-- If both app copies are installed, keep only CruiseControl in `/Applications` to avoid duplicate notifications or Launch Services entries.
+-
+-
+-## Safety constraints
+-
+-- Monitoring + user-approved automation only.
+-- No protected kernel/scheduler/GPU controls.
+-- Memory cleaner is pressure relief guidance, not a fake global cache purge.
++If not configured, CruiseControl falls back to GitHub release API checks.
+diff --git a/CruiseControl/Services/AppMaintenanceService.swift b/CruiseControl/Services/AppMaintenanceService.swift
+index f42842d..e0ce74c 100644
+--- a/CruiseControl/Services/AppMaintenanceService.swift
++++ b/CruiseControl/Services/AppMaintenanceService.swift
+@@ -15,11 +15,21 @@ enum AppMaintenanceService {
+         return ActionOutcome(success: true, message: "Revealed app in Finder.")
+     }
+ 
++    static func openApplicationsFolder() -> ActionOutcome {
++        let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
++        NSWorkspace.shared.open(applicationsURL)
++        return ActionOutcome(success: true, message: "Opened /Applications.")
++    }
++
+     static func installToApplications() -> ActionOutcome {
+         let source = Bundle.main.bundleURL
+         let destination = URL(fileURLWithPath: "/Applications").appendingPathComponent(source.lastPathComponent)
+ 
+         do {
++            if source.path == destination.path {
++                return ActionOutcome(success: true, message: "CruiseControl is already running from /Applications.")
++            }
++
+             if FileManager.default.fileExists(atPath: destination.path) {
+                 try FileManager.default.removeItem(at: destination)
+             }
+@@ -28,24 +38,45 @@ enum AppMaintenanceService {
+         } catch {
+             return ActionOutcome(
+                 success: false,
+-                message: "Install to /Applications failed: \(error.localizedDescription). If prompted, grant Finder/admin permission and retry."
++                message: "Install to /Applications failed: \(error.localizedDescription). Grant Finder/admin permission and retry."
+             )
+         }
+     }
+ 
+     static func openReleasesPage() {
+-        guard let url = URL(string: "https://github.com/Jahrix/CruiseControl/releases") else { return }
++        guard let url = URL(string: "https://github.com/Jahrix/Speed-for-Mac/releases") else { return }
+         NSWorkspace.shared.open(url)
+     }
+ 
+-    static func checkForUpdates(currentVersion: String) async -> UpdateCheckOutcome {
+-        guard let url = URL(string: "https://api.github.com/repos/Jahrix/CruiseControl/releases/latest") else {
++    static func checkForUpdates(currentVersion: String, preferSparkle: Bool = true) async -> UpdateCheckOutcome {
++        if preferSparkle {
++            let sparkleOutcome = SparkleUpdateBridge.checkForUpdatesIfAvailable()
++            if sparkleOutcome.success {
++                return sparkleOutcome
++            }
++            if sparkleOutcome.message.contains("Sparkle not configured") == false {
++                return sparkleOutcome
++            }
++        }
++
++        return await checkGitHubReleases(currentVersion: currentVersion)
++    }
++
++    static func currentVersionString() -> String {
++        if let marketing = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
++            return marketing
++        }
++        return "Unknown"
++    }
++
++    private static func checkGitHubReleases(currentVersion: String) async -> UpdateCheckOutcome {
++        guard let url = URL(string: "https://api.github.com/repos/Jahrix/Speed-for-Mac/releases/latest") else {
+             return UpdateCheckOutcome(success: false, message: "Invalid releases URL.", latestVersion: nil, releaseURL: nil)
+         }
+ 
+         var request = URLRequest(url: url)
+         request.timeoutInterval = 12
+-        request.setValue("CruiseControl/1.1.2", forHTTPHeaderField: "User-Agent")
++        request.setValue("CruiseControl/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+ 
+         do {
+             let (data, response) = try await URLSession.shared.data(for: request)
+@@ -73,13 +104,6 @@ enum AppMaintenanceService {
+         }
+     }
+ 
+-    static func currentVersionString() -> String {
+-        if let marketing = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+-            return marketing
+-        }
+-        return "Unknown"
+-    }
+-
+     private static func normalizedVersion(_ raw: String) -> String {
+         raw.trimmingCharacters(in: .whitespacesAndNewlines)
+             .replacingOccurrences(of: "v", with: "", options: [.caseInsensitive, .anchored])
+diff --git a/CruiseControl/Services/SmartScanService.swift b/CruiseControl/Services/SmartScanService.swift
+index 5f2c06d..3dff804 100644
+--- a/CruiseControl/Services/SmartScanService.swift
++++ b/CruiseControl/Services/SmartScanService.swift
+@@ -1,11 +1,20 @@
+ import Foundation
+ import AppKit
++import CryptoKit
+ 
+ final class SmartScanService {
+     struct ScanOptions {
+         var includePrivacy: Bool
++        var includeSavedApplicationState: Bool
+         var selectedLargeFileRoots: [URL]
+         var topLargeFilesCount: Int
++
++        static let `default` = ScanOptions(
++            includePrivacy: false,
++            includeSavedApplicationState: true,
++            selectedLargeFileRoots: [],
++            topLargeFilesCount: 25
++        )
+     }
+ 
+     private let fileManager = FileManager.default
+@@ -13,31 +22,150 @@ final class SmartScanService {
+     func runSmartScan(options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanSummary {
+         let start = Date()
+ 
+-        var items: [SmartScanItem] = []
+-        items.append(contentsOf: scanSystemJunk())
+-        items.append(contentsOf: scanTrashBins())
+-        items.append(contentsOf: scanLargeFiles(roots: options.selectedLargeFileRoots, topCount: options.topLargeFilesCount))
+-        items.append(contentsOf: scanOptimization(topCPUProcesses: topCPUProcesses))
++        var moduleResults: [SmartScanModuleResult] = []
++        moduleResults.append(runModule(.systemJunk, options: options, topCPUProcesses: topCPUProcesses))
++        moduleResults.append(runModule(.trashBins, options: options, topCPUProcesses: topCPUProcesses))
++        moduleResults.append(runModule(.largeFiles, options: options, topCPUProcesses: topCPUProcesses))
++        moduleResults.append(runModule(.optimization, options: options, topCPUProcesses: topCPUProcesses))
++        if options.includePrivacy {
++            moduleResults.append(runModule(.privacy, options: options, topCPUProcesses: topCPUProcesses))
++        }
++
++        let items = moduleResults.flatMap(\.items)
+ 
++        return SmartScanSummary(
++            generatedAt: Date(),
++            duration: Date().timeIntervalSince(start),
++            moduleResults: moduleResults,
++            items: items
++        )
++    }
++
++    func runSmartScanAsync(
++        options: ScanOptions,
++        topCPUProcesses: [ProcessSample],
++        progress: @escaping @Sendable (SmartScanRunState) -> Void
++    ) async -> SmartScanSummary {
++        let start = Date()
++        var moduleList: [SmartScanModule] = [.systemJunk, .trashBins, .largeFiles, .optimization]
+         if options.includePrivacy {
+-            items.append(contentsOf: scanPrivacyCaches())
++            moduleList.append(.privacy)
++        }
++
++        var runState = SmartScanRunState.idle
++        runState.isRunning = true
++        runState.cancellable = true
++        runState.startedAt = start
++        moduleList.forEach { runState.moduleProgress[$0] = 0 }
++        progress(runState)
++
++        var moduleResults: [SmartScanModuleResult] = []
++
++        await withTaskGroup(of: SmartScanModuleResult.self) { group in
++            for module in moduleList {
++                group.addTask(priority: .utility) {
++                    Self.scanModule(module: module, options: options, topCPUProcesses: topCPUProcesses)
++                }
++            }
++
++            for await result in group {
++                moduleResults.append(result)
++                runState.completedModules.insert(result.module)
++                runState.moduleProgress[result.module] = 1
++                runState.overallProgress = Double(runState.completedModules.count) / Double(max(moduleList.count, 1))
++                progress(runState)
++            }
+         }
+ 
+-        return SmartScanSummary(generatedAt: Date(), duration: Date().timeIntervalSince(start), items: items)
++        if Task.isCancelled {
++            runState.isRunning = false
++            runState.cancellable = false
++            runState.finishedAt = Date()
++            progress(runState)
++
++            return SmartScanSummary(
++                generatedAt: Date(),
++                duration: Date().timeIntervalSince(start),
++                moduleResults: moduleResults,
++                items: moduleResults.flatMap(\.items)
++            )
++        }
++
++        runState.isRunning = false
++        runState.cancellable = false
++        runState.overallProgress = 1
++        runState.finishedAt = Date()
++        progress(runState)
++
++        let sorted = moduleResults.sorted { $0.module.rawValue < $1.module.rawValue }
++        return SmartScanSummary(
++            generatedAt: Date(),
++            duration: Date().timeIntervalSince(start),
++            moduleResults: sorted,
++            items: sorted.flatMap(\.items)
++        )
+     }
+ 
+-    func quarantine(
+-        items: [SmartScanItem],
+-        advancedModeEnabled: Bool
+-    ) -> ActionOutcome {
++    func scanCleanerModuleAsync(includeSavedApplicationState: Bool = true) async -> [SmartScanItem] {
++        let options = ScanOptions(
++            includePrivacy: false,
++            includeSavedApplicationState: includeSavedApplicationState,
++            selectedLargeFileRoots: [],
++            topLargeFilesCount: 25
++        )
++        return Self.scanSystemJunk(options: options)
++    }
++
++    func scanTrashModuleAsync() async -> [SmartScanItem] {
++        Self.scanTrashBins()
++    }
++
++    func scanLargeFilesModuleAsync(roots: [URL], topCount: Int) async -> [SmartScanItem] {
++        Self.scanLargeFiles(roots: roots, topCount: topCount)
++    }
++
++    func scanOptimizationModuleAsync(topCPUProcesses: [ProcessSample]) async -> [SmartScanItem] {
++        Self.scanOptimization(topCPUProcesses: topCPUProcesses)
++    }
++
++    func trashSummary() -> (count: Int, sizeBytes: UInt64) {
++        let trash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
++        guard fileManager.fileExists(atPath: trash.path),
++              let children = try? fileManager.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) else {
++            return (0, 0)
++        }
++
++        var total: UInt64 = 0
++        for item in children {
++            total += directoryOrFileSize(url: item)
++        }
++        return (children.count, total)
++    }
++
++    func emptyTrash() -> ActionOutcome {
++        let scriptText = "tell application \"Finder\" to empty the trash"
++        guard let script = NSAppleScript(source: scriptText) else {
++            return ActionOutcome(success: false, message: "Unable to create Finder automation script. Open Trash in Finder and empty manually.")
++        }
++
++        var scriptError: NSDictionary?
++        script.executeAndReturnError(&scriptError)
++        if let scriptError {
++            return ActionOutcome(success: false, message: "Could not empty Trash automatically. Open Trash in Finder and empty it manually. Error: \(scriptError)")
++        }
++
++        return ActionOutcome(success: true, message: "Trash emptied.")
++    }
++
++    func quarantine(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
+         guard !items.isEmpty else {
+             return ActionOutcome(success: false, message: "No scan items selected for quarantine.")
+         }
+ 
+         let allowedRoots = defaultAllowlistedRoots()
+         let root = quarantineRootURL()
+-        let stamp = isoTimestamp(Date())
+-        let destinationRoot = root.appendingPathComponent(stamp, isDirectory: true)
++        let batchID = isoTimestamp(Date())
++        let destinationRoot = root.appendingPathComponent(batchID, isDirectory: true)
+ 
+         do {
+             try fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+@@ -49,12 +177,13 @@ final class SmartScanService {
+         var movedCount = 0
+ 
+         for item in items {
+-            let sourceURL = URL(fileURLWithPath: item.path)
+-            if !fileManager.fileExists(atPath: sourceURL.path) {
+-                continue
+-            }
++            if item.path.hasPrefix("pid:") { continue }
++
++            let sourceURL = URL(fileURLWithPath: item.path).standardizedFileURL
++            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
++            guard !isProtectedSystemPath(sourceURL.path) else { continue }
+ 
+-            let isAllowed = allowedRoots.contains(where: { sourceURL.path.hasPrefix($0.path) })
++            let isAllowed = isPathWithinAllowlist(sourceURL.path, allowlistedRoots: allowedRoots)
+             if !isAllowed && !advancedModeEnabled {
+                 continue
+             }
+@@ -72,7 +201,8 @@ final class SmartScanService {
+                         originalPath: sourceURL.path,
+                         quarantinedPath: destinationURL.path,
+                         sizeBytes: item.sizeBytes,
+-                        timestamp: Date()
++                        timestamp: Date(),
++                        sha256: quickSHA256(url: destinationURL)
+                     )
+                 )
+             } catch {
+@@ -81,14 +211,18 @@ final class SmartScanService {
+         }
+ 
+         if entries.isEmpty {
+-            return ActionOutcome(success: false, message: "No files were quarantined. Ensure paths exist and are within safe locations, or enable Advanced Mode.")
++            return ActionOutcome(success: false, message: "No files were quarantined. Check selection and safe-path restrictions.")
+         }
+ 
+-        let manifest = QuarantineManifest(createdAt: Date(), entries: entries)
++        let totalBytes = entries.reduce(UInt64(0)) { $0 + $1.sizeBytes }
++        let manifest = QuarantineManifest(batchId: batchID, createdAt: Date(), totalBytes: totalBytes, entries: entries)
+         let manifestURL = destinationRoot.appendingPathComponent("manifest.json")
+ 
+         do {
+-            let data = try JSONEncoder().encode(manifest)
++            let encoder = JSONEncoder()
++            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++            encoder.dateEncodingStrategy = .iso8601
++            let data = try encoder.encode(manifest)
+             try data.write(to: manifestURL, options: .atomic)
+         } catch {
+             return ActionOutcome(success: false, message: "Files moved but manifest write failed: \(error.localizedDescription)")
+@@ -97,14 +231,42 @@ final class SmartScanService {
+         return ActionOutcome(success: true, message: "Quarantined \(movedCount) item(s) to \(destinationRoot.path).")
+     }
+ 
+-    func restoreLatestQuarantine() -> ActionOutcome {
+-        guard let latestManifestURL = latestManifestURL() else {
+-            return ActionOutcome(success: false, message: "No quarantine manifest found.")
++    func listQuarantineBatches() -> [QuarantineBatchSummary] {
++        let root = quarantineRootURL()
++        guard fileManager.fileExists(atPath: root.path),
++              let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else {
++            return []
+         }
+ 
++        return folders.compactMap { folder in
++            let manifestURL = folder.appendingPathComponent("manifest.json")
++            guard let data = try? Data(contentsOf: manifestURL),
++                  let manifest = try? JSONDecoder().decode(QuarantineManifest.self, from: data) else {
++                return nil
++            }
++
++            return QuarantineBatchSummary(
++                batchID: manifest.batchId,
++                folderPath: folder.path,
++                createdAt: manifest.createdAt,
++                entryCount: manifest.entries.count,
++                totalBytes: manifest.totalBytes
++            )
++        }
++        .sorted { $0.createdAt > $1.createdAt }
++    }
++
++    func restoreQuarantineBatch(batchID: String) -> ActionOutcome {
++        guard let folder = quarantineFolder(batchID: batchID) else {
++            return ActionOutcome(success: false, message: "Quarantine batch not found.")
++        }
++
++        let manifestURL = folder.appendingPathComponent("manifest.json")
+         do {
+-            let data = try Data(contentsOf: latestManifestURL)
+-            let manifest = try JSONDecoder().decode(QuarantineManifest.self, from: data)
++            let data = try Data(contentsOf: manifestURL)
++            let decoder = JSONDecoder()
++            decoder.dateDecodingStrategy = .iso8601
++            let manifest = try decoder.decode(QuarantineManifest.self, from: data)
+ 
+             var restored = 0
+             for entry in manifest.entries {
+@@ -114,6 +276,9 @@ final class SmartScanService {
+ 
+                 do {
+                     try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
++                    if fileManager.fileExists(atPath: destination.path) {
++                        try fileManager.removeItem(at: destination)
++                    }
+                     try fileManager.moveItem(at: source, to: destination)
+                     restored += 1
+                 } catch {
+@@ -121,23 +286,67 @@ final class SmartScanService {
+                 }
+             }
+ 
+-            return ActionOutcome(success: true, message: "Restored \(restored) item(s) from quarantine.")
++            return ActionOutcome(success: true, message: "Restored \(restored) item(s) from batch \(batchID).")
+         } catch {
+             return ActionOutcome(success: false, message: "Restore failed: \(error.localizedDescription)")
+         }
+     }
+ 
+-    func permanentlyDeleteLatestQuarantine() -> ActionOutcome {
+-        guard let folder = latestQuarantineFolderURL() else {
+-            return ActionOutcome(success: false, message: "No quarantine folder found.")
++    func permanentlyDeleteQuarantineBatch(batchID: String) -> ActionOutcome {
++        guard let folder = quarantineFolder(batchID: batchID) else {
++            return ActionOutcome(success: false, message: "Quarantine batch not found.")
+         }
+ 
+         do {
+             try fileManager.removeItem(at: folder)
+-            return ActionOutcome(success: true, message: "Permanently deleted quarantine folder \(folder.lastPathComponent).")
++            return ActionOutcome(success: true, message: "Deleted quarantine batch \(batchID).")
+         } catch {
+-            return ActionOutcome(success: false, message: "Failed to delete quarantine folder: \(error.localizedDescription)")
++            return ActionOutcome(success: false, message: "Failed to delete quarantine batch: \(error.localizedDescription)")
++        }
++    }
++
++    func restoreLatestQuarantine() -> ActionOutcome {
++        guard let batch = listQuarantineBatches().first else {
++            return ActionOutcome(success: false, message: "No quarantine batch found.")
++        }
++        return restoreQuarantineBatch(batchID: batch.batchID)
++    }
++
++    func permanentlyDeleteLatestQuarantine() -> ActionOutcome {
++        guard let batch = listQuarantineBatches().first else {
++            return ActionOutcome(success: false, message: "No quarantine batch found.")
+         }
++        return permanentlyDeleteQuarantineBatch(batchID: batch.batchID)
++    }
++
++    func deletePermanently(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
++        guard !items.isEmpty else {
++            return ActionOutcome(success: false, message: "No items selected for permanent delete.")
++        }
++
++        let allowedRoots = defaultAllowlistedRoots()
++        var deleted = 0
++
++        for item in items {
++            if item.path.hasPrefix("pid:") { continue }
++            let path = URL(fileURLWithPath: item.path).standardizedFileURL.path
++            guard fileManager.fileExists(atPath: path) else { continue }
++            guard !isProtectedSystemPath(path) else { continue }
++
++            let isAllowed = isPathWithinAllowlist(path, allowlistedRoots: allowedRoots)
++            if !isAllowed && !advancedModeEnabled {
++                continue
++            }
++
++            do {
++                try fileManager.removeItem(atPath: path)
++                deleted += 1
++            } catch {
++                continue
++            }
++        }
++
++        return ActionOutcome(success: deleted > 0, message: deleted > 0 ? "Permanently deleted \(deleted) item(s)." : "No items were deleted.")
+     }
+ 
+     func revealInFinder(path: String) {
+@@ -150,29 +359,97 @@ final class SmartScanService {
+         NSWorkspace.shared.open(trashURL)
+     }
+ 
+-    private func scanSystemJunk() -> [SmartScanItem] {
+-        let roots = [
+-            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches"),
+-            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Logs"),
+-            appCacheRoot()
++    func openBridgeFolderInFinder() -> ActionOutcome {
++        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
++            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
++        let folder = base.appendingPathComponent("CruiseControl", isDirectory: true)
++
++        do {
++            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
++            NSWorkspace.shared.open(folder)
++            return ActionOutcome(success: true, message: "Opened bridge folder: \(folder.path)")
++        } catch {
++            return ActionOutcome(success: false, message: "Could not open bridge folder: \(error.localizedDescription)")
++        }
++    }
++
++    private func runModule(_ module: SmartScanModule, options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanModuleResult {
++        Self.scanModule(module: module, options: options, topCPUProcesses: topCPUProcesses)
++    }
++
++    private static func scanModule(module: SmartScanModule, options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanModuleResult {
++        let start = Date()
++
++        do {
++            let items: [SmartScanItem]
++            switch module {
++            case .systemJunk:
++                items = scanSystemJunk(options: options)
++            case .trashBins:
++                items = scanTrashBins()
++            case .largeFiles:
++                items = scanLargeFiles(roots: options.selectedLargeFileRoots, topCount: options.topLargeFilesCount)
++            case .optimization:
++                items = scanOptimization(topCPUProcesses: topCPUProcesses)
++            case .privacy:
++                items = scanPrivacyCaches()
++            }
++
++            return SmartScanModuleResult(
++                module: module,
++                items: items,
++                bytes: items.reduce(0) { $0 + $1.sizeBytes },
++                duration: Date().timeIntervalSince(start),
++                error: nil
++            )
++        } catch {
++            return SmartScanModuleResult(
++                module: module,
++                items: [],
++                bytes: 0,
++                duration: Date().timeIntervalSince(start),
++                error: error.localizedDescription
++            )
++        }
++    }
++
++    private static func scanSystemJunk(options: ScanOptions) -> [SmartScanItem] {
++        let fm = FileManager.default
++        let home = URL(fileURLWithPath: NSHomeDirectory())
++
++        var roots: [URL] = [
++            home.appendingPathComponent("Library/Caches"),
++            home.appendingPathComponent("Library/Logs"),
++            appSupportCruiseControlRoot()
+         ]
+ 
++        if options.includeSavedApplicationState {
++            roots.append(home.appendingPathComponent("Library/Saved Application State"))
++        }
++
+         var items: [SmartScanItem] = []
+         for root in roots {
+-            guard fileManager.fileExists(atPath: root.path),
+-                  let children = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
++            guard fm.fileExists(atPath: root.path),
++                  let children = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                 continue
+             }
+ 
+             for child in children {
++                if Task.isCancelled { break }
++                let childPath = child.standardizedFileURL.path
++                if isProtectedSystemPath(childPath) { continue }
++                if !isPathWithinAllowlist(childPath, allowlistedRoots: defaultAllowlistedRoots()) { continue }
++
+                 let size = directoryOrFileSize(url: child)
+                 guard size > 0 else { continue }
++
++                let groupName = topLevelGroupName(root: root, child: child)
+                 items.append(
+                     SmartScanItem(
+                         module: .systemJunk,
+                         path: child.path,
+                         sizeBytes: size,
+-                        note: "User cache/log candidate",
++                        note: "\(groupName) cache/log candidate (regenerates as apps run)",
+                         safeByDefault: true
+                     )
+                 )
+@@ -182,14 +459,16 @@ final class SmartScanService {
+         return items.sorted { $0.sizeBytes > $1.sizeBytes }
+     }
+ 
+-    private func scanTrashBins() -> [SmartScanItem] {
++    private static func scanTrashBins() -> [SmartScanItem] {
++        let fm = FileManager.default
+         let trash = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
+-        guard fileManager.fileExists(atPath: trash.path),
+-              let children = try? fileManager.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) else {
++        guard fm.fileExists(atPath: trash.path),
++              let children = try? fm.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+             return []
+         }
+ 
+         return children.compactMap { item in
++            if Task.isCancelled { return nil }
+             let size = directoryOrFileSize(url: item)
+             guard size > 0 else { return nil }
+             return SmartScanItem(
+@@ -203,34 +482,39 @@ final class SmartScanService {
+         .sorted { $0.sizeBytes > $1.sizeBytes }
+     }
+ 
+-    private func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
++    private static func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
++        let fm = FileManager.default
+         guard !roots.isEmpty else { return [] }
+ 
+         var files: [SmartScanItem] = []
+ 
+         for root in roots {
+-            guard fileManager.fileExists(atPath: root.path) else { continue }
++            if Task.isCancelled { break }
++            guard fm.fileExists(atPath: root.path) else { continue }
+ 
+-            let enumerator = fileManager.enumerator(
++            let enumerator = fm.enumerator(
+                 at: root,
+-                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
++                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+                 options: [.skipsPackageDescendants, .skipsHiddenFiles]
+             )
+ 
+             while let fileURL = enumerator?.nextObject() as? URL {
+-                guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
++                if Task.isCancelled { break }
++
++                guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                       values.isRegularFile == true,
+                       let size = values.fileSize,
+                       size > 10 * 1_024 * 1_024 else {
+                     continue
+                 }
+ 
++                let modified = values.contentModificationDate?.formatted(date: .abbreviated, time: .shortened) ?? "unknown date"
+                 files.append(
+                     SmartScanItem(
+                         module: .largeFiles,
+                         path: fileURL.path,
+                         sizeBytes: UInt64(size),
+-                        note: "Large file",
++                        note: "Modified \(modified)",
+                         safeByDefault: false
+                     )
+                 )
+@@ -243,21 +527,22 @@ final class SmartScanService {
+             .map { $0 }
+     }
+ 
+-    private func scanOptimization(topCPUProcesses: [ProcessSample]) -> [SmartScanItem] {
++    private static func scanOptimization(topCPUProcesses: [ProcessSample]) -> [SmartScanItem] {
+         topCPUProcesses
+-            .filter { $0.cpuPercent > 18 && !$0.name.localizedCaseInsensitiveContains("X-Plane") }
++            .filter { $0.cpuPercent > 12 && !$0.name.localizedCaseInsensitiveContains("X-Plane") }
+             .map { process in
+                 SmartScanItem(
+                     module: .optimization,
+                     path: "pid:\(process.pid) \(process.name)",
+-                    sizeBytes: 0,
+-                    note: "CPU hog \(String(format: "%.1f", process.cpuPercent))%",
++                    sizeBytes: process.memoryBytes,
++                    note: "Impact: CPU \(String(format: "%.1f", process.cpuPercent))% • RAM \(ByteCountFormatter.string(fromByteCount: Int64(process.memoryBytes), countStyle: .memory))",
+                     safeByDefault: false
+                 )
+             }
+     }
+ 
+-    private func scanPrivacyCaches() -> [SmartScanItem] {
++    private static func scanPrivacyCaches() -> [SmartScanItem] {
++        let fm = FileManager.default
+         let home = URL(fileURLWithPath: NSHomeDirectory())
+         let candidates = [
+             home.appendingPathComponent("Library/Caches/com.apple.Safari"),
+@@ -266,47 +551,47 @@ final class SmartScanService {
+         ]
+ 
+         return candidates.compactMap { url in
+-            guard fileManager.fileExists(atPath: url.path) else { return nil }
++            if Task.isCancelled { return nil }
++            guard fm.fileExists(atPath: url.path) else { return nil }
+             let size = directoryOrFileSize(url: url)
+             guard size > 0 else { return nil }
+             return SmartScanItem(
+                 module: .privacy,
+                 path: url.path,
+                 sizeBytes: size,
+-                note: "User browser data",
++                note: "User browser cache data",
+                 safeByDefault: false
+             )
+         }
+         .sorted { $0.sizeBytes > $1.sizeBytes }
+     }
+ 
+-    private func directoryOrFileSize(url: URL) -> UInt64 {
+-        if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+-           values.isRegularFile == true {
+-            return UInt64(max(values.fileSize ?? 0, 0))
++    private func quickSHA256(url: URL) -> String? {
++        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
++              values.isRegularFile == true,
++              let size = values.fileSize,
++              size <= 32 * 1_024 * 1_024 else {
++            return nil
+         }
+ 
+-        let enumerator = fileManager.enumerator(
+-            at: url,
+-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+-            options: [.skipsPackageDescendants]
+-        )
+-
+-        var total: UInt64 = 0
+-        while let fileURL = enumerator?.nextObject() as? URL {
+-            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+-                  values.isRegularFile == true else {
+-                continue
+-            }
+-            total += UInt64(max(values.fileSize ?? 0, 0))
++        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
++            return nil
+         }
+-        return total
++
++        let digest = SHA256.hash(data: data)
++        return digest.map { String(format: "%02x", $0) }.joined()
+     }
+ 
+-    private func appCacheRoot() -> URL {
+-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
++    private static func topLevelGroupName(root: URL, child: URL) -> String {
++        let relative = child.path.replacingOccurrences(of: root.path, with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
++        let first = relative.split(separator: "/").first
++        return first.map(String.init) ?? root.lastPathComponent
++    }
++
++    private static func appSupportCruiseControlRoot() -> URL {
++        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+-        return base.appendingPathComponent("CruiseControl/Cache", isDirectory: true)
++        return base.appendingPathComponent("CruiseControl", isDirectory: true)
+     }
+ 
+     private func quarantineRootURL() -> URL {
+@@ -315,34 +600,83 @@ final class SmartScanService {
+         return base.appendingPathComponent("CruiseControl/Quarantine", isDirectory: true)
+     }
+ 
+-    private func defaultAllowlistedRoots() -> [URL] {
++    private func quarantineFolder(batchID: String) -> URL? {
++        let root = quarantineRootURL()
++        guard fileManager.fileExists(atPath: root.path) else { return nil }
++        let folder = root.appendingPathComponent(batchID, isDirectory: true)
++        return fileManager.fileExists(atPath: folder.path) ? folder : nil
++    }
++
++    private static func defaultAllowlistedRoots() -> [URL] {
+         let home = URL(fileURLWithPath: NSHomeDirectory())
+         return [
+             home.appendingPathComponent("Library/Caches"),
+             home.appendingPathComponent("Library/Logs"),
++            home.appendingPathComponent("Library/Saved Application State"),
+             home.appendingPathComponent(".Trash"),
+-            appCacheRoot()
++            appSupportCruiseControlRoot()
+         ]
+     }
+ 
+-    private func latestManifestURL() -> URL? {
+-        guard let folder = latestQuarantineFolderURL() else { return nil }
+-        let manifest = folder.appendingPathComponent("manifest.json")
+-        return fileManager.fileExists(atPath: manifest.path) ? manifest : nil
++    private func defaultAllowlistedRoots() -> [URL] {
++        Self.defaultAllowlistedRoots()
+     }
+ 
+-    private func latestQuarantineFolderURL() -> URL? {
+-        let root = quarantineRootURL()
+-        guard fileManager.fileExists(atPath: root.path),
+-              let folders = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles]) else {
+-            return nil
++    private static func isPathWithinAllowlist(_ path: String, allowlistedRoots: [URL]) -> Bool {
++        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
++        for root in allowlistedRoots {
++            let rootPath = root.standardizedFileURL.path
++            if standardized == rootPath || standardized.hasPrefix(rootPath + "/") {
++                return true
++            }
++        }
++        return false
++    }
++
++    private func isPathWithinAllowlist(_ path: String, allowlistedRoots: [URL]) -> Bool {
++        Self.isPathWithinAllowlist(path, allowlistedRoots: allowlistedRoots)
++    }
++
++    private static func isProtectedSystemPath(_ path: String) -> Bool {
++        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
++        let blockedPrefixes = ["/System", "/Library", "/private/var/vm"]
++        return blockedPrefixes.contains { prefix in
++            standardized == prefix || standardized.hasPrefix(prefix + "/")
++        }
++    }
++
++    private func isProtectedSystemPath(_ path: String) -> Bool {
++        Self.isProtectedSystemPath(path)
++    }
++
++    private static func directoryOrFileSize(url: URL) -> UInt64 {
++        let fm = FileManager.default
++
++        if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
++           values.isRegularFile == true {
++            return UInt64(max(values.fileSize ?? 0, 0))
+         }
+ 
+-        return folders.sorted {
+-            let left = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+-            let right = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+-            return left > right
+-        }.first
++        let enumerator = fm.enumerator(
++            at: url,
++            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
++            options: [.skipsPackageDescendants]
++        )
++
++        var total: UInt64 = 0
++        while let fileURL = enumerator?.nextObject() as? URL {
++            if Task.isCancelled { break }
++            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
++                  values.isRegularFile == true else {
++                continue
++            }
++            total += UInt64(max(values.fileSize ?? 0, 0))
++        }
++        return total
++    }
++
++    private func directoryOrFileSize(url: URL) -> UInt64 {
++        Self.directoryOrFileSize(url: url)
+     }
+ 
+     private func isoTimestamp(_ date: Date) -> String {
+diff --git a/CruiseControl/Views/MenuContentView.swift b/CruiseControl/Views/MenuContentView.swift
+index 8997422..bb3fe36 100644
+--- a/CruiseControl/Views/MenuContentView.swift
++++ b/CruiseControl/Views/MenuContentView.swift
+@@ -4,6 +4,11 @@ import Combine
+ 
+ enum DashboardSection: String, CaseIterable, Identifiable {
+     case overview
++    case smartScan
++    case cleaner
++    case largeFiles
++    case optimization
++    case quarantine
+     case processes
+     case simMode
+     case history
+@@ -15,6 +20,11 @@ enum DashboardSection: String, CaseIterable, Identifiable {
+     var title: String {
+         switch self {
+         case .overview: return "Overview"
++        case .smartScan: return "Smart Scan"
++        case .cleaner: return "Cleaner"
++        case .largeFiles: return "Large Files"
++        case .optimization: return "Optimization"
++        case .quarantine: return "Quarantine"
+         case .processes: return "Top Processes"
+         case .simMode: return "Sim Mode"
+         case .history: return "History"
+@@ -26,6 +36,11 @@ enum DashboardSection: String, CaseIterable, Identifiable {
+     var icon: String {
+         switch self {
+         case .overview: return "speedometer"
++        case .smartScan: return "sparkles"
++        case .cleaner: return "trash.slash"
++        case .largeFiles: return "externaldrive.fill.badge.plus"
++        case .optimization: return "waveform.path.ecg.rectangle"
++        case .quarantine: return "archivebox"
+         case .processes: return "list.bullet.rectangle.portrait"
+         case .simMode: return "airplane"
+         case .history: return "clock.arrow.circlepath"
+@@ -83,14 +98,29 @@ struct MenuContentView: View {
+     @State private var smartScanIncludePrivacy = false
+     @State private var smartScanRoots: [URL] = []
+     @State private var smartScanSummary: SmartScanSummary?
++    @State private var smartScanRunState: SmartScanRunState = .idle
+     @State private var selectedSmartScanItemIDs: Set<UUID> = []
+     @State private var confirmQuarantineSelection = false
++    @State private var confirmDeleteSelection = false
+     @State private var confirmDeleteLatestQuarantine = false
+-    @State private var isSmartScanRunning = false
++    @State private var confirmEmptyTrash = false
++    @State private var smartScanTask: Task<Void, Never>?
+ 
++    @State private var cleanerItems: [SmartScanItem] = []
++    @State private var selectedCleanerItemIDs: Set<UUID> = []
++    @State private var cleanerLoading = false
+ 
+-    @State private var updateCheckStatus: String?
++    @State private var largeFileItems: [SmartScanItem] = []
++    @State private var selectedLargeFileItemIDs: Set<UUID> = []
++    @State private var largeFilesLoading = false
++
++    @State private var optimizationItems: [SmartScanItem] = []
++    @State private var selectedOptimizationItemIDs: Set<UUID> = []
++
++    @State private var quarantineBatches: [QuarantineBatchSummary] = []
++    @State private var selectedQuarantineBatchID: String = ""
+ 
++    @State private var updateCheckStatus: String?
+     private let smartScanService = SmartScanService()
+     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+ 
+@@ -156,6 +186,8 @@ struct MenuContentView: View {
+             governorHostText = settings.governorCommandHost
+             syncAirportProfileEditorSelection()
+             airportImportJSONText = ""
++            applyDefaultLargeFileScopesIfNeeded()
++            refreshQuarantineBatches()
+         }
+         .onReceive(clockTimer) { newDate in
+             now = newDate
+@@ -169,6 +201,9 @@ struct MenuContentView: View {
+         .onChange(of: featureStore.airportProfiles) {
+             syncAirportProfileEditorSelection()
+         }
++        .onDisappear {
++            smartScanTask?.cancel()
++        }
+         .alert("Force Quit Process", isPresented: forceQuitBinding) {
+             Button("Cancel", role: .cancel) {
+                 forceQuitCandidate = nil
+@@ -197,15 +232,32 @@ struct MenuContentView: View {
+         } message: {
+             Text("Files are moved to CruiseControl quarantine with manifest metadata for restore.")
+         }
++        .confirmationDialog("Delete selected files permanently?", isPresented: $confirmDeleteSelection, titleVisibility: .visible) {
++            Button("Delete Selected", role: .destructive) {
++                deleteSelectedScanItems()
++            }
++            Button("Cancel", role: .cancel) {}
++        } message: {
++            Text("Delete is permanent. Use Quarantine first for safer rollback.")
++        }
+         .confirmationDialog("Permanently delete latest quarantine?", isPresented: $confirmDeleteLatestQuarantine, titleVisibility: .visible) {
+             Button("Delete", role: .destructive) {
+                 let outcome = smartScanService.permanentlyDeleteLatestQuarantine()
+                 processActionResult = outcome.message
++                refreshQuarantineBatches()
+             }
+             Button("Cancel", role: .cancel) {}
+         } message: {
+             Text("This cannot be undone.")
+         }
++        .confirmationDialog("Empty Trash?", isPresented: $confirmEmptyTrash, titleVisibility: .visible) {
++            Button("Empty Trash", role: .destructive) {
++                processActionResult = smartScanService.emptyTrash().message
++            }
++            Button("Cancel", role: .cancel) {}
++        } message: {
++            Text("This removes files currently in your user Trash.")
++        }
+     }
+ 
+     private var sidebar: some View {
+@@ -318,6 +370,16 @@ struct MenuContentView: View {
+         switch selectedSection ?? .overview {
+         case .overview:
+             overviewSection
++        case .smartScan:
++            smartScanSection
++        case .cleaner:
++            cleanerSection
++        case .largeFiles:
++            largeFilesSection
++        case .optimization:
++            optimizationSection
++        case .quarantine:
++            quarantineSection
+         case .processes:
+             processesSection
+         case .simMode:
+@@ -647,7 +709,10 @@ struct MenuContentView: View {
+                     Text("Compressed: \(byteCountString(sampler.snapshot.compressedMemoryBytes))")
+                         .foregroundStyle(.secondary)
+ 
+-                    let suggestions = sampler.memoryReliefSuggestions(maxCount: 3)
++                    let suggestions = sampler
++                        .memoryReliefSuggestions(maxCount: 6)
++                        .filter { !featureStore.isProcessAllowlisted($0.name) }
++                        .prefix(3)
+                     if suggestions.isEmpty {
+                         Text("No immediate memory-relief suggestions.")
+                             .font(.subheadline)
+@@ -676,6 +741,23 @@ struct MenuContentView: View {
+                             .buttonStyle(.bordered)
+                         }
+ 
++                        Toggle("Pause CruiseControl background scans while sim is active", isOn: $featureStore.pauseBackgroundScansDuringSim)
++
++                        HStack {
++                            Button("Run Cleaner recommendations") {
++                                selectedSection = .cleaner
++                                scanCleanerModule()
++                            }
++                            .buttonStyle(.bordered)
++
++                            Button("Large Files: Downloads") {
++                                setLargeFileQuickScope(.downloadsDirectory)
++                                selectedSection = .largeFiles
++                                scanLargeFilesModule()
++                            }
++                            .buttonStyle(.bordered)
++                        }
++
+                         Text("Limited purge only clears CruiseControl local caches and pauses internal work briefly. It does not purge protected system caches.")
+                             .font(.caption)
+                             .foregroundStyle(.secondary)
+@@ -1237,11 +1319,21 @@ struct MenuContentView: View {
+                     }
+                 }
+             }
++        }
++    }
+ 
++
++    private var smartScanSection: some View {
++        VStack(alignment: .leading, spacing: 16) {
+             dashboardCard(title: "Smart Scan") {
+                 VStack(alignment: .leading, spacing: 10) {
++                    Text("Runs System Junk, Trash, Large Files, and Optimization scans in parallel.")
++                        .font(.subheadline)
++                        .foregroundStyle(.secondary)
++
+                     Toggle("Include privacy data scan (user profile only)", isOn: $smartScanIncludePrivacy)
+                     Toggle("Advanced mode (allow quarantine outside safe defaults)", isOn: $featureStore.advancedModeEnabled)
++                    Toggle("Extra confirmation for advanced-mode destructive actions", isOn: $featureStore.advancedModeExtraConfirmation)
+ 
+                     HStack {
+                         Button("Pick Large Files Folder") {
+@@ -1249,11 +1341,18 @@ struct MenuContentView: View {
+                         }
+                         .buttonStyle(.bordered)
+ 
+-                        Button(isSmartScanRunning ? "Scanning..." : "Run Smart Scan") {
++                        Button(smartScanRunState.isRunning ? "Scanning..." : "Scan") {
+                             runSmartScan()
+                         }
+                         .buttonStyle(.borderedProminent)
+-                        .disabled(isSmartScanRunning)
++                        .disabled(smartScanRunState.isRunning)
++
++                        if smartScanRunState.isRunning {
++                            Button("Cancel") {
++                                smartScanTask?.cancel()
++                            }
++                            .buttonStyle(.bordered)
++                        }
+                     }
+ 
+                     if !smartScanRoots.isEmpty {
+@@ -1264,66 +1363,364 @@ struct MenuContentView: View {
+                                     .foregroundStyle(.secondary)
+                             }
+                         }
++                    } else {
++                        Text("Large Files scope required: pick one or more folders.")
++                            .font(.caption)
++                            .foregroundStyle(.orange)
++                    }
++
++                    ProgressView(value: smartScanRunState.overallProgress)
++                    Text("Overall progress: \(Int((smartScanRunState.overallProgress * 100).rounded()))%")
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++
++                    ForEach(SmartScanModule.allCases) { module in
++                        if let progress = smartScanRunState.moduleProgress[module] {
++                            HStack {
++                                Text(module.rawValue)
++                                    .font(.caption)
++                                Spacer()
++                                Text("\(Int((progress * 100).rounded()))%")
++                                    .font(.caption2)
++                                    .foregroundStyle(.secondary)
++                            }
++                        }
+                     }
+ 
+                     if let summary = smartScanSummary {
+                         Text("Found \(summary.items.count) items, total \(byteCountString(summary.totalBytes)).")
+                             .font(.subheadline)
+ 
+-                        ForEach(summary.items.prefix(40)) { item in
+-                            VStack(alignment: .leading, spacing: 4) {
+-                                Toggle(
+-                                    "[\(item.module.rawValue)] \(item.path)",
+-                                    isOn: smartScanSelectionBinding(itemID: item.id)
+-                                )
+-                                .toggleStyle(.checkbox)
++                        ForEach(Array(summary.moduleResults.enumerated()), id: \.offset) { _, module in
++                            VStack(alignment: .leading, spacing: 6) {
++                                HStack {
++                                    Text(module.module.rawValue)
++                                        .font(.headline)
++                                    Spacer()
++                                    Text(byteCountString(module.bytes))
++                                        .font(.caption)
++                                        .foregroundStyle(.secondary)
++                                }
+ 
+-                                Text("\(item.note)  -  \(byteCountString(item.sizeBytes))")
++                                Text(module.error ?? "\(module.items.count) item(s)")
+                                     .font(.caption)
+-                                    .foregroundStyle(.secondary)
++                                    .foregroundStyle(module.error == nil ? Color.secondary : Color.orange)
+ 
+                                 HStack {
+-                                    if !item.path.hasPrefix("pid:") {
+-                                        Button("Reveal in Finder") {
+-                                            smartScanService.revealInFinder(path: item.path)
+-                                        }
+-                                        .buttonStyle(.bordered)
++                                    Button("Review Items") {
++                                        deepLinkToModule(module.module)
+                                     }
++                                    .buttonStyle(.bordered)
+                                 }
+                             }
+                             .padding(.vertical, 4)
+                         }
+ 
+                         HStack {
+-                            Button("Quarantine Selected") {
++                            Button("Run Clean") {
++                                selectedSmartScanItemIDs = Set(summary.items.filter { $0.safeByDefault }.map(\.id))
+                                 confirmQuarantineSelection = true
+                             }
+                             .buttonStyle(.borderedProminent)
+-                            .disabled(selectedSmartScanItems.isEmpty)
++                            .disabled(summary.items.isEmpty)
+ 
+-                            Button("Restore Latest Quarantine") {
+-                                let outcome = smartScanService.restoreLatestQuarantine()
+-                                processActionResult = outcome.message
++                            Button("Review Quarantine") {
++                                refreshQuarantineBatches()
++                                selectedSection = .quarantine
+                             }
+                             .buttonStyle(.bordered)
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    private var cleanerSection: some View {
++        VStack(alignment: .leading, spacing: 16) {
++            dashboardCard(title: "Cleaner") {
++                VStack(alignment: .leading, spacing: 10) {
++                    Text("Safe targets only: ~/Library/Caches, ~/Library/Logs, ~/Library/Application Support/CruiseControl, optional Saved Application State.")
++                        .font(.subheadline)
++                        .foregroundStyle(.secondary)
++                    Text("Caches may regenerate. Cleaning helps reduce pressure but is not a permanent speed hack.")
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++
++                    HStack {
++                        Button(cleanerLoading ? "Scanning..." : "Scan Cleaner") {
++                            scanCleanerModule()
++                        }
++                        .buttonStyle(.borderedProminent)
++                        .disabled(cleanerLoading)
++
++                        Button("Quarantine Selected") {
++                            confirmQuarantineSelection = true
++                        }
++                        .buttonStyle(.bordered)
++                        .disabled(selectedCleanerItems.isEmpty)
++
++                        Button("Delete Selected") {
++                            confirmDeleteSelection = true
++                        }
++                        .buttonStyle(.bordered)
++                        .tint(.red)
++                        .disabled(selectedCleanerItems.isEmpty)
++                    }
+ 
+-                            Button("Permanently Delete Latest Quarantine") {
+-                                confirmDeleteLatestQuarantine = true
++                    if cleanerItems.isEmpty {
++                        Text("No cleaner items loaded yet.")
++                            .foregroundStyle(.secondary)
++                    } else {
++                        ForEach(cleanerItems.prefix(60)) { item in
++                            VStack(alignment: .leading, spacing: 4) {
++                                Toggle(item.path, isOn: cleanerSelectionBinding(itemID: item.id))
++                                    .toggleStyle(.checkbox)
++                                Text("\(item.note) • \(byteCountString(item.sizeBytes))")
++                                    .font(.caption)
++                                    .foregroundStyle(.secondary)
++                                HStack {
++                                    Button("Reveal in Finder") {
++                                        smartScanService.revealInFinder(path: item.path)
++                                    }
++                                    .buttonStyle(.bordered)
++                                }
+                             }
++                            .padding(.vertical, 4)
++                        }
++                    }
++                }
++            }
++
++            dashboardCard(title: "Trash Bins") {
++                VStack(alignment: .leading, spacing: 10) {
++                    let summary = smartScanService.trashSummary()
++                    Text("Items: \(summary.count) • Size: \(byteCountString(summary.sizeBytes))")
++
++                    HStack {
++                        Button("Open Trash in Finder") {
++                            smartScanService.openTrashInFinder()
++                        }
++                        .buttonStyle(.bordered)
++
++                        Button("Empty Trash") {
++                            confirmEmptyTrash = true
++                        }
++                        .buttonStyle(.bordered)
++                        .tint(.red)
++                    }
++                }
++            }
++        }
++    }
++
++    private var largeFilesSection: some View {
++        VStack(alignment: .leading, spacing: 16) {
++            dashboardCard(title: "Large Files") {
++                VStack(alignment: .leading, spacing: 10) {
++                    Text("Scope required: choose folders first. CruiseControl does not scan entire disk by default.")
++                        .font(.subheadline)
++                        .foregroundStyle(.secondary)
++
++                    HStack {
++                        Button("Documents") { setLargeFileQuickScope(.documentDirectory) }
+                             .buttonStyle(.bordered)
+-                            .tint(.red)
++                        Button("Downloads") { setLargeFileQuickScope(.downloadsDirectory) }
++                            .buttonStyle(.bordered)
++                        Button("Desktop") { setLargeFileQuickScope(.desktopDirectory) }
++                            .buttonStyle(.bordered)
++                        Button("Pick Folder") { pickLargeFileFolder() }
++                            .buttonStyle(.bordered)
++                    }
++
++                    HStack {
++                        Button(largeFilesLoading ? "Scanning..." : "Scan Large Files") {
++                            scanLargeFilesModule()
++                        }
++                        .buttonStyle(.borderedProminent)
++                        .disabled(largeFilesLoading || smartScanRoots.isEmpty)
++
++                        Button("Quarantine Selected") {
++                            confirmQuarantineSelection = true
++                        }
++                        .buttonStyle(.bordered)
++                        .disabled(selectedLargeFileItems.isEmpty)
++
++                        Button("Delete Selected") {
++                            confirmDeleteSelection = true
++                        }
++                        .buttonStyle(.bordered)
++                        .tint(.red)
++                        .disabled(selectedLargeFileItems.isEmpty)
++                    }
++
++                    if smartScanRoots.isEmpty {
++                        Text("No scope selected yet.")
++                            .font(.caption)
++                            .foregroundStyle(.orange)
++                    } else {
++                        ForEach(smartScanRoots, id: \.path) { root in
++                            Text(root.path)
++                                .font(.caption)
++                                .foregroundStyle(.secondary)
++                        }
++                    }
+ 
+-                            Button("Open Trash in Finder") {
+-                                smartScanService.openTrashInFinder()
++                    ForEach(largeFileItems.prefix(featureStore.largeFilesTopN)) { item in
++                        VStack(alignment: .leading, spacing: 4) {
++                            Toggle(item.path, isOn: largeFilesSelectionBinding(itemID: item.id))
++                                .toggleStyle(.checkbox)
++                            Text("\(byteCountString(item.sizeBytes)) • \(item.note)")
++                                .font(.caption)
++                                .foregroundStyle(.secondary)
++                            Button("Reveal in Finder") {
++                                smartScanService.revealInFinder(path: item.path)
+                             }
+                             .buttonStyle(.bordered)
+                         }
++                        .padding(.vertical, 4)
+                     }
+                 }
+             }
+         }
+     }
+ 
++    private var optimizationSection: some View {
++        VStack(alignment: .leading, spacing: 16) {
++            dashboardCard(title: "Optimization") {
++                VStack(alignment: .leading, spacing: 10) {
++                    Text("CPU: \(percentString(sampler.snapshot.cpuTotalPercent)) • Memory: \(sampler.snapshot.memoryPressure.displayName) • Swap \(deltaByteString(sampler.snapshot.swapDelta5MinBytes))")
++                        .font(.subheadline)
++
++                    let impact = impactProcesses()
++                    if impact.isEmpty {
++                        Text("No significant background impact process detected.")
++                            .foregroundStyle(.secondary)
++                    } else {
++                        ForEach(impact) { process in
++                            VStack(alignment: .leading, spacing: 6) {
++                                Text("\(process.name) (PID \(process.pid))")
++                                    .font(.headline)
++                                Text("CPU \(percentString(process.cpuPercent)) • RAM \(byteCountString(process.memoryBytes))")
++                                    .font(.caption)
++                                    .foregroundStyle(.secondary)
++
++                                HStack {
++                                    Button("Quit") {
++                                        runProcessAction(process: process, force: false)
++                                    }
++                                    .buttonStyle(.bordered)
++
++                                    Button("Force Quit") {
++                                        forceQuitCandidate = process
++                                    }
++                                    .buttonStyle(.bordered)
++                                    .tint(.red)
++
++                                    Button("Allowlist") {
++                                        featureStore.addProcessToAllowlist(process.name)
++                                        processActionResult = "Added \(process.name) to Optimization allowlist."
++                                    }
++                                    .buttonStyle(.bordered)
++                                }
++                            }
++                            .padding(.vertical, 4)
++                        }
++                    }
++                }
++            }
++
++            dashboardCard(title: "Allowlist") {
++                VStack(alignment: .leading, spacing: 8) {
++                    if featureStore.optimizationProcessAllowlist.isEmpty {
++                        Text("No allowlisted processes yet.")
++                            .foregroundStyle(.secondary)
++                    } else {
++                        ForEach(featureStore.optimizationProcessAllowlist, id: \.self) { item in
++                            HStack {
++                                Text(item)
++                                Spacer()
++                                Button("Remove") {
++                                    featureStore.removeProcessFromAllowlist(item)
++                                }
++                                .buttonStyle(.bordered)
++                            }
++                        }
++                    }
++
++                    Button("Open Login Items Settings") {
++                        openLoginItemsSettings()
++                    }
++                    .buttonStyle(.bordered)
++                }
++            }
++        }
++    }
++
++    private var quarantineSection: some View {
++        VStack(alignment: .leading, spacing: 16) {
++            dashboardCard(title: "Quarantine") {
++                VStack(alignment: .leading, spacing: 10) {
++                    HStack {
++                        Button("Refresh") {
++                            refreshQuarantineBatches()
++                        }
++                        .buttonStyle(.bordered)
++
++                        Button("Restore Latest") {
++                            processActionResult = smartScanService.restoreLatestQuarantine().message
++                            refreshQuarantineBatches()
++                        }
++                        .buttonStyle(.bordered)
++
++                        Button("Delete Latest") {
++                            confirmDeleteLatestQuarantine = true
++                        }
++                        .buttonStyle(.bordered)
++                        .tint(.red)
++                    }
++
++                    if quarantineBatches.isEmpty {
++                        Text("No quarantine batches found.")
++                            .foregroundStyle(.secondary)
++                    } else {
++                        Picker("Batch", selection: $selectedQuarantineBatchID) {
++                            ForEach(quarantineBatches) { batch in
++                                Text("\(batch.batchID) • \(byteCountString(batch.totalBytes))").tag(batch.batchID)
++                            }
++                        }
++
++                        if let selected = quarantineBatches.first(where: { $0.batchID == selectedQuarantineBatchID }) {
++                            Text("Created: \(selected.createdAt.formatted(date: .abbreviated, time: .shortened))")
++                                .font(.caption)
++                                .foregroundStyle(.secondary)
++                            Text("Entries: \(selected.entryCount) • Total: \(byteCountString(selected.totalBytes))")
++                                .font(.subheadline)
++
++                            HStack {
++                                Button("Restore Batch") {
++                                    processActionResult = smartScanService.restoreQuarantineBatch(batchID: selected.batchID).message
++                                    refreshQuarantineBatches()
++                                }
++                                .buttonStyle(.bordered)
++
++                                Button("Delete Batch") {
++                                    processActionResult = smartScanService.permanentlyDeleteQuarantineBatch(batchID: selected.batchID).message
++                                    refreshQuarantineBatches()
++                                }
++                                .buttonStyle(.bordered)
++                                .tint(.red)
++                            }
++                        }
++                    }
++
++                    Text("Total quarantined size: \(byteCountString(quarantineBatches.reduce(0) { $0 + $1.totalBytes }))")
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                }
++            }
++        }
++    }
+     private var preferencesSection: some View {
+         dashboardCard(title: "Preferences") {
+             VStack(alignment: .leading, spacing: 10) {
+@@ -1344,6 +1741,7 @@ struct MenuContentView: View {
+                 Toggle("Listen for X-Plane UDP", isOn: $settings.xPlaneUDPListeningEnabled)
+                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
+                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
++                Stepper("Large Files top results: \(featureStore.largeFilesTopN)", value: $featureStore.largeFilesTopN, in: 10...200, step: 5)
+ 
+                 HStack {
+                     Text("X-Plane UDP Port")
+@@ -1363,6 +1761,12 @@ struct MenuContentView: View {
+                     }
+                     .buttonStyle(.bordered)
+ 
++                    Button("Open Applications Folder") {
++                        let outcome = AppMaintenanceService.openApplicationsFolder()
++                        processActionResult = outcome.message
++                    }
++                    .buttonStyle(.bordered)
++
+                     Button("Install to /Applications") {
+                         let outcome = AppMaintenanceService.installToApplications()
+                         processActionResult = outcome.message
+@@ -1703,6 +2107,31 @@ struct MenuContentView: View {
+         return summary.items.filter { idSet.contains($0.id) }
+     }
+ 
++    private var selectedCleanerItems: [SmartScanItem] {
++        cleanerItems.filter { selectedCleanerItemIDs.contains($0.id) }
++    }
++
++    private var selectedLargeFileItems: [SmartScanItem] {
++        largeFileItems.filter { selectedLargeFileItemIDs.contains($0.id) }
++    }
++
++    private var selectedOptimizationItems: [SmartScanItem] {
++        optimizationItems.filter { selectedOptimizationItemIDs.contains($0.id) }
++    }
++
++    private var selectedScanItemsForAction: [SmartScanItem] {
++        switch selectedSection ?? .overview {
++        case .cleaner:
++            return selectedCleanerItems
++        case .largeFiles:
++            return selectedLargeFileItems
++        case .optimization:
++            return selectedOptimizationItems
++        default:
++            return selectedSmartScanItems
++        }
++    }
++
+     private func runProcessAction(process: ProcessSample, force: Bool) {
+         let outcome = settings.terminateProcess(pid: process.pid, force: force)
+         processActionResult = outcome.message
+@@ -1850,7 +2279,9 @@ struct MenuContentView: View {
+     }
+ 
+     private func closeSelectedReliefApps() {
+-        let targets = sampler.topMemoryProcesses.filter { selectedReliefPIDs.contains($0.pid) }
++        let targets = sampler.topMemoryProcesses.filter {
++            selectedReliefPIDs.contains($0.pid) && !featureStore.isProcessAllowlisted($0.name)
++        }
+         guard !targets.isEmpty else {
+             processActionResult = "No selected memory-relief targets."
+             return
+@@ -1955,31 +2386,127 @@ struct MenuContentView: View {
+ 
+         if panel.runModal() == .OK {
+             smartScanRoots = panel.urls
++            featureStore.largeFilesDefaultScopes = panel.urls.map(\.path)
++        }
++    }
++
++    private func setLargeFileQuickScope(_ directory: FileManager.SearchPathDirectory) {
++        if let url = FileManager.default.urls(for: directory, in: .userDomainMask).first {
++            smartScanRoots = [url]
++            featureStore.largeFilesDefaultScopes = [url.path]
++        }
++    }
++
++    private func applyDefaultLargeFileScopesIfNeeded() {
++        guard smartScanRoots.isEmpty else { return }
++        let urls = featureStore.largeFilesDefaultScopes.map { URL(fileURLWithPath: $0) }
++        let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
++        if !existing.isEmpty {
++            smartScanRoots = existing
+         }
+     }
+ 
+     private func runSmartScan() {
+-        guard !isSmartScanRunning else { return }
++        guard !smartScanRunState.isRunning else { return }
++
++        guard !smartScanRoots.isEmpty else {
++            processActionResult = "Select at least one Large Files scope before running Smart Scan."
++            return
++        }
+ 
+-        isSmartScanRunning = true
++        smartScanTask?.cancel()
+         processActionResult = "Smart Scan in progress..."
+ 
+         let options = SmartScanService.ScanOptions(
+             includePrivacy: smartScanIncludePrivacy,
++            includeSavedApplicationState: true,
+             selectedLargeFileRoots: smartScanRoots,
+-            topLargeFilesCount: 25
++            topLargeFilesCount: featureStore.largeFilesTopN
+         )
+-        let topCPU = sampler.topCPUProcesses
+ 
+-        DispatchQueue.global(qos: .utility).async {
+-            let summary = smartScanService.runSmartScan(options: options, topCPUProcesses: topCPU)
++        let topCPU = sampler.topCPUProcesses
++        smartScanTask = Task {
++            let summary = await smartScanService.runSmartScanAsync(options: options, topCPUProcesses: topCPU) { state in
++                Task { @MainActor in
++                    smartScanRunState = state
++                }
++            }
+ 
+-            DispatchQueue.main.async {
++            await MainActor.run {
+                 smartScanSummary = summary
+                 selectedSmartScanItemIDs.removeAll()
+-                isSmartScanRunning = false
++                smartScanRunState.isRunning = false
+                 processActionResult = "Smart Scan complete: \(summary.items.count) items found, total \(byteCountString(summary.totalBytes))."
+             }
++
++            await scanOptimizationModule()
++            if !(featureStore.pauseBackgroundScansDuringSim && sampler.isSimActive) {
++                scanCleanerModule()
++                scanLargeFilesModule()
++            }
++            await MainActor.run {
++                refreshQuarantineBatches()
++            }
++        }
++    }
++
++    private func scanCleanerModule() {
++        guard !cleanerLoading else { return }
++        cleanerLoading = true
++
++        Task {
++            let items = await smartScanService.scanCleanerModuleAsync(includeSavedApplicationState: true)
++            await MainActor.run {
++                cleanerItems = items
++                selectedCleanerItemIDs.removeAll()
++                cleanerLoading = false
++                processActionResult = "Cleaner scan complete: \(items.count) item(s)."
++            }
++        }
++    }
++
++    private func scanLargeFilesModule() {
++        guard !largeFilesLoading else { return }
++        guard !smartScanRoots.isEmpty else {
++            processActionResult = "Choose at least one folder scope for Large Files scan."
++            return
++        }
++
++        largeFilesLoading = true
++
++        Task {
++            let items = await smartScanService.scanLargeFilesModuleAsync(roots: smartScanRoots, topCount: featureStore.largeFilesTopN)
++            await MainActor.run {
++                largeFileItems = items
++                selectedLargeFileItemIDs.removeAll()
++                largeFilesLoading = false
++                processActionResult = "Large Files scan complete: \(items.count) item(s)."
++            }
++        }
++    }
++
++    private func scanOptimizationModule() async {
++        let items = await smartScanService.scanOptimizationModuleAsync(topCPUProcesses: sampler.topCPUProcesses)
++        await MainActor.run {
++            optimizationItems = items
++            selectedOptimizationItemIDs.removeAll()
++        }
++    }
++
++    private func deepLinkToModule(_ module: SmartScanModule) {
++        switch module {
++        case .systemJunk, .trashBins:
++            selectedSection = .cleaner
++            scanCleanerModule()
++        case .largeFiles:
++            selectedSection = .largeFiles
++            scanLargeFilesModule()
++        case .optimization:
++            selectedSection = .optimization
++            Task { await scanOptimizationModule() }
++        case .privacy:
++            selectedSection = .cleaner
++            scanCleanerModule()
+         }
+     }
+ 
+@@ -1996,14 +2523,119 @@ struct MenuContentView: View {
+         )
+     }
+ 
++    private func cleanerSelectionBinding(itemID: UUID) -> Binding<Bool> {
++        Binding(
++            get: { selectedCleanerItemIDs.contains(itemID) },
++            set: { selected in
++                if selected {
++                    selectedCleanerItemIDs.insert(itemID)
++                } else {
++                    selectedCleanerItemIDs.remove(itemID)
++                }
++            }
++        )
++    }
++
++    private func largeFilesSelectionBinding(itemID: UUID) -> Binding<Bool> {
++        Binding(
++            get: { selectedLargeFileItemIDs.contains(itemID) },
++            set: { selected in
++                if selected {
++                    selectedLargeFileItemIDs.insert(itemID)
++                } else {
++                    selectedLargeFileItemIDs.remove(itemID)
++                }
++            }
++        )
++    }
++
++    private func impactProcesses() -> [ProcessSample] {
++        let allowlisted = Set(featureStore.optimizationProcessAllowlist.map { $0.lowercased() })
++        let combined = Dictionary(grouping: sampler.topCPUProcesses + sampler.topMemoryProcesses, by: { $0.pid })
++            .compactMap { _, group -> ProcessSample? in
++                guard let first = group.first else { return nil }
++                let highestCPU = group.map(\.cpuPercent).max() ?? first.cpuPercent
++                let highestMemory = group.map(\.memoryBytes).max() ?? first.memoryBytes
++                return ProcessSample(
++                    pid: first.pid,
++                    name: first.name,
++                    bundleIdentifier: first.bundleIdentifier,
++                    cpuPercent: highestCPU,
++                    memoryBytes: highestMemory,
++                    sampledAt: first.sampledAt
++                )
++            }
++            .filter {
++                !$0.name.localizedCaseInsensitiveContains("X-Plane") &&
++                !$0.name.localizedCaseInsensitiveContains("CruiseControl") &&
++                !allowlisted.contains($0.name.lowercased())
++            }
++            .sorted {
++                let leftScore = ($0.cpuPercent * 1.8) + (Double($0.memoryBytes) / 1_073_741_824.0 * 8.0)
++                let rightScore = ($1.cpuPercent * 1.8) + (Double($1.memoryBytes) / 1_073_741_824.0 * 8.0)
++                return leftScore > rightScore
++            }
++
++        return Array(combined.prefix(8))
++    }
++
++    private func refreshQuarantineBatches() {
++        quarantineBatches = smartScanService.listQuarantineBatches()
++        if selectedQuarantineBatchID.isEmpty || !quarantineBatches.contains(where: { $0.batchID == selectedQuarantineBatchID }) {
++            selectedQuarantineBatchID = quarantineBatches.first?.batchID ?? ""
++        }
++    }
++
+     private func quarantineSelectedScanItems() {
++        let selected = selectedScanItemsForAction
+         let outcome = smartScanService.quarantine(
+-            items: selectedSmartScanItems,
++            items: selected,
++            advancedModeEnabled: featureStore.advancedModeEnabled
++        )
++        processActionResult = outcome.message
++        refreshQuarantineBatches()
++    }
++
++    private func deleteSelectedScanItems() {
++        if featureStore.advancedModeEnabled && featureStore.advancedModeExtraConfirmation {
++            processActionResult = "Advanced Mode destructive action confirmed."
++        }
++
++        let selected = selectedScanItemsForAction
++        let outcome = smartScanService.deletePermanently(
++            items: selected,
+             advancedModeEnabled: featureStore.advancedModeEnabled
+         )
+         processActionResult = outcome.message
++
++        if selectedSection == .cleaner {
++            cleanerItems.removeAll { selectedCleanerItemIDs.contains($0.id) }
++            selectedCleanerItemIDs.removeAll()
++        } else if selectedSection == .largeFiles {
++            largeFileItems.removeAll { selectedLargeFileItemIDs.contains($0.id) }
++            selectedLargeFileItemIDs.removeAll()
++        } else {
++            smartScanSummary = SmartScanSummary(
++                generatedAt: smartScanSummary?.generatedAt ?? Date(),
++                duration: smartScanSummary?.duration ?? 0,
++                moduleResults: smartScanSummary?.moduleResults ?? [],
++                items: (smartScanSummary?.items ?? []).filter { !selectedSmartScanItemIDs.contains($0.id) }
++            )
++            selectedSmartScanItemIDs.removeAll()
++        }
++
++        refreshQuarantineBatches()
+     }
+ 
++    private func openLoginItemsSettings() {
++        if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
++            if NSWorkspace.shared.open(url) {
++                processActionResult = "Opened Login Items settings."
++                return
++            }
++        }
++        processActionResult = "Open System Settings > General > Login Items to review startup/background apps."
++    }
+     private func copyToClipboard(_ text: String) {
+         NSPasteboard.general.clearContents()
+         NSPasteboard.general.setString(text, forType: .string)
+diff --git a/README.md b/README.md
+index 4108329..52e25d2 100644
+--- a/README.md
++++ b/README.md
+@@ -1,118 +1,103 @@
+-# CruiseControl v1.1.3
++# CruiseControl v1.1.4
+ 
+ CruiseControl is a macOS SwiftUI desktop performance companion for X-Plane on Apple Silicon.
+ 
+ ## What it does
+ 
+-- Monitors CPU, memory pressure, compressed memory, swap, disk I/O, thermal state, and top processes.
+-- Tracks X-Plane UDP telemetry with clear connection state (`IDLE`, `LISTENING`, `ACTIVE`, `MISCONFIG`).
+-- Provides user-approved actions only (quit/force quit with confirmation, guidance, diagnostics export).
+-- Uses a FlyWithLua companion for in-sim LOD control. The macOS app does not write XP private datarefs directly.
++- Real-time system telemetry: CPU, memory pressure, compressed memory, swap, disk I/O, thermal state, top processes.
++- X-Plane UDP monitoring with explicit connection states: `IDLE`, `LISTENING`, `ACTIVE`, `MISCONFIG`.
++- Regulator bridge diagnostics for FlyWithLua (UDP ACK path + file fallback).
++- Cleaner Suite (safe, reversible by default):
++  - Smart Scan
++  - Cleaner
++  - Large Files
++  - Optimization
++  - Quarantine
+ 
+-## Build and run
++## Smart Scan v1.1.4
+ 
+-1. Open `CruiseControl.xcodeproj` in Xcode.
+-2. Select scheme `CruiseControl`.
+-3. Build and Run.
+-4. For an installable copy, use `Preferences > Install to /Applications`.
++Smart Scan runs these modules asynchronously with progress and cancellation:
+ 
+-## Bundle Identifier Migration
+-
+-- New bundle identifier: `jahrix.CruiseControl`
+-- Previous bundle identifier: `jahrix.Speed-for-Mac`
+-- macOS treats this as a different app identity. Existing settings in `~/Library/Preferences/jahrix.Speed-for-Mac.plist` are not auto-imported.
+-
+-## Connection Wizard (X-Plane + Lua)
+-
+-In CruiseControl, the Connection Wizard verifies:
+-
+-1. X-Plane process detection.
+-2. UDP telemetry state + last packet age + packet rate.
+-3. Control bridge mode (`UDP`, `File Fallback`, or `None`).
+-4. ACK state (`ACK OK`, `Waiting`, or expected no-ACK in file mode).
++1. System Junk (safe user paths only)
++2. Trash Bins
++3. Large Files (selected scope only)
++4. Optimization
++5. Optional privacy cache scan
+ 
+-Helpful actions:
++`Run Clean` defaults to **Quarantine first**.
+ 
+-- `Copy 127.0.0.1:<telemetry-port>`
+-- `Copy Lua listen port`
+-- `Test PING`
+-- `Open Bridge Folder in Finder`
++## Quarantine / Restore model
+ 
+-## X-Plane UDP setup
++Quarantine root:
+ 
+-In X-Plane:
++`~/Library/Application Support/CruiseControl/Quarantine/<timestamp>/`
+ 
+-1. `Settings > Data Output`
+-2. Check `Send network data output`
+-3. Set IP to `127.0.0.1`
+-4. Set Port to CruiseControl listening port (default `49005`)
+-5. Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)
++Each batch writes `manifest.json` with metadata:
+ 
+-Ports are shown without grouping commas (for example `49005`, not `49,005`).
++- `batchId`
++- `createdAt`
++- `totalBytes`
++- entries: `originalPath`, `quarantinedPath`, `sizeBytes`, `timestamp`, optional `sha256`
+ 
+-## Regulator bridge folder (file fallback)
++From the Quarantine section you can:
+ 
+-CruiseControl uses this folder for file bridge mode:
++- Restore batch
++- Delete batch permanently
++- View total quarantined size
+ 
+-- `~/Library/Application Support/CruiseControl/`
++## Memory Relief (honest behavior)
+ 
+-Files:
++CruiseControl does **not** claim fake global RAM purges.
+ 
+-- `lod_target.txt` (app writes target LOD)
+-- `lod_mode.txt` (app writes enable/disable)
+-- `lod_status.txt` (optional, Lua writes current state/evidence)
++Memory Relief focuses on useful actions:
+ 
+-## Test controls
++- shows pressure/swap/compressed memory trends
++- suggests top memory offenders
++- user-confirmed quit actions
++- optional limited purge clears CruiseControl-owned local cache only
+ 
+-In `Regulator Proof` and `LOD Regulator`:
++## Safe path policy
+ 
+-- `Test: FPS Mode (shorter draw distance)` sends temporary LOD bias `1.30`.
+-- `Test: Visual Mode (longer draw distance)` sends temporary LOD bias `0.75`.
+-- Tests run for 10 seconds, then auto-restore to the active Regulator target (or neutral fallback).
++Included by default:
+ 
+-## Proof Panel interpretation
++- `~/Library/Caches`
++- `~/Library/Logs`
++- `~/Library/Application Support/CruiseControl`
++- `~/Library/Saved Application State` (itemized)
++- `~/.Trash`
+ 
+-`Regulator Proof` shows:
++Excluded by default:
+ 
+-- Bridge mode (`UDP`, `File Fallback`, `None`)
+-- Telemetry freshness + packets/sec
+-- Last command + age
+-- ACK line (or expected no-ACK in file mode)
+-- Applied LOD evidence:
+-  - UDP ACK payload when available
+-  - File bridge `lod_status.txt` values when available
+-- `LOD CHANGING: YES/NO`
++- `/System`
++- `/Library`
++- `/private/var/vm`
+ 
+-`LOD CHANGING` is `YES` when ACK-applied values are changing (UDP) or file bridge status updates/LOD changes are observed.
++Advanced mode is required for out-of-allowlist actions.
+ 
+-## FlyWithLua protocol
++## Update checks and install
+ 
+-Companion script path:
++- `Check for Updates…` uses Sparkle when configured (`SUFeedURL` + `SUPublicEDKey`), otherwise falls back to GitHub Releases HTTPS check.
++- `Show App in Finder`, `Open Applications Folder`, and `Install to /Applications` are available in app commands and Preferences.
+ 
+-- `X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/`
++## Build
+ 
+-Command protocol:
++```bash
++xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj" \
++  -scheme "CruiseControl" \
++  -configuration Debug \
++  CODE_SIGNING_ALLOWED=NO build
++```
+ 
+-- App -> Lua: `PING`, `ENABLE`, `DISABLE`, `SET_LOD <float>`
+-- Lua -> App: `PONG`, `ACK ENABLE`, `ACK DISABLE`, `ACK SET_LOD <float>`, `ERR <message>`
+-
+-Dataref applied by Lua:
+-
+-- `sim/private/controls/reno/LOD_bias_rat`
+-
+-## Memory Pressure Relief (what it is and is not)
++## Bundle Identifier Migration
+ 
+-CruiseControl does not do fake global RAM cleaning. It provides:
++- Current: `jahrix.CruiseControl`
++- Legacy: `jahrix.Speed-for-Mac`
+ 
+-- Pressure/swap/compressed-memory visibility
+-- Suggestions to close heavy apps
+-- User-confirmed quit actions
+-- Optional limited purge attempt that only clears CruiseControl local caches
++macOS treats these as different app identities; old preference domains are not auto-migrated.
+ 
+ ## Limitations
+ 
+ - No kernel extensions.
+-- No private macOS APIs.
+-- No scheduler/GPU clock control.
+-- Process actions can fail due sandboxing, app protections, or permissions.
+-- X-Plane telemetry and Regulator behavior depend on correct sim/data output setup.
++- No private macOS scheduler/GPU controls.
++- Process terminate/force-quit can fail due permissions/app behavior.
++- X-Plane companion features depend on correct sim UDP/FlyWithLua setup.
+diff --git a/CruiseControl/Services/SparkleUpdateBridge.swift b/CruiseControl/Services/SparkleUpdateBridge.swift
+new file mode 100644
+index 0000000..4c1f60d
+--- /dev/null
++++ b/CruiseControl/Services/SparkleUpdateBridge.swift
+@@ -0,0 +1,27 @@
++import Foundation
++
++#if canImport(Sparkle)
++import Sparkle
++#endif
++
++enum SparkleUpdateBridge {
++    static func checkForUpdatesIfAvailable() -> UpdateCheckOutcome {
++        guard let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
++              !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
++              let _ = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
++            return UpdateCheckOutcome(success: false, message: "Sparkle not configured. Falling back to GitHub Releases.", latestVersion: nil, releaseURL: nil)
++        }
++
++        #if canImport(Sparkle)
++        DispatchQueue.main.async {
++            if let delegate = NSApp.delegate as? AppDelegate,
++               let updaterController = delegate.sparkleUpdaterController {
++                updaterController.checkForUpdates(nil)
++            }
++        }
++        return UpdateCheckOutcome(success: true, message: "Sparkle update check triggered.", latestVersion: nil, releaseURL: nil)
++        #else
++        return UpdateCheckOutcome(success: false, message: "Sparkle configured but framework is not linked. Falling back to GitHub Releases.", latestVersion: nil, releaseURL: nil)
++        #endif
++    }
++}
