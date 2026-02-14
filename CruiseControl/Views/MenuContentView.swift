@@ -1622,7 +1622,7 @@ struct MenuContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Button("Export Diagnostics") {
                         runVerifiedAction(kind: .exportDiagnostics, params: [:]) {
-                            let outcome = sampler.exportDiagnostics()
+                            let outcome = sampler.exportDiagnostics(settingsSnapshot: diagnosticsSettingsSnapshot())
                             diagnosticsExportResult = outcome.message
                             return ActionOutcome(success: outcome.success, message: outcome.message)
                         }
@@ -1656,6 +1656,37 @@ struct MenuContentView: View {
                             }
                             .padding(.vertical, 2)
                         }
+                    }
+                }
+            }
+
+            dashboardCard(title: "Sim Test Checklist") {
+                VStack(alignment: .leading, spacing: 8) {
+                    checklistRow(title: "Sampler running", passed: !isStale, detail: isStale ? "No fresh sample" : "Fresh sample stream")
+                    checklistRow(
+                        title: "Stutter detector",
+                        passed: !sampler.stutterEvents.isEmpty,
+                        detail: sampler.stutterEvents.isEmpty ? "Inject mock event to verify UI" : "\(sampler.stutterEvents.count) events recorded"
+                    )
+                    checklistRow(
+                        title: "Advisor availability",
+                        passed: !xPlaneAdvisorItems().isEmpty,
+                        detail: xPlaneAdvisorItems().isEmpty ? "No current triggers" : "Advisor card conditions triggered"
+                    )
+                    let proof = sampler.computeProofState(now: now)
+                    checklistRow(
+                        title: "Regulator proof semantics",
+                        passed: proof.lodApplied || !proof.recentActivity,
+                        detail: "Applied and activity are tracked independently"
+                    )
+
+                    HStack {
+                        Toggle("Demo/Mock Mode", isOn: $featureStore.demoMockModeEnabled)
+                        Button("Inject Mock Stutter") {
+                            sampler.injectMockStutterEvent()
+                            processActionResult = "Injected mock stutter event for diagnostics validation."
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
             }
@@ -2134,6 +2165,7 @@ struct MenuContentView: View {
 
                 Toggle("Listen for X-Plane UDP", isOn: $settings.xPlaneUDPListeningEnabled)
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
+                Toggle("Enable Demo/Mock mode", isOn: $featureStore.demoMockModeEnabled)
                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
                 Stepper("Large Files top results: \(featureStore.largeFilesTopN)", value: $featureStore.largeFilesTopN, in: 10...200, step: 5)
 
@@ -2235,6 +2267,21 @@ struct MenuContentView: View {
             Spacer()
         }
         .padding(.vertical, 2)
+    }
+
+    private func checklistRow(title: String, passed: Bool, detail: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: passed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(passed ? neonMint : neonOrange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
     }
 
     private func metricPill(label: String, value: String) -> some View {
@@ -3123,6 +3170,20 @@ struct MenuContentView: View {
         }
         processActionResult = "Open System Settings > General > Login Items to review startup/background apps."
     }
+    private func diagnosticsSettingsSnapshot() -> [String: String] {
+        [
+            "samplingInterval": settings.samplingInterval.rawValue,
+            "smoothingAlpha": String(format: "%.2f", settings.smoothingAlpha),
+            "udpEnabled": settings.xPlaneUDPListeningEnabled ? "true" : "false",
+            "udpPort": String(settings.xPlaneUDPPort),
+            "workloadProfile": featureStore.workloadProfile.rawValue,
+            "demoMockMode": featureStore.demoMockModeEnabled ? "true" : "false",
+            "governorEnabled": settings.governorModeEnabled ? "true" : "false",
+            "governorHost": settings.governorCommandHost,
+            "governorPort": String(settings.governorCommandPort)
+        ]
+    }
+
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)

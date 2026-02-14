@@ -210,18 +210,24 @@ final class PerformanceSampler: ObservableObject {
     }
 
     @MainActor
-    func exportDiagnostics() -> DiagnosticsExportOutcome {
+    func exportDiagnostics(settingsSnapshot: [String: String] = [:]) -> DiagnosticsExportOutcome {
         struct ExportReport: Codable {
             let generatedAt: Date
+            let profile: String
             let simActive: Bool
             let snapshot: SnapshotBody
+            let proof: ProofBody
             let warnings: [String]
             let culprits: [String]
             let topCPUProcesses: [ProcessSample]
             let topMemoryProcesses: [ProcessSample]
             let recentHistory: [MetricHistoryPoint]
+            let recentSamples: [MetricSample]
             let stutterEvents: [StutterEvent]
+            let stutterCauseSummaries: [StutterCauseSummary]
+            let actionReceipts: [ActionReceipt]
             let governorDecision: GovernorDecision?
+            let settingsSnapshot: [String: String]
 
             struct SnapshotBody: Codable {
                 let cpuUserPercent: Double
@@ -253,10 +259,26 @@ final class PerformanceSampler: ObservableObject {
                 let governorLastCommand: String?
                 let governorLastACK: String?
             }
+
+            struct ProofBody: Codable {
+                let bridgeModeLabel: String
+                let lodApplied: Bool
+                let recentActivity: Bool
+                let onTarget: Bool
+                let targetLOD: Double?
+                let appliedLOD: Double?
+                let deltaToTarget: Double?
+                let lastSentAt: Date?
+                let lastEvidenceAt: Date?
+                let evidenceLine: String?
+                let reasons: [String]
+            }
         }
 
+        let proof = computeProofState(now: Date())
         let report = ExportReport(
             generatedAt: Date(),
+            profile: workloadProfile.rawValue,
             simActive: isSimActive,
             snapshot: .init(
                 cpuUserPercent: snapshot.cpuUserPercent,
@@ -288,13 +310,30 @@ final class PerformanceSampler: ObservableObject {
                 governorLastCommand: governorLastCommandText,
                 governorLastACK: governorLastACKText
             ),
+            proof: .init(
+                bridgeModeLabel: proof.bridgeModeLabel,
+                lodApplied: proof.lodApplied,
+                recentActivity: proof.recentActivity,
+                onTarget: proof.onTarget,
+                targetLOD: proof.targetLOD,
+                appliedLOD: proof.appliedLOD,
+                deltaToTarget: proof.deltaToTarget,
+                lastSentAt: proof.lastSentAt,
+                lastEvidenceAt: proof.lastEvidenceAt,
+                evidenceLine: proof.evidenceLine,
+                reasons: proof.reasons
+            ),
             warnings: warnings,
             culprits: culprits,
             topCPUProcesses: topCPUProcesses,
             topMemoryProcesses: topMemoryProcesses,
             recentHistory: Array(history.suffix(1800)),
-            stutterEvents: Array(stutterEvents.suffix(80)),
-            governorDecision: governorDecision
+            recentSamples: Array(metricSamples.suffix(1800)),
+            stutterEvents: Array(stutterEvents.suffix(120)),
+            stutterCauseSummaries: stutterCauseSummaries,
+            actionReceipts: Array(actionReceipts.suffix(120)),
+            governorDecision: governorDecision,
+            settingsSnapshot: settingsSnapshot
         )
 
         let encoder = JSONEncoder()
@@ -306,7 +345,7 @@ final class PerformanceSampler: ObservableObject {
 
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let suggestedName = "CruiseControl-diagnostics-\(formatter.string(from: Date())).json"
+            let suggestedName = "CruiseControl-diagnostics-v2-\(formatter.string(from: Date())).json"
 
             let panel = NSSavePanel()
             panel.title = "Export Diagnostics"
@@ -455,6 +494,9 @@ final class PerformanceSampler: ObservableObject {
             topProcessImpacts: processImpacts
         )
         metricSampleBuffer.append(metricSample)
+        if demoMockModeEnabled {
+            appendDemoMetricSample(now: now)
+        }
 
         trimHistory(reference: now)
 
@@ -539,7 +581,7 @@ final class PerformanceSampler: ObservableObject {
                 )
             }
 
-            isSimActive = simActive
+            isSimActive = simActive || demoMockModeEnabled
             warnings = warningItems
             culprits = culpritItems
             history = historyBuffer
@@ -1392,6 +1434,80 @@ final class PerformanceSampler: ObservableObject {
         } else {
             metricSampleBuffer.removeAll(keepingCapacity: true)
         }
+    }
+
+    private func appendDemoMetricSample(now: Date) {
+        let phase = Double(sampleCount % 240) / 240.0
+        let cpu = 35.0 + (sin(phase * .pi * 2.0) * 18.0)
+        let diskBase = 8.0 + (cos(phase * .pi * 4.0) * 5.0)
+        let swapDelta = Int64((sin(phase * .pi * 3.0) + 1.0) * 80_000_000)
+
+        let pressure: MemoryPressureLevel
+        if phase > 0.68 && phase < 0.82 {
+            pressure = .red
+        } else if phase > 0.4 {
+            pressure = .yellow
+        } else {
+            pressure = .green
+        }
+
+        let demoSample = MetricSample(
+            timestamp: now,
+            cpuTotal: max(min(cpu, 95), 10),
+            memPressure: pressure,
+            swapUsed: UInt64(1_000_000_000 + max(swapDelta, 0)),
+            swapDelta: swapDelta,
+            diskRead: max(diskBase, 0.2),
+            diskWrite: max(diskBase * 0.7, 0.2),
+            thermalRawValue: pressure == .red ? ProcessInfo.ThermalState.serious.rawValue : ProcessInfo.ThermalState.fair.rawValue,
+            pressureIndex: pressure == .red ? 0.9 : (pressure == .yellow ? 0.62 : 0.28),
+            topProcessImpacts: [
+                ProcessImpact(pid: 991, name: "Mock Browser", cpu: 22.0, residentBytes: 1_800_000_000, impactScore: 22 * 1.7 + 1.8 * 9),
+                ProcessImpact(pid: 992, name: "Mock Recorder", cpu: 15.0, residentBytes: 900_000_000, impactScore: 15 * 1.7 + 0.9 * 9)
+            ]
+        )
+
+        metricSampleBuffer.append(demoSample)
+
+        if sampleCount % 12 == 0 {
+            let mock = StutterEvent(
+                timestamp: now,
+                reason: "Mock burst",
+                rankedCulprits: ["Synthetic swap burst", "Synthetic disk spike", "Synthetic CPU pressure"],
+                memoryPressure: demoSample.memPressure,
+                swapUsedBytes: demoSample.swapUsed,
+                compressedMemoryBytes: 1_024 * 1_024 * 1_024,
+                diskReadMBps: demoSample.diskRead,
+                diskWriteMBps: demoSample.diskWrite,
+                thermalStateRaw: thermalStateDescription(ProcessInfo.ThermalState(rawValue: demoSample.thermalRawValue) ?? .fair),
+                telemetryPacketsPerSecond: 8,
+                telemetryFreshnessSeconds: 0.2,
+                topCPUProcesses: [
+                    ProcessSample(pid: 991, name: "Mock Browser", bundleIdentifier: nil, cpuPercent: 22, memoryBytes: 1_800_000_000, sampledAt: now)
+                ],
+                topMemoryProcesses: [
+                    ProcessSample(pid: 992, name: "Mock Recorder", bundleIdentifier: nil, cpuPercent: 15, memoryBytes: 900_000_000, sampledAt: now)
+                ],
+                severity: 0.72,
+                classification: .swapThrash,
+                confidence: 0.81,
+                evidencePoints: ["demoMode=true", "syntheticSwapBurst=true", "syntheticDiskSpike=true"],
+                windowRef: "demo-\(Int(now.timeIntervalSince1970))"
+            )
+            stutterBuffer.append(mock)
+            if stutterBuffer.count > 120 {
+                stutterBuffer.removeFirst(stutterBuffer.count - 120)
+            }
+        }
+    }
+
+    @MainActor
+    func injectMockStutterEvent() {
+        demoMockModeEnabled = true
+        appendDemoMetricSample(now: Date())
+        stutterEvents = stutterBuffer
+        metricSamples = metricSampleBuffer
+        stutterCauseSummaries = recentStutterCauseRanking(lastMinutes: 10)
     }
 
     private func buildWarnings(
