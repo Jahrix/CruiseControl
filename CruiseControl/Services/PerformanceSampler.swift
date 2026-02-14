@@ -42,6 +42,10 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var regulatorTestActive: Bool = false
     @Published private(set) var regulatorTestCountdownSeconds: Int = 0
     @Published private(set) var stutterEvents: [StutterEvent] = []
+    @Published private(set) var metricSamples: [MetricSample] = []
+    @Published private(set) var actionReceipts: [ActionReceipt] = []
+    @Published private(set) var workloadProfile: ProfileKind = .generalPerformance
+    @Published private(set) var stutterCauseSummaries: [StutterCauseSummary] = []
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
     private let xPlaneReceiver = XPlaneUDPReceiver()
@@ -55,12 +59,16 @@ final class PerformanceSampler: ObservableObject {
     private var previousDiskSampleDate: Date?
 
     private var historyBuffer: [MetricHistoryPoint] = []
+    private var metricSampleBuffer: [MetricSample] = []
+    private var actionReceiptBuffer: [ActionReceipt] = []
 
     private var smoothedUserCPU: Double = 0
     private var smoothedSystemCPU: Double = 0
 
     private var samplingIntervalSeconds: TimeInterval = 1.0
     private var smoothingAlpha: Double = 0.35
+    private var profileMode: ProfileKind = .generalPerformance
+    private var demoMockModeEnabled: Bool = false
 
     private var udpListeningEnabled: Bool = true
     private var xPlaneUDPPort: Int = 49_005
@@ -101,10 +109,14 @@ final class PerformanceSampler: ObservableObject {
     private var previousThermalState: ProcessInfo.ThermalState = .nominal
 
     func configureSampling(interval: TimeInterval, alpha: Double) {
-        let clampedInterval = max(0.5, min(interval, 2.0))
+        let clampedInterval = max(0.25, min(interval, 2.0))
         let clampedAlpha = min(max(alpha, 0.05), 0.95)
 
-        samplingIntervalSeconds = clampedInterval
+        if profileMode == .simMode {
+            samplingIntervalSeconds = min(clampedInterval, ProfileKind.simMode.preferredSamplingInterval)
+        } else {
+            samplingIntervalSeconds = max(clampedInterval, ProfileKind.generalPerformance.preferredSamplingInterval)
+        }
         smoothingAlpha = clampedAlpha
 
         Task { @MainActor in
@@ -136,6 +148,26 @@ final class PerformanceSampler: ObservableObject {
 
     func configureStutterHeuristics(_ config: StutterHeuristicConfig) {
         stutterHeuristics = config
+    }
+
+    func configureWorkloadProfile(_ profile: ProfileKind) {
+        profileMode = profile
+        Task { @MainActor in
+            workloadProfile = profile
+        }
+
+        if profile == .simMode {
+            samplingIntervalSeconds = min(samplingIntervalSeconds, profile.preferredSamplingInterval)
+        } else {
+            samplingIntervalSeconds = max(samplingIntervalSeconds, profile.preferredSamplingInterval)
+        }
+
+        guard timer != nil else { return }
+        restartTimer()
+    }
+
+    func configureDemoMockMode(enabled: Bool) {
+        demoMockModeEnabled = enabled
     }
 
     func start() {
@@ -384,6 +416,46 @@ final class PerformanceSampler: ObservableObject {
             governorAckState: governorResult.ackState
         )
         historyBuffer.append(historyPoint)
+
+        let sourceProcesses = scannedProcesses ?? topCPUProcesses
+        let processImpacts = Array(
+            sourceProcesses
+                .map {
+                    ProcessImpact(
+                        pid: $0.pid,
+                        name: $0.name,
+                        cpu: $0.cpuPercent,
+                        residentBytes: $0.memoryBytes,
+                        impactScore: ($0.cpuPercent * 1.7) + (Double($0.memoryBytes) / 1_073_741_824.0 * 9.0)
+                    )
+                }
+                .sorted { $0.impactScore > $1.impactScore }
+                .prefix(5)
+        )
+
+        let pressureIndex = pressureIndexScore(
+            cpuTotal: cpu.user + cpu.system,
+            memoryPressure: memoryPressure,
+            swapDelta5Min: swapDelta5Min,
+            diskReadMBps: diskRate.readMBps,
+            diskWriteMBps: diskRate.writeMBps,
+            thermalState: thermal
+        )
+
+        let metricSample = MetricSample(
+            timestamp: now,
+            cpuTotal: cpu.user + cpu.system,
+            memPressure: memoryPressure,
+            swapUsed: swapUsedBytes,
+            swapDelta: swapDelta5Min,
+            diskRead: diskRate.readMBps,
+            diskWrite: diskRate.writeMBps,
+            thermalRawValue: thermal.rawValue,
+            pressureIndex: pressureIndex,
+            topProcessImpacts: processImpacts
+        )
+        metricSampleBuffer.append(metricSample)
+
         trimHistory(reference: now)
 
         var warningItems = buildWarnings(
@@ -471,6 +543,8 @@ final class PerformanceSampler: ObservableObject {
             warnings = warningItems
             culprits = culpritItems
             history = historyBuffer
+            metricSamples = metricSampleBuffer
+            stutterCauseSummaries = recentStutterCauseRanking(lastMinutes: 10)
             governorDecision = governorResult.decision
             governorCurrentTier = governorResult.currentTier
             governorCurrentTargetLOD = governorResult.currentTargetLOD
@@ -1261,6 +1335,46 @@ final class PerformanceSampler: ObservableObject {
         )
     }
 
+    private func pressureIndexScore(
+        cpuTotal: Double,
+        memoryPressure: MemoryPressureLevel,
+        swapDelta5Min: Int64,
+        diskReadMBps: Double,
+        diskWriteMBps: Double,
+        thermalState: ProcessInfo.ThermalState
+    ) -> Double {
+        let memoryScore: Double
+        switch memoryPressure {
+        case .green:
+            memoryScore = 0.15
+        case .yellow:
+            memoryScore = 0.55
+        case .red:
+            memoryScore = 0.9
+        }
+
+        let swapScore = min(max(Double(abs(swapDelta5Min)) / Double(512 * 1_024 * 1_024), 0), 1)
+        let diskScore = min((diskReadMBps + diskWriteMBps) / 220.0, 1)
+        let cpuScore = min(cpuTotal / 100.0, 1)
+
+        let thermalScore: Double
+        switch thermalState {
+        case .nominal:
+            thermalScore = 0.1
+        case .fair:
+            thermalScore = 0.35
+        case .serious:
+            thermalScore = 0.75
+        case .critical:
+            thermalScore = 1.0
+        @unknown default:
+            thermalScore = 0.5
+        }
+
+        let weighted = (memoryScore * 0.35) + (swapScore * 0.2) + (diskScore * 0.15) + (cpuScore * 0.2) + (thermalScore * 0.1)
+        return min(max(weighted, 0), 1)
+    }
+
     private func trimHistory(reference: Date) {
         let cutoff = reference.addingTimeInterval(-1800)
         if let firstValidIndex = historyBuffer.firstIndex(where: { $0.timestamp >= cutoff }) {
@@ -1269,6 +1383,14 @@ final class PerformanceSampler: ObservableObject {
             }
         } else {
             historyBuffer.removeAll(keepingCapacity: true)
+        }
+
+        if let firstSampleIndex = metricSampleBuffer.firstIndex(where: { $0.timestamp >= cutoff }) {
+            if firstSampleIndex > 0 {
+                metricSampleBuffer.removeFirst(firstSampleIndex)
+            }
+        } else {
+            metricSampleBuffer.removeAll(keepingCapacity: true)
         }
     }
 
@@ -1387,38 +1509,47 @@ final class PerformanceSampler: ObservableObject {
         topMemory: [ProcessSample]
     ) -> StutterEvent? {
         var triggerReasons: [String] = []
+        var evidencePoints: [String] = []
 
         if let frameTime = telemetry?.frameTimeMS,
            frameTime >= stutterHeuristics.frameTimeSpikeMS {
             triggerReasons.append("Frame-time spike")
+            evidencePoints.append(String(format: "frameTimeMS=%.2f", frameTime))
         }
 
         if let fps = telemetry?.fps,
            let previousFPS,
            fps <= max(15, previousFPS - stutterHeuristics.fpsDropThreshold) {
             triggerReasons.append("FPS drop")
+            evidencePoints.append(String(format: "fps=%.2f prev=%.2f", fps, previousFPS))
         }
 
         if let previousCPU = previousCPUTotalPercent,
            cpuTotalPercent - previousCPU >= stutterHeuristics.cpuSpikePercent {
             triggerReasons.append("CPU spike")
+            evidencePoints.append(String(format: "cpuDelta=%.2f", cpuTotalPercent - previousCPU))
         }
 
         if diskReadMBps + diskWriteMBps >= stutterHeuristics.diskSpikeMBps {
             triggerReasons.append("Disk I/O spike")
+            evidencePoints.append(String(format: "diskMBps=%.2f", diskReadMBps + diskWriteMBps))
         }
 
-        if computeSwapDelta(windowSeconds: 90, now: now) >= Int64(stutterHeuristics.swapJumpBytes) {
+        let swapJump = computeSwapDelta(windowSeconds: 90, now: now)
+        if swapJump >= Int64(stutterHeuristics.swapJumpBytes) {
             triggerReasons.append("Swap jump")
+            evidencePoints.append("swapJump=\(swapJump)")
         }
 
         if previousThermalState.rawValue < thermalState.rawValue,
            thermalState == .serious || thermalState == .critical {
             triggerReasons.append("Thermal escalation")
+            evidencePoints.append("thermal=\(thermalStateDescription(thermalState))")
         }
 
         if memoryPressure == .red {
             triggerReasons.append("Memory pressure red")
+            evidencePoints.append("memPressure=red")
         }
 
         previousCPUTotalPercent = cpuTotalPercent
@@ -1437,6 +1568,29 @@ final class PerformanceSampler: ObservableObject {
             freshness = .infinity
         }
 
+        let classification: StutterCause
+        if swapJump >= Int64(stutterHeuristics.swapJumpBytes) || memoryPressure == .red {
+            classification = .swapThrash
+        } else if diskReadMBps + diskWriteMBps >= stutterHeuristics.diskSpikeMBps {
+            classification = .diskStall
+        } else if thermalState == .serious || thermalState == .critical {
+            classification = .thermalThrottle
+        } else if cpuTotalPercent >= 85 {
+            classification = .cpuSaturation
+        } else if telemetry?.fps ?? 60 < 28 {
+            classification = .gpuBoundHeuristic
+        } else {
+            classification = .unknown
+        }
+
+        let severity = min(max(
+            (Double(triggerReasons.count) / 6.0) +
+            (memoryPressure == .red ? 0.2 : 0) +
+            ((thermalState == .serious || thermalState == .critical) ? 0.2 : 0),
+            0
+        ), 1)
+        let confidence = min(max(0.35 + (Double(evidencePoints.count) * 0.12), 0), 1)
+
         return StutterEvent(
             timestamp: now,
             reason: triggerReasons.joined(separator: ", "),
@@ -1450,7 +1604,12 @@ final class PerformanceSampler: ObservableObject {
             telemetryPacketsPerSecond: udpStatus.packetsPerSecond,
             telemetryFreshnessSeconds: freshness,
             topCPUProcesses: topCPU,
-            topMemoryProcesses: topMemory
+            topMemoryProcesses: topMemory,
+            severity: severity,
+            classification: classification,
+            confidence: confidence,
+            evidencePoints: evidencePoints,
+            windowRef: "\(Int(now.timeIntervalSince1970))"
         )
     }
 
@@ -1470,6 +1629,62 @@ final class PerformanceSampler: ObservableObject {
     func historyPoints(for duration: HistoryDurationOption) -> [MetricHistoryPoint] {
         let cutoff = Date().addingTimeInterval(-duration.seconds)
         return history.filter { $0.timestamp >= cutoff }
+    }
+
+    @MainActor
+    func metricSamplesInWindow(lastMinutes minutes: Int) -> [MetricSample] {
+        let clamped = max(minutes, 1)
+        let cutoff = Date().addingTimeInterval(-Double(clamped) * 60.0)
+        return metricSamples.filter { $0.timestamp >= cutoff }
+    }
+
+    @MainActor
+    func recentStutterCauseRanking(lastMinutes minutes: Int = 10) -> [StutterCauseSummary] {
+        let cutoff = Date().addingTimeInterval(-Double(max(minutes, 1)) * 60.0)
+        let relevant = stutterEvents.filter { $0.timestamp >= cutoff }
+        guard !relevant.isEmpty else { return [] }
+
+        let grouped = Dictionary(grouping: relevant, by: { $0.classification })
+        return grouped
+            .map { cause, events in
+                StutterCauseSummary(
+                    cause: cause,
+                    count: events.count,
+                    averageConfidence: events.reduce(0) { $0 + $1.confidence } / Double(max(events.count, 1))
+                )
+            }
+            .sorted {
+                if $0.count == $1.count {
+                    return $0.averageConfidence > $1.averageConfidence
+                }
+                return $0.count > $1.count
+            }
+    }
+
+    @MainActor
+    func recordActionReceipt(
+        kind: ActionKind,
+        params: [String: String],
+        outcome: ActionOutcome,
+        before: MetricSample?,
+        after: MetricSample?
+    ) {
+        let receipt = ActionReceipt(
+            timestamp: Date(),
+            profile: workloadProfile,
+            kind: kind,
+            params: params,
+            before: before,
+            after: after,
+            outcome: outcome.success,
+            message: outcome.message
+        )
+
+        actionReceiptBuffer.append(receipt)
+        if actionReceiptBuffer.count > 120 {
+            actionReceiptBuffer.removeFirst(actionReceiptBuffer.count - 120)
+        }
+        actionReceipts = actionReceiptBuffer
     }
 
     static func thermalStateDescription(_ state: ProcessInfo.ThermalState) -> String {
