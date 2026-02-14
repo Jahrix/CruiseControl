@@ -4,15 +4,17 @@ import Combine
 
 enum DashboardSection: String, CaseIterable, Identifiable {
     case overview
+    case frameTimeLab
+    case processes
+    case profiles
+    case simMode
+    case diagnostics
     case smartScan
     case cleaner
     case largeFiles
     case optimization
     case quarantine
-    case processes
-    case simMode
     case history
-    case diagnostics
     case settings
 
     var id: String { rawValue }
@@ -20,15 +22,17 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .overview: return "Overview"
+        case .frameTimeLab: return "Frame-Time Lab"
+        case .processes: return "Top Processes"
+        case .profiles: return "Profiles"
+        case .simMode: return "X-Plane"
+        case .diagnostics: return "Diagnostics"
         case .smartScan: return "Smart Scan"
         case .cleaner: return "Cleaner"
         case .largeFiles: return "Large Files"
         case .optimization: return "Optimization"
         case .quarantine: return "Quarantine"
-        case .processes: return "Top Processes"
-        case .simMode: return "Sim Mode"
         case .history: return "History"
-        case .diagnostics: return "Diagnostics"
         case .settings: return "Preferences"
         }
     }
@@ -36,15 +40,17 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .overview: return "speedometer"
+        case .frameTimeLab: return "waveform.path.ecg.text.page"
+        case .processes: return "list.bullet.rectangle.portrait"
+        case .profiles: return "slider.horizontal.3"
+        case .simMode: return "airplane"
+        case .diagnostics: return "waveform.path.ecg"
         case .smartScan: return "sparkles"
         case .cleaner: return "trash.slash"
         case .largeFiles: return "externaldrive.fill.badge.plus"
         case .optimization: return "waveform.path.ecg.rectangle"
         case .quarantine: return "archivebox"
-        case .processes: return "list.bullet.rectangle.portrait"
-        case .simMode: return "airplane"
         case .history: return "clock.arrow.circlepath"
-        case .diagnostics: return "waveform.path.ecg"
         case .settings: return "gearshape"
         }
     }
@@ -383,6 +389,16 @@ struct MenuContentView: View {
         switch selectedSection ?? .overview {
         case .overview:
             overviewSection
+        case .frameTimeLab:
+            frameTimeLabSection
+        case .processes:
+            processesSection
+        case .profiles:
+            profilesSection
+        case .simMode:
+            simModeSection
+        case .diagnostics:
+            diagnosticsSection
         case .smartScan:
             smartScanSection
         case .cleaner:
@@ -393,14 +409,8 @@ struct MenuContentView: View {
             optimizationSection
         case .quarantine:
             quarantineSection
-        case .processes:
-            processesSection
-        case .simMode:
-            simModeSection
         case .history:
             historySection
-        case .diagnostics:
-            diagnosticsSection
         case .settings:
             preferencesSection
         }
@@ -861,6 +871,48 @@ struct MenuContentView: View {
                         Text("\(item.offset + 1). \(item.element)")
                             .font(.subheadline)
                     }
+                }
+            }
+        }
+    }
+
+    private var frameTimeLabSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Frame-Time Lab") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Timeline and stutter analysis view for recent session metrics.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    historySection
+                }
+            }
+        }
+    }
+
+    private var profilesSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Workload Profiles") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("General Performance keeps sampling lightweight. Sim Mode increases cadence and prioritizes simulator telemetry.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Toggle("Pause CruiseControl maintenance scans when simulator is active", isOn: $featureStore.pauseBackgroundScansDuringSim)
+                }
+            }
+
+            dashboardCard(title: "Sim Mode Profiles") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Profile", selection: $settings.selectedProfile) {
+                        ForEach(SimModeProfileType.allCases) { profile in
+                            Text(profile.displayName).tag(profile)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Toggle("Auto-enable when X-Plane launches", isOn: Binding(
+                        get: { settings.shouldAutoEnableForSelectedProfile() },
+                        set: { settings.updateAutoEnableForSelectedProfile($0) }
+                    ))
                 }
             }
         }
