@@ -1012,6 +1012,20 @@ struct MenuContentView: View {
                     Text("General Performance keeps sampling lightweight. Sim Mode increases cadence and prioritizes simulator telemetry.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+
+                    Picker("Workload profile", selection: $featureStore.workloadProfile) {
+                        ForEach(ProfileKind.allCases) { profile in
+                            Text(profile.title).tag(profile)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if sampler.isSimActive && featureStore.workloadProfile != .simMode {
+                        Text("X-Plane is active. Sim Mode profile is recommended for tighter sampling.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
                     Toggle(
                         "Pause CruiseControl maintenance scans when simulator is active",
                         isOn: Binding(

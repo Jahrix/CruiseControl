@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var previousSimActive: Bool = false
     private var previousAlertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
     private var pendingRuntimeConfigApplyTask: Task<Void, Never>?
+    private var didSuggestSimProfile = false
 
     private let warningCategoryIdentifier = "PROJECT_SPEED_WARNING"
 
@@ -72,7 +73,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard let self else { return }
                 defer { previousSimActive = simActive }
 
-                guard simActive, !previousSimActive else { return }
+                if !simActive {
+                    didSuggestSimProfile = false
+                    return
+                }
+
+                if featureStore.workloadProfile != .simMode,
+                   !didSuggestSimProfile {
+                    didSuggestSimProfile = true
+                    if settingsStore.sendWarningNotifications {
+                        enqueueWarningNotification(
+                            title: "CruiseControl: Sim Mode Available",
+                            body: "X-Plane is active. Consider switching workload profile to Sim Mode for faster sampling."
+                        )
+                    }
+                }
+
+                guard !previousSimActive else { return }
                 guard settingsStore.shouldAutoEnableForSelectedProfile(), !settingsStore.isSimModeEnabled else { return }
 
                 _ = settingsStore.enableSimMode(trigger: "Auto (X-Plane detected)")
@@ -145,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let effectiveConfig = featureStore.effectiveGovernorConfig(base: baseConfig, telemetryICAO: telemetryICAO)
         sampler.configureGovernor(config: effectiveConfig)
         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
+        sampler.configureWorkloadProfile(featureStore.workloadProfile)
+        sampler.configureDemoMockMode(enabled: featureStore.demoMockModeEnabled)
     }
 
     private func scheduleRuntimeConfigApply(delayMilliseconds: UInt64 = 500) {
