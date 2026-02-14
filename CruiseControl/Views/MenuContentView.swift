@@ -1034,6 +1034,26 @@ struct MenuContentView: View {
 
     private var processesSection: some View {
         VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Top Impact Processes") {
+                let impacts = sampler.metricSamples.last?.topProcessImpacts ?? []
+                if impacts.isEmpty {
+                    Text("No impact scores yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(impacts.prefix(5)) { impact in
+                        HStack {
+                            Text("\(impact.name) (PID \(impact.pid))")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text(String(format: "Impact %.2f", impact.impactScore))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
             dashboardCard(title: "Top CPU Processes") {
                 processList(processes: sampler.topCPUProcesses)
             }
@@ -1083,6 +1103,12 @@ struct MenuContentView: View {
                             }
                             .buttonStyle(.bordered)
                             .tint(.red)
+
+                            Button("Allowlist") {
+                                featureStore.addProcessToAllowlist(process.name)
+                                processActionResult = "Added \(process.name) to Optimization allowlist."
+                            }
+                            .buttonStyle(.bordered)
                         }
                     }
                     .padding(10)
