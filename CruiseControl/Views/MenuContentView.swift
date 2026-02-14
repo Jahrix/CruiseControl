@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import Charts
 
 enum DashboardSection: String, CaseIterable, Identifiable {
     case overview
@@ -59,6 +60,25 @@ enum DashboardSection: String, CaseIterable, Identifiable {
 struct RunningAppChoice: Identifiable {
     let id: String
     let name: String
+}
+
+enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
+    case fiveMinutes = "5m"
+    case tenMinutes = "10m"
+    case thirtyMinutes = "30m"
+
+    var id: String { rawValue }
+
+    var minutes: Int {
+        switch self {
+        case .fiveMinutes:
+            return 5
+        case .tenMinutes:
+            return 10
+        case .thirtyMinutes:
+            return 30
+        }
+    }
 }
 
 struct MenuContentView: View {
@@ -130,6 +150,8 @@ struct MenuContentView: View {
     @State private var selectedQuarantineBatchID: String = ""
 
     @State private var updateCheckStatus: String?
+    @State private var frameTimeRange: FrameTimeRangeOption = .tenMinutes
+    @State private var selectedStutterEventID: UUID?
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -877,13 +899,105 @@ struct MenuContentView: View {
     }
 
     private var frameTimeLabSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let samples = sampler.metricSamplesInWindow(lastMinutes: frameTimeRange.minutes)
+        let stutters = sampler.stutterEvents.filter {
+            Date().timeIntervalSince($0.timestamp) <= Double(frameTimeRange.minutes) * 60.0
+        }
+
+        return VStack(alignment: .leading, spacing: 16) {
             dashboardCard(title: "Frame-Time Lab") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Timeline and stutter analysis view for recent session metrics.")
-                        .font(.subheadline)
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Range", selection: $frameTimeRange) {
+                        ForEach(FrameTimeRangeOption.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if samples.isEmpty {
+                        Text("No timeline samples yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Chart {
+                            ForEach(samples) { sample in
+                                LineMark(
+                                    x: .value("Time", sample.timestamp),
+                                    y: .value("Pressure Index", sample.pressureIndex)
+                                )
+                                .foregroundStyle(neonMint)
+                                .lineStyle(StrokeStyle(lineWidth: 2))
+
+                                LineMark(
+                                    x: .value("Time", sample.timestamp),
+                                    y: .value("CPU", min(sample.cpuTotal / 100.0, 1.0))
+                                )
+                                .foregroundStyle(neonBlue.opacity(0.8))
+                                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                            }
+
+                            ForEach(stutters) { event in
+                                RuleMark(x: .value("Stutter", event.timestamp))
+                                    .foregroundStyle(Color.red.opacity(0.5))
+                            }
+                        }
+                        .chartYScale(domain: 0...1)
+                        .frame(height: 220)
+                    }
+
+                    HStack(spacing: 12) {
+                        metricPill(label: "Samples", value: String(samples.count))
+                        metricPill(label: "Stutters", value: String(stutters.count))
+                        metricPill(label: "Pressure", value: String(format: "%.2f", samples.last?.pressureIndex ?? 0))
+                    }
+
+                    if !sampler.stutterCauseSummaries.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Culprit ranking (last 10m)")
+                                .font(.headline)
+                            ForEach(sampler.stutterCauseSummaries.prefix(3)) { summary in
+                                Text("- \(summary.cause.displayName): \(summary.count)x (conf \(String(format: "%.2f", summary.averageConfidence)))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            dashboardCard(title: "Stutter Events") {
+                if stutters.isEmpty {
+                    Text("No stutter events detected in this range.")
                         .foregroundStyle(.secondary)
-                    historySection
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(stutters.suffix(12).reversed())) { event in
+                            Button {
+                                selectedStutterEventID = event.id
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(timeOnly(event.timestamp)) • \(event.classification.displayName)")
+                                            .font(.subheadline.weight(.semibold))
+                                        Text("Severity \(String(format: "%.2f", event.severity)) • Confidence \(String(format: "%.2f", event.confidence))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            if selectedStutterEventID == event.id {
+                                Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Suggested action: \(event.rankedCulprits.first ?? "Review top impact processes and memory pressure.")")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
                 }
             }
         }
