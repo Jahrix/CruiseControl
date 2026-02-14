@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var cancellables: Set<AnyCancellable> = []
     private var previousSimActive: Bool = false
     private var previousAlertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
+    private var pendingRuntimeConfigApplyTask: Task<Void, Never>?
 
     private let warningCategoryIdentifier = "PROJECT_SPEED_WARNING"
 
@@ -51,9 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             settingsStore.objectWillChange.map { _ in () },
             featureStore.objectWillChange.map { _ in () }
         )
-        .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
         .sink { [weak self] _ in
-            self?.applyRuntimeConfigs()
+            self?.scheduleRuntimeConfigApply()
         }
         .store(in: &cancellables)
 
@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.applyRuntimeConfigs()
+                self?.scheduleRuntimeConfigApply()
             }
             .store(in: &cancellables)
 
@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        pendingRuntimeConfigApplyTask?.cancel()
         sampler.stop()
     }
 
@@ -144,6 +145,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let effectiveConfig = featureStore.effectiveGovernorConfig(base: baseConfig, telemetryICAO: telemetryICAO)
         sampler.configureGovernor(config: effectiveConfig)
         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
+    }
+
+    private func scheduleRuntimeConfigApply(delayMilliseconds: UInt64 = 500) {
+        pendingRuntimeConfigApplyTask?.cancel()
+        pendingRuntimeConfigApplyTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delayMilliseconds * 1_000_000)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.applyRuntimeConfigs()
+            }
+        }
     }
 
     private func configureSparkleIfAvailable() {

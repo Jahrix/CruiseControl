@@ -135,6 +135,10 @@ final class SettingsStore: ObservableObject {
         didSet { savePreferences() }
     }
 
+    @Published var governorUseMSLFallbackWhenAGLUnavailable: Bool {
+        didSet { savePreferences() }
+    }
+
     @Published private(set) var selectedBackgroundBundleIDs: Set<String> {
         didSet { savePreferences() }
     }
@@ -183,6 +187,7 @@ final class SettingsStore: ObservableObject {
         static let governorMinimumCommandDelta = "governor.command.minimumDelta"
         static let governorCommandHost = "governor.command.host"
         static let governorCommandPort = "governor.command.port"
+        static let governorUseMSLFallbackWhenAGLUnavailable = "governor.altitude.useMSLFallback"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -244,6 +249,7 @@ final class SettingsStore: ObservableObject {
 
         let storedCommandPort = defaults.object(forKey: Keys.governorCommandPort) as? Int ?? GovernorPolicyConfig.default.commandPort
         self.governorCommandPort = min(max(storedCommandPort, 1_024), 65_535)
+        self.governorUseMSLFallbackWhenAGLUnavailable = defaults.object(forKey: Keys.governorUseMSLFallbackWhenAGLUnavailable) as? Bool ?? GovernorPolicyConfig.default.useMSLFallbackWhenAGLUnavailable
     }
 
     var governorConfig: GovernorPolicyConfig {
@@ -266,7 +272,8 @@ final class SettingsStore: ObservableObject {
             minimumCommandIntervalSeconds: max(governorMinimumCommandIntervalSeconds, 0.1),
             minimumCommandDelta: max(governorMinimumCommandDelta, 0.005),
             commandHost: governorCommandHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "127.0.0.1" : governorCommandHost,
-            commandPort: min(max(governorCommandPort, 1_024), 65_535)
+            commandPort: min(max(governorCommandPort, 1_024), 65_535),
+            useMSLFallbackWhenAGLUnavailable: governorUseMSLFallbackWhenAGLUnavailable
         )
     }
 
@@ -497,6 +504,7 @@ final class SettingsStore: ObservableObject {
         defaults.set(governorMinimumCommandDelta, forKey: Keys.governorMinimumCommandDelta)
         defaults.set(governorCommandHost, forKey: Keys.governorCommandHost)
         defaults.set(min(max(governorCommandPort, 1_024), 65_535), forKey: Keys.governorCommandPort)
+        defaults.set(governorUseMSLFallbackWhenAGLUnavailable, forKey: Keys.governorUseMSLFallbackWhenAGLUnavailable)
 
         if let encoded = try? JSONEncoder().encode(profileConfigs) {
             defaults.set(encoded, forKey: Keys.profileConfigsData)

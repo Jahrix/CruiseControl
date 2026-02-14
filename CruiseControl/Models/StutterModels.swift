@@ -49,6 +49,42 @@ struct RegulatorActionLog: Identifiable {
     let message: String
 }
 
+struct RegulatorProofState {
+    var bridgeModeLabel: String
+    var lodApplied: Bool
+    var recentActivity: Bool
+    var onTarget: Bool
+    var targetLOD: Double?
+    var appliedLOD: Double?
+    var deltaToTarget: Double?
+    var lastSentAt: Date?
+    var lastEvidenceAt: Date?
+    var evidenceLine: String?
+    var reasons: [String]
+    var hasSimData: Bool
+    var lastSessionTargetLOD: Double?
+    var lastSessionAppliedLOD: Double?
+    var lastSessionAt: Date?
+
+    static let empty = RegulatorProofState(
+        bridgeModeLabel: "None",
+        lodApplied: false,
+        recentActivity: false,
+        onTarget: false,
+        targetLOD: nil,
+        appliedLOD: nil,
+        deltaToTarget: nil,
+        lastSentAt: nil,
+        lastEvidenceAt: nil,
+        evidenceLine: nil,
+        reasons: [],
+        hasSimData: false,
+        lastSessionTargetLOD: nil,
+        lastSessionAppliedLOD: nil,
+        lastSessionAt: nil
+    )
+}
+
 struct StutterHeuristicConfig: Codable {
     var frameTimeSpikeMS: Double
     var fpsDropThreshold: Double

@@ -77,6 +77,9 @@ struct MenuContentView: View {
     @State private var governorPortText: String = "49006"
     @State private var governorHostText: String = "127.0.0.1"
     @State private var governorTestLODText: String = "1.00"
+    @State private var regulatorTestStepUp: Double = 0.60
+    @State private var regulatorTestStepDown: Double = 0.80
+    @State private var regulatorTestDurationSeconds: Double = 10.0
 
     @State private var showUDPSetupGuide: Bool = true
     @State private var now: Date = Date()
@@ -129,6 +132,13 @@ struct MenuContentView: View {
     private let neonViolet = Color(red: 0.61, green: 0.52, blue: 1.00)
     private let neonOrange = Color(red: 1.00, green: 0.52, blue: 0.18)
     private let cardInk = Color(red: 0.05, green: 0.08, blue: 0.16)
+    private let decimalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 0
+        return formatter
+    }()
 
     var body: some View {
         ZStack {
@@ -572,44 +582,98 @@ struct MenuContentView: View {
             }
 
             dashboardCard(title: "Regulator Proof") {
+                let proof = sampler.computeProofState(now: now)
+                let fpsTestValue = sampler.proposedRegulatorTestLOD(increase: true, step: regulatorTestStepUp)
+                let visualTestValue = sampler.proposedRegulatorTestLOD(increase: false, step: regulatorTestStepDown)
+                let testDuration = max(Int(regulatorTestDurationSeconds.rounded()), 1)
+
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("LOD CHANGING: \(sampler.regulatorLODChanging ? "YES" : "NO")")
+                        Text("LOD APPLIED: \(proof.lodApplied ? "YES" : "NO")")
                             .font(.headline)
-                            .foregroundStyle(sampler.regulatorLODChanging ? .green : .orange)
+                            .foregroundStyle(proof.lodApplied ? .green : .orange)
                         Spacer()
-                        Text(regulatorControlStateBadge)
+                        let targetStateText = proof.deltaToTarget.map {
+                            proof.onTarget ? "On target" : "Off target (Δ \(String(format: "%.3f", $0)))"
+                        } ?? "No target delta"
+                        Text(targetStateText)
                             .font(.caption)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background((sampler.regulatorLODChanging ? Color.green : Color.orange).opacity(0.15), in: Capsule())
+                            .background((proof.onTarget ? Color.green : Color.orange).opacity(0.15), in: Capsule())
                     }
 
-                    Text("Bridge mode: \(sampler.regulatorControlState.modeLabel)")
-                        .font(.subheadline)
-                    Text("Telemetry freshness: \(telemetryFreshnessText) | \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)) pkt/s")
-                        .font(.subheadline)
-
-                    if let lastCommand = sampler.governorLastCommandText {
-                        Text("Last command sent: \(lastCommand) | \(lastCommandAgeText)")
-                            .font(.subheadline)
-                    } else {
-                        Text("Last command sent: none")
-                            .font(.subheadline)
+                    HStack {
+                        Text("RECENT ACTIVITY: \(proof.recentActivity ? "YES" : "NO")")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(proof.recentActivity ? .green : .secondary)
+                        Spacer()
+                        Text("Bridge: \(proof.bridgeModeLabel)")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
 
-                    Text("ACK status: \(regulatorAckProofLine)")
-                        .font(.subheadline)
-
-                    if let evidence = appliedLODEvidenceLine {
-                        Text("Applied LOD evidence: \(evidence)")
-                            .font(.subheadline)
-                    } else {
-                        Text("Applied LOD evidence: No confirmation available")
-                            .font(.subheadline)
+                    if !proof.recentActivity {
+                        Text("Stable target; no recent writes needed.")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                    Text("Last send: \(proof.lastSentAt.map(relativeAgeText(from:)) ?? "Never")")
+                        .font(.subheadline)
+                    Text("Last evidence: \(proof.lastEvidenceAt.map(relativeAgeText(from:)) ?? "None")")
+                        .font(.subheadline)
+                    Text("Target: \(proof.targetLOD.map { String(format: "%.2f", $0) } ?? "-") | Applied: \(proof.appliedLOD.map { String(format: "%.2f", $0) } ?? "-") | Δ: \(proof.deltaToTarget.map { String(format: "%.3f", $0) } ?? "-")")
+                        .font(.subheadline)
+
+                    if let evidence = proof.evidenceLine, !evidence.isEmpty {
+                        Text("Evidence: \(evidence)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Evidence: No confirmation available")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !proof.hasSimData {
+                        Text("No sim data. Last session target/applied: \(proof.lastSessionTargetLOD.map { String(format: "%.2f", $0) } ?? "-") / \(proof.lastSessionAppliedLOD.map { String(format: "%.2f", $0) } ?? "-") at \(proof.lastSessionAt.map(relativeAgeText(from:)) ?? "unknown")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Why not changing?")
+                            .font(.headline)
+                        if proof.reasons.isEmpty {
+                            Text("No blockers detected.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(Array(proof.reasons.prefix(5)), id: \.self) { reason in
+                                Text("- \(reason)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Text("Test step FPS +")
+                        TextField("0.60", value: $regulatorTestStepUp, formatter: decimalFormatter)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 70)
+                        Text("Visual -")
+                        TextField("0.80", value: $regulatorTestStepDown, formatter: decimalFormatter)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 70)
+                        Text("Duration")
+                        TextField("10", value: $regulatorTestDurationSeconds, formatter: decimalFormatter)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                        Text("s")
+                    }
+                    .font(.caption)
 
                     HStack {
                         Button("Open Bridge Folder in Finder") {
@@ -618,28 +682,34 @@ struct MenuContentView: View {
                         }
                         .buttonStyle(.bordered)
 
-                        Button("Test: FPS Mode (shorter draw distance)") {
-                            let outcome = sampler.runRegulatorTimedTest(
-                                lodValue: 1.30,
+                        Button("Test: Shorter draw distance (More FPS)") {
+                            let outcome = sampler.runRegulatorRelativeTimedTest(
+                                increase: true,
+                                step: max(regulatorTestStepUp, 0),
                                 modeLabel: "More FPS (shorter draw distance)",
-                                durationSeconds: 10
+                                durationSeconds: TimeInterval(testDuration)
                             )
                             processActionResult = outcome.message
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(sampler.regulatorTestActive)
 
-                        Button("Test: Visual Mode (longer draw distance)") {
-                            let outcome = sampler.runRegulatorTimedTest(
-                                lodValue: 0.75,
+                        Button("Test: Longer draw distance (More visuals)") {
+                            let outcome = sampler.runRegulatorRelativeTimedTest(
+                                increase: false,
+                                step: max(regulatorTestStepDown, 0),
                                 modeLabel: "More visuals (longer draw distance)",
-                                durationSeconds: 10
+                                durationSeconds: TimeInterval(testDuration)
                             )
                             processActionResult = outcome.message
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(sampler.regulatorTestActive)
                     }
+
+                    Text("Will apply \(String(format: "%.2f", fpsTestValue)) for \(testDuration)s (FPS) or \(String(format: "%.2f", visualTestValue)) for \(testDuration)s (visuals).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     if sampler.regulatorTestActive {
                         Text("Test running... \(sampler.regulatorTestCountdownSeconds)s")
@@ -647,11 +717,11 @@ struct MenuContentView: View {
                             .foregroundStyle(.orange)
                     }
 
-                    if !sampler.regulatorRecentActions.isEmpty {
+                    if !sampler.regulatorTierEvents.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Recent actions")
+                            Text("Tier events")
                                 .font(.headline)
-                            ForEach(Array(sampler.regulatorRecentActions.suffix(5).reversed())) { action in
+                            ForEach(Array(sampler.regulatorTierEvents.suffix(10).reversed())) { action in
                                 Text("\(timeOnly(action.timestamp))  -  \(action.message)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -660,6 +730,7 @@ struct MenuContentView: View {
                     }
                 }
             }
+
             dashboardCard(title: "X-Plane UDP Setup") {
                 DisclosureGroup(isExpanded: $showUDPSetupGuide) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -893,6 +964,7 @@ struct MenuContentView: View {
 
                     Text("Altitude thresholds (feet AGL)")
                         .font(.headline)
+                    Toggle("Use MSL if AGL unavailable", isOn: $settings.governorUseMSLFallbackWhenAGLUnavailable)
                     sliderRow(label: "GROUND upper (ft)", value: $settings.governorGroundMaxAGLFeet, range: 500...5000, step: 100)
                     sliderRow(label: "CRUISE lower (ft)", value: $settings.governorCruiseMinAGLFeet, range: 6000...45000, step: 250)
 
@@ -916,6 +988,9 @@ struct MenuContentView: View {
                     sliderRow(label: "Ramp duration (s)", value: $settings.governorSmoothingDurationSeconds, range: 0.5...12, step: 0.5)
                     sliderRow(label: "Command interval (s)", value: $settings.governorMinimumCommandIntervalSeconds, range: 0.1...3.0, step: 0.1)
                     sliderRow(label: "Min send delta", value: $settings.governorMinimumCommandDelta, range: 0.01...0.30, step: 0.01)
+                    Text("Regulator config changes are debounced: command updates apply after 0.5s without further slider movement.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     HStack {
                         Text("Bridge Host")
@@ -939,29 +1014,39 @@ struct MenuContentView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
+                        let fpsTestValue = sampler.proposedRegulatorTestLOD(increase: true, step: max(regulatorTestStepUp, 0))
+                        let visualTestValue = sampler.proposedRegulatorTestLOD(increase: false, step: max(regulatorTestStepDown, 0))
+                        let testDuration = max(Int(regulatorTestDurationSeconds.rounded()), 1)
+
                         HStack {
-                            Button("Test: FPS Mode (shorter draw distance)") {
-                                let outcome = sampler.runRegulatorTimedTest(
-                                    lodValue: 1.30,
+                            Button("Test: Shorter draw distance (More FPS)") {
+                                let outcome = sampler.runRegulatorRelativeTimedTest(
+                                    increase: true,
+                                    step: max(regulatorTestStepUp, 0),
                                     modeLabel: "More FPS (shorter draw distance)",
-                                    durationSeconds: 10
+                                    durationSeconds: TimeInterval(testDuration)
                                 )
                                 processActionResult = outcome.message
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(sampler.regulatorTestActive)
 
-                            Button("Test: Visual Mode (longer draw distance)") {
-                                let outcome = sampler.runRegulatorTimedTest(
-                                    lodValue: 0.75,
+                            Button("Test: Longer draw distance (More visuals)") {
+                                let outcome = sampler.runRegulatorRelativeTimedTest(
+                                    increase: false,
+                                    step: max(regulatorTestStepDown, 0),
                                     modeLabel: "More visuals (longer draw distance)",
-                                    durationSeconds: 10
+                                    durationSeconds: TimeInterval(testDuration)
                                 )
                                 processActionResult = outcome.message
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(sampler.regulatorTestActive)
                         }
+
+                        Text("Will apply \(String(format: "%.2f", fpsTestValue)) for \(testDuration)s (FPS) or \(String(format: "%.2f", visualTestValue)) for \(testDuration)s (visuals).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
 
                         HStack {
                             Text("Manual test LOD")

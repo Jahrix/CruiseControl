@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.1.5 - Regulator Proof + Apply Stability Hotfix
+
+### Changed
+- Reworked Regulator Proof semantics:
+  - `LOD Applied` now reflects applied-value evidence freshness (UDP ACK up to 10m, file status up to 5s).
+  - `Recent Activity` now reflects recent writes/ramping and can be `NO` while still correctly applied.
+- Replaced ambiguous `LOD CHANGING` label with explicit `LOD Applied` + `Recent Activity`.
+- Test buttons now use relative changes from current applied/target value:
+  - More FPS => higher LOD bias
+  - More visuals => lower LOD bias
+  - Auto-restore now returns to live active tier target after timed tests.
+- Added debounced regulator config apply path (500ms) to reduce slider-drag command churn.
+- Added `Use MSL if AGL unavailable` toggle for explicit fallback behavior.
+
+### Added
+- `Why not changing?` explanation block with concrete reasons.
+- Tier event log (last 10 in UI) for enters/sends/ACK evidence.
+- Proof panel target/applied/delta display with `On target` vs `Off target` signal.
+
 ## Unreleased - Updater Pipeline
 
 ### Added

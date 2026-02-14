@@ -7,6 +7,7 @@ struct GovernorBridgeSendResult {
     let statusText: String
     let ackState: GovernorAckState
     let ackMessage: String?
+    let skipReason: String?
 }
 
 struct GovernorFileBridgeStatus {
@@ -16,6 +17,7 @@ struct GovernorFileBridgeStatus {
     var tier: String?
     var lastUpdateDate: Date?
     var fileModifiedDate: Date?
+    var rawText: String?
 }
 
 final class GovernorCommandBridge {
@@ -92,7 +94,8 @@ final class GovernorCommandBridge {
                 error: nil,
                 statusText: commandStatusText(now: now),
                 ackState: ackState,
-                ackMessage: lastAckMessage
+                ackMessage: lastAckMessage,
+                skipReason: "Minimum command interval not reached"
             )
         }
 
@@ -103,7 +106,8 @@ final class GovernorCommandBridge {
                 error: nil,
                 statusText: commandStatusText(now: now),
                 ackState: ackState,
-                ackMessage: lastAckMessage
+                ackMessage: lastAckMessage,
+                skipReason: "Stable tier; within Δ threshold"
             )
         }
 
@@ -236,7 +240,8 @@ final class GovernorCommandBridge {
             targetLOD: map["target_lod"].flatMap(Double.init),
             tier: map["tier"],
             lastUpdateDate: updateFromEpoch ?? modified,
-            fileModifiedDate: modified
+            fileModifiedDate: modified,
+            rawText: content?.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 
@@ -264,7 +269,8 @@ final class GovernorCommandBridge {
                 error: message,
                 statusText: commandStatusText(now: now),
                 ackState: ackState,
-                ackMessage: nil
+                ackMessage: nil,
+                skipReason: nil
             )
         }
 
@@ -314,7 +320,8 @@ final class GovernorCommandBridge {
             error: errorText,
             statusText: commandStatusText(now: now),
             ackState: ackState,
-            ackMessage: lastAckMessage
+            ackMessage: lastAckMessage,
+            skipReason: nil
         )
     }
 

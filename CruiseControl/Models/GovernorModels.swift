@@ -27,6 +27,7 @@ struct GovernorPolicyConfig: Codable {
     var minimumCommandDelta: Double
     var commandHost: String
     var commandPort: Int
+    var useMSLFallbackWhenAGLUnavailable: Bool
 
     static let `default` = GovernorPolicyConfig(
         enabled: false,
@@ -42,7 +43,8 @@ struct GovernorPolicyConfig: Codable {
         minimumCommandIntervalSeconds: 0.5,
         minimumCommandDelta: 0.05,
         commandHost: "127.0.0.1",
-        commandPort: 49_006
+        commandPort: 49_006,
+        useMSLFallbackWhenAGLUnavailable: true
     )
 
     var clampedGroundMax: Double {
@@ -107,12 +109,12 @@ enum GovernorPolicyEngine {
         return .cruise
     }
 
-    static func resolveAGL(telemetry: SimTelemetrySnapshot) -> (feet: Double?, source: AltitudeResolutionSource) {
+    static func resolveAGL(telemetry: SimTelemetrySnapshot, useMSLFallbackWhenAGLUnavailable: Bool) -> (feet: Double?, source: AltitudeResolutionSource) {
         if let agl = telemetry.altitudeAGLFeet, agl >= 0 {
             return (agl, .aglTelemetry)
         }
 
-        if let msl = telemetry.altitudeMSLFeet, msl >= 0 {
+        if useMSLFallbackWhenAGLUnavailable, let msl = telemetry.altitudeMSLFeet, msl >= 0 {
             // Conservative fallback when AGL isn't directly available.
             return (max(msl - 1_000, 0), .mslHeuristic)
         }
@@ -123,7 +125,7 @@ enum GovernorPolicyEngine {
     static func decide(telemetry: SimTelemetrySnapshot?, config: GovernorPolicyConfig) -> GovernorDecision? {
         guard config.enabled, let telemetry else { return nil }
 
-        let resolved = resolveAGL(telemetry: telemetry)
+        let resolved = resolveAGL(telemetry: telemetry, useMSLFallbackWhenAGLUnavailable: config.useMSLFallbackWhenAGLUnavailable)
         guard let aglFeet = resolved.feet else { return nil }
 
         let tier = selectTier(

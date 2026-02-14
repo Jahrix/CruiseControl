@@ -35,6 +35,9 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var regulatorControlState: RegulatorControlState = .disconnected
     @Published private(set) var regulatorFileBridgeStatus: GovernorFileBridgeStatus?
     @Published private(set) var regulatorLODChanging: Bool = false
+    @Published private(set) var regulatorProofState: RegulatorProofState = .empty
+    @Published private(set) var regulatorWhyNotChanging: [String] = []
+    @Published private(set) var regulatorTierEvents: [RegulatorActionLog] = []
     @Published private(set) var regulatorRecentActions: [RegulatorActionLog] = []
     @Published private(set) var regulatorTestActive: Bool = false
     @Published private(set) var regulatorTestCountdownSeconds: Int = 0
@@ -68,12 +71,13 @@ final class PerformanceSampler: ObservableObject {
     private var governorLockedTier: GovernorTier?
     private var governorLockedTierSince: Date?
     private var governorSmoothedLODInternal: Double?
+    private var governorCurrentTierTargetLODInternal: Double?
     private var governorLastUpdateAt: Date?
 
     private struct RegulatorTestSession {
         var startedAt: Date
         var endsAt: Date
-        var restoreLOD: Double
+        var fallbackRestoreLOD: Double
         var modeLabel: String
     }
 
@@ -82,6 +86,12 @@ final class PerformanceSampler: ObservableObject {
     private var lastAckAppliedLODChangeAt: Date?
     private var lastObservedFileStatusLOD: Double?
     private var lastFileLODChangeAt: Date?
+    private var lastLoggedTier: GovernorTier?
+    private var lastLoggedAckAt: Date?
+    private var lastLoggedFileStatusUpdateAt: Date?
+    private var lastSessionTargetLOD: Double?
+    private var lastSessionAppliedLOD: Double?
+    private var lastSessionAt: Date?
 
     private var stutterHeuristics: StutterHeuristicConfig = .default
     private var stutterBuffer: [StutterEvent] = []
@@ -156,6 +166,15 @@ final class PerformanceSampler: ObservableObject {
         guard let lastUpdated = snapshot.lastUpdated else { return true }
         let staleAfter = max(configuredIntervalSeconds * 2.5, 3.0)
         return referenceDate.timeIntervalSince(lastUpdated) > staleAfter
+    }
+
+    @MainActor
+    func computeProofState(now: Date = Date()) -> RegulatorProofState {
+        var state = regulatorProofState
+        if let lastSend = state.lastSentAt {
+            state.recentActivity = state.recentActivity || now.timeIntervalSince(lastSend) <= 20
+        }
+        return state
     }
 
     @MainActor
@@ -342,7 +361,15 @@ final class PerformanceSampler: ObservableObject {
         let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus, simActive: simActive, now: now)
         let fileBridgeStatus = governorBridge.readFileBridgeStatus()
         let controlState = deriveRegulatorControlState(now: now, fileBridgeStatus: fileBridgeStatus)
-        let lodChanging = evaluateRegulatorLODChanging(now: now, controlState: controlState, fileBridgeStatus: fileBridgeStatus)
+        maybeLogBridgeEvents(now: now, fileBridgeStatus: fileBridgeStatus)
+        let proofState = buildRegulatorProofState(
+            now: now,
+            simActive: simActive,
+            controlState: controlState,
+            fileBridgeStatus: fileBridgeStatus,
+            governorResult: governorResult
+        )
+        let lodChanging = proofState.recentActivity
         let testCountdown = pendingRegulatorTest.map { max(Int(ceil($0.endsAt.timeIntervalSince(now))), 0) } ?? 0
 
         let historyPoint = MetricHistoryPoint(
@@ -460,6 +487,9 @@ final class PerformanceSampler: ObservableObject {
             regulatorControlState = controlState
             regulatorFileBridgeStatus = fileBridgeStatus
             regulatorLODChanging = lodChanging
+            regulatorProofState = proofState
+            regulatorWhyNotChanging = proofState.reasons
+            regulatorTierEvents = Array(regulatorTierEvents.suffix(10))
             regulatorTestActive = pendingRegulatorTest != nil
             regulatorTestCountdownSeconds = testCountdown
             stutterEvents = stutterBuffer
@@ -492,9 +522,11 @@ final class PerformanceSampler: ObservableObject {
         lastCommand: String?,
         lastACK: String?,
         lastACKDate: Date?,
-        pauseReason: String?
+        pauseReason: String?,
+        reasons: [String],
+        rampInProgress: Bool
     ) {
-        func pausedResult(reason: String) -> (
+        func pausedResult(reason: String, reasons: [String]) -> (
             decision: GovernorDecision?,
             statusLine: String,
             currentTier: GovernorTier?,
@@ -507,7 +539,9 @@ final class PerformanceSampler: ObservableObject {
             lastCommand: String?,
             lastACK: String?,
             lastACKDate: Date?,
-            pauseReason: String?
+            pauseReason: String?,
+            reasons: [String],
+            rampInProgress: Bool
         ) {
             _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
             governorBridge.setPausedState()
@@ -526,7 +560,9 @@ final class PerformanceSampler: ObservableObject {
                 governorBridge.lastCommand,
                 governorBridge.lastAckMessage,
                 governorBridge.lastAckAt,
-                reason
+                reason,
+                reasons,
+                false
             )
         }
 
@@ -550,7 +586,9 @@ final class PerformanceSampler: ObservableObject {
                 governorBridge.lastCommand,
                 governorBridge.lastAckMessage,
                 governorBridge.lastAckAt,
-                nil
+                nil,
+                [],
+                false
             )
         }
 
@@ -569,28 +607,42 @@ final class PerformanceSampler: ObservableObject {
                 governorBridge.lastCommand,
                 governorBridge.lastAckMessage,
                 governorBridge.lastAckAt,
-                nil
+                nil,
+                ["Timed test active; temporary override in progress."],
+                false
             )
         }
 
         guard simActive else {
-            return pausedResult(reason: "No sim data; regulator paused")
+            return pausedResult(reason: "No sim data; regulator paused", reasons: ["No telemetry packets."])
         }
 
         guard udpStatus.state == .active else {
-            return pausedResult(reason: "No sim data; regulator paused")
+            return pausedResult(reason: "No sim data; regulator paused", reasons: ["No telemetry packets."])
         }
 
         guard let telemetry else {
-            return pausedResult(reason: "No sim data; regulator paused")
+            return pausedResult(reason: "No sim data; regulator paused", reasons: ["No telemetry packets."])
         }
 
-        let resolved = GovernorPolicyEngine.resolveAGL(telemetry: telemetry)
+        let resolved = GovernorPolicyEngine.resolveAGL(
+            telemetry: telemetry,
+            useMSLFallbackWhenAGLUnavailable: governorConfig.useMSLFallbackWhenAGLUnavailable
+        )
         guard let aglFeet = resolved.feet else {
-            return pausedResult(reason: "AGL unavailable; regulator paused")
+            var reasons = ["AGL unavailable; regulator paused."]
+            if telemetry.altitudeMSLFeet != nil, !governorConfig.useMSLFallbackWhenAGLUnavailable {
+                reasons.append("MSL fallback disabled.")
+            }
+            return pausedResult(reason: "AGL unavailable; regulator paused", reasons: reasons)
         }
 
         governorPreviouslyEnabled = true
+        var reasons: [String] = []
+
+        if resolved.source == .mslHeuristic {
+            reasons.append("Waiting for AGL; using MSL fallback.")
+        }
 
         let candidateTier = GovernorPolicyEngine.selectTier(
             aglFeet: aglFeet,
@@ -605,6 +657,9 @@ final class PerformanceSampler: ObservableObject {
             if holdElapsed >= governorConfig.minimumTierHoldSeconds {
                 governorLockedTier = candidateTier
                 governorLockedTierSince = now
+            } else {
+                let holdRemaining = max(governorConfig.minimumTierHoldSeconds - holdElapsed, 0)
+                reasons.append("Min time in tier not satisfied (\(Int(ceil(holdRemaining)))s remaining).")
             }
         } else if governorLockedTier == nil {
             governorLockedTier = candidateTier
@@ -613,6 +668,15 @@ final class PerformanceSampler: ObservableObject {
 
         let effectiveTier = governorLockedTier ?? candidateTier
         let tierTarget = governorConfig.targetLOD(for: effectiveTier)
+        governorCurrentTierTargetLODInternal = tierTarget
+
+        if lastLoggedTier != effectiveTier {
+            lastLoggedTier = effectiveTier
+            logTierEvent(
+                "Entered \(effectiveTier.rawValue) (AGL \(Int(aglFeet))ft) -> Target \(String(format: "%.2f", tierTarget))",
+                at: now
+            )
+        }
 
         if governorSmoothedLODInternal == nil {
             governorSmoothedLODInternal = tierTarget
@@ -626,7 +690,9 @@ final class PerformanceSampler: ObservableObject {
 
         governorLastUpdateAt = now
         let smoothedLOD = governorConfig.clampLOD(governorSmoothedLODInternal ?? tierTarget)
+        let rampInProgress = abs(smoothedLOD - tierTarget) > max(governorConfig.minimumCommandDelta, 0.01)
 
+        let previousSentLOD = governorBridge.lastSentLOD
         let sendResult = governorBridge.send(
             lod: smoothedLOD,
             tier: effectiveTier,
@@ -636,6 +702,20 @@ final class PerformanceSampler: ObservableObject {
             minimumInterval: governorConfig.minimumCommandIntervalSeconds,
             minimumDelta: governorConfig.minimumCommandDelta
         )
+
+        if sendResult.sent {
+            let sendDelta = abs(smoothedLOD - (previousSentLOD ?? smoothedLOD))
+            logTierEvent(
+                "Sent \(String(format: "%.3f", smoothedLOD)) (Δ \(String(format: "%.3f", sendDelta)))",
+                at: now
+            )
+        } else if let skipReason = sendResult.skipReason {
+            reasons.append(skipReason)
+        }
+
+        if sendResult.ackState == .noAck, !governorBridge.usingFileFallback {
+            reasons.append("Bridge disconnected / no ACK recent.")
+        }
 
         let thresholdsText = String(
             format: "GROUND < %.0fft, TRANSITION %.0f-%.0fft, CRUISE > %.0fft",
@@ -661,6 +741,8 @@ final class PerformanceSampler: ObservableObject {
             statusLine += " | Bridge: \(bridgeError)"
         }
 
+        let orderedReasons = Array(NSOrderedSet(array: reasons)) as? [String] ?? reasons
+
         return (
             decision,
             statusLine,
@@ -674,7 +756,9 @@ final class PerformanceSampler: ObservableObject {
             governorBridge.lastCommand,
             governorBridge.lastAckMessage,
             governorBridge.lastAckAt,
-            nil
+            nil,
+            orderedReasons,
+            rampInProgress
         )
     }
 
@@ -682,7 +766,9 @@ final class PerformanceSampler: ObservableObject {
         governorLockedTier = nil
         governorLockedTierSince = nil
         governorSmoothedLODInternal = nil
+        governorCurrentTierTargetLODInternal = nil
         governorLastUpdateAt = nil
+        lastLoggedTier = nil
     }
 
     private func deriveRegulatorControlState(now: Date, fileBridgeStatus: GovernorFileBridgeStatus?) -> RegulatorControlState {
@@ -735,10 +821,158 @@ final class PerformanceSampler: ObservableObject {
         }
     }
 
+    private func maybeLogBridgeEvents(now: Date, fileBridgeStatus: GovernorFileBridgeStatus?) {
+        if let ackAt = governorBridge.lastAckAt,
+           lastLoggedAckAt != ackAt {
+            lastLoggedAckAt = ackAt
+
+            if let applied = governorBridge.lastAckAppliedLOD {
+                logTierEvent("ACK applied \(String(format: "%.2f", applied))", at: ackAt)
+            } else if let payload = governorBridge.lastAckMessage {
+                logTierEvent("ACK \(payload)", at: ackAt)
+            }
+        }
+
+        if let updateAt = fileBridgeStatus?.lastUpdateDate,
+           lastLoggedFileStatusUpdateAt != updateAt {
+            lastLoggedFileStatusUpdateAt = updateAt
+
+            if let current = fileBridgeStatus?.currentLOD {
+                logTierEvent("File status current \(String(format: "%.2f", current))", at: updateAt)
+            }
+        }
+    }
+
+    private func buildRegulatorProofState(
+        now: Date,
+        simActive: Bool,
+        controlState: RegulatorControlState,
+        fileBridgeStatus: GovernorFileBridgeStatus?,
+        governorResult: (
+            decision: GovernorDecision?,
+            statusLine: String,
+            currentTier: GovernorTier?,
+            currentTargetLOD: Double?,
+            smoothedLOD: Double?,
+            activeAGLFeet: Double?,
+            lastSentLOD: Double?,
+            commandStatus: String,
+            ackState: GovernorAckState,
+            lastCommand: String?,
+            lastACK: String?,
+            lastACKDate: Date?,
+            pauseReason: String?,
+            reasons: [String],
+            rampInProgress: Bool
+        )
+    ) -> RegulatorProofState {
+        let target = governorResult.currentTargetLOD ?? governorResult.smoothedLOD
+        var applied: Double?
+        var evidenceDate: Date?
+        var evidenceLine: String?
+        var evidenceFresh = false
+
+        switch controlState {
+        case .udpAckOK(let lastAck, let payload):
+            applied = governorBridge.lastAckAppliedLOD ?? parseAppliedLOD(from: payload)
+            evidenceDate = lastAck
+            evidenceLine = payload
+            evidenceFresh = applied != nil && now.timeIntervalSince(lastAck) <= 600
+
+        case .fileBridge(let lastUpdate):
+            applied = fileBridgeStatus?.currentLOD
+            evidenceDate = fileBridgeStatus?.lastUpdateDate ?? fileBridgeStatus?.fileModifiedDate ?? lastUpdate
+            let freshness = evidenceDate.map { now.timeIntervalSince($0) <= 5 } ?? false
+            evidenceFresh = applied != nil && freshness
+            evidenceLine = fileBridgeStatus?.rawText?.replacingOccurrences(of: "\n", with: " | ")
+            if let rawEvidence = evidenceLine, rawEvidence.count > 140 {
+                evidenceLine = String(rawEvidence.prefix(140)) + "..."
+            }
+
+        case .udpNoAck, .disconnected:
+            evidenceFresh = false
+        }
+
+        let delta = (target != nil && applied != nil) ? abs((target ?? 0) - (applied ?? 0)) : nil
+        let onTarget = (delta ?? .greatestFiniteMagnitude) <= 0.05
+        let recentBySend = governorBridge.lastSentAt.map { now.timeIntervalSince($0) <= 20 } ?? false
+        let recentActivity = evaluateRegulatorLODChanging(now: now, controlState: controlState, fileBridgeStatus: fileBridgeStatus)
+            || governorResult.rampInProgress
+            || recentBySend
+
+        if simActive {
+            if let target {
+                lastSessionTargetLOD = target
+                lastSessionAt = now
+            }
+            if let applied {
+                lastSessionAppliedLOD = applied
+                lastSessionAt = now
+            }
+        }
+
+        var reasons = governorResult.reasons
+
+        if !recentActivity {
+            reasons.append("Stable target; no recent writes needed.")
+        }
+
+        if !evidenceFresh {
+            switch controlState {
+            case .udpNoAck:
+                reasons.append("Bridge disconnected / no ACK recent.")
+            case .fileBridge:
+                reasons.append("No fresh file-bridge status evidence.")
+            case .disconnected:
+                reasons.append("Bridge disconnected.")
+            case .udpAckOK:
+                reasons.append("ACK evidence is stale.")
+            }
+        }
+
+        if let delta, evidenceFresh, !onTarget {
+            reasons.append("Off target (Δ \(String(format: "%.3f", delta))).")
+        }
+
+        if !simActive {
+            reasons.append("No sim data.")
+        }
+
+        let orderedReasons = Array(NSOrderedSet(array: reasons)) as? [String] ?? reasons
+
+        return RegulatorProofState(
+            bridgeModeLabel: controlState.modeLabel,
+            lodApplied: evidenceFresh,
+            recentActivity: recentActivity,
+            onTarget: onTarget,
+            targetLOD: target,
+            appliedLOD: applied,
+            deltaToTarget: delta,
+            lastSentAt: governorBridge.lastSentAt,
+            lastEvidenceAt: evidenceDate,
+            evidenceLine: evidenceLine,
+            reasons: orderedReasons,
+            hasSimData: simActive,
+            lastSessionTargetLOD: lastSessionTargetLOD,
+            lastSessionAppliedLOD: lastSessionAppliedLOD,
+            lastSessionAt: lastSessionAt
+        )
+    }
+
+    private func parseAppliedLOD(from payload: String) -> Double? {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.uppercased().hasPrefix("ACK SET_LOD") else { return nil }
+        return trimmed.split(separator: " ").last.flatMap { Double($0) }
+    }
+
     private func maybeCompleteRegulatorTestIfNeeded(now: Date) {
         guard let test = pendingRegulatorTest, now >= test.endsAt else { return }
 
-        let clampedRestore = governorConfig.clampLOD(test.restoreLOD)
+        let liveRestoreTarget = governorConfig.enabled
+            ? (governorCurrentTierTargetLODInternal ?? governorSmoothedLODInternal ?? test.fallbackRestoreLOD)
+            : test.fallbackRestoreLOD
+        let clampedRestore = governorConfig.clampLOD(liveRestoreTarget)
+
         let restoreResult = governorBridge.sendTestLOD(
             lod: clampedRestore,
             host: governorConfig.commandHost,
@@ -750,6 +984,7 @@ final class PerformanceSampler: ObservableObject {
 
         if restoreResult.sent {
             logRegulatorAction("Test complete. Restored LOD to \(String(format: "%.2f", clampedRestore)).", at: now)
+            logTierEvent("Test restore -> \(String(format: "%.2f", clampedRestore))", at: now)
         } else {
             logRegulatorAction("Test restore failed: \(restoreResult.error ?? "Unknown error").", at: now)
         }
@@ -766,6 +1001,37 @@ final class PerformanceSampler: ObservableObject {
         }
     }
 
+    private func logTierEvent(_ message: String, at date: Date = Date()) {
+        Task { @MainActor in
+            var events = self.regulatorTierEvents
+            events.append(RegulatorActionLog(timestamp: date, message: message))
+            if events.count > 80 {
+                events.removeFirst(events.count - 80)
+            }
+            self.regulatorTierEvents = events
+        }
+    }
+
+    @MainActor
+    func proposedRegulatorTestLOD(increase: Bool, step: Double) -> Double {
+        let base = governorBridge.lastAckAppliedLOD
+            ?? regulatorFileBridgeStatus?.currentLOD
+            ?? governorCurrentTierTargetLODInternal
+            ?? governorCurrentTargetLOD
+            ?? governorSmoothedTargetLOD
+            ?? 1.0
+
+        let normalizedStep = max(step, 0)
+        let raw = increase ? base + normalizedStep : base - normalizedStep
+        return governorConfig.clampLOD(raw)
+    }
+
+    @MainActor
+    func runRegulatorRelativeTimedTest(increase: Bool, step: Double, modeLabel: String, durationSeconds: TimeInterval = 10.0) -> ActionOutcome {
+        let testLOD = proposedRegulatorTestLOD(increase: increase, step: step)
+        return runRegulatorTimedTest(lodValue: testLOD, modeLabel: modeLabel, durationSeconds: durationSeconds)
+    }
+
     @MainActor
     func runRegulatorTimedTest(lodValue: Double, modeLabel: String, durationSeconds: TimeInterval = 10.0) -> ActionOutcome {
         if pendingRegulatorTest != nil {
@@ -776,7 +1042,7 @@ final class PerformanceSampler: ObservableObject {
         let host = governorConfig.commandHost
         let port = governorConfig.commandPort
         let now = Date()
-        let restoreLOD = governorConfig.enabled ? (governorSmoothedLODInternal ?? governorCurrentTargetLOD ?? 1.0) : 1.0
+        let fallbackRestoreLOD = governorConfig.enabled ? (governorCurrentTierTargetLODInternal ?? governorSmoothedLODInternal ?? governorCurrentTargetLOD ?? 1.0) : 1.0
 
         let result = queue.sync {
             governorBridge.sendTestLOD(lod: clampedLOD, host: host, port: port, now: now)
@@ -799,18 +1065,19 @@ final class PerformanceSampler: ObservableObject {
         pendingRegulatorTest = RegulatorTestSession(
             startedAt: now,
             endsAt: now.addingTimeInterval(max(durationSeconds, 1.0)),
-            restoreLOD: restoreLOD,
+            fallbackRestoreLOD: fallbackRestoreLOD,
             modeLabel: modeLabel
         )
 
         let displayLOD = String(format: "%.2f", clampedLOD)
-        let restoreDisplay = String(format: "%.2f", governorConfig.clampLOD(restoreLOD))
-        logRegulatorAction("Test started (\(modeLabel)): LOD \(displayLOD) for \(Int(durationSeconds))s. Auto-restore \(restoreDisplay).", at: now)
+        let restoreDisplay = String(format: "%.2f", governorConfig.clampLOD(fallbackRestoreLOD))
+        logRegulatorAction("Test started (\(modeLabel)): LOD \(displayLOD) for \(Int(durationSeconds))s. Auto-restore live target (fallback \(restoreDisplay)).", at: now)
+        logTierEvent("Test \(modeLabel) -> \(displayLOD) for \(Int(durationSeconds))s", at: now)
 
         regulatorTestActive = true
         regulatorTestCountdownSeconds = Int(durationSeconds)
 
-        return ActionOutcome(success: true, message: "Test running for \(Int(durationSeconds))s: \(modeLabel), LOD \(displayLOD). Auto-restore \(restoreDisplay).")
+        return ActionOutcome(success: true, message: "Test running for \(Int(durationSeconds))s: \(modeLabel), LOD \(displayLOD).")
     }
 
     @MainActor
