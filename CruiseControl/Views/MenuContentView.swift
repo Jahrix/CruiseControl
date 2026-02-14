@@ -1560,10 +1560,25 @@ struct MenuContentView: View {
                         Text("No stutter events detected yet.")
                             .foregroundStyle(.secondary)
                     } else {
+                        if !sampler.stutterCauseSummaries.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Cause ranking (last 10 minutes)")
+                                    .font(.headline)
+                                ForEach(sampler.stutterCauseSummaries.prefix(3)) { summary in
+                                    Text("- \(summary.cause.displayName): \(summary.count)x (avg conf \(String(format: "%.2f", summary.averageConfidence)))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
                         ForEach(Array(sampler.stutterEvents.suffix(8).reversed())) { event in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("\(timeOnly(event.timestamp))  -  \(event.reason)")
+                                Text("\(timeOnly(event.timestamp))  -  \(event.classification.displayName) • conf \(String(format: "%.2f", event.confidence))")
                                     .font(.subheadline)
+                                Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                                 Text("Top culprits: \(event.rankedCulprits.joined(separator: " > "))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
