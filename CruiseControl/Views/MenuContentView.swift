@@ -601,8 +601,9 @@ struct MenuContentView: View {
                         .buttonStyle(.borderedProminent)
 
                         Button("Open Bridge Folder in Finder") {
-                            let outcome = sampler.openRegulatorBridgeFolderInFinder()
-                            processActionResult = outcome.message
+                            runVerifiedAction(kind: .openBridgeFolder, params: [:]) {
+                                sampler.openRegulatorBridgeFolderInFinder()
+                            }
                         }
                         .buttonStyle(.bordered)
                     }
@@ -709,8 +710,9 @@ struct MenuContentView: View {
 
                     HStack {
                         Button("Open Bridge Folder in Finder") {
-                            let outcome = sampler.openRegulatorBridgeFolderInFinder()
-                            processActionResult = outcome.message
+                            runVerifiedAction(kind: .openBridgeFolder, params: [:]) {
+                                sampler.openRegulatorBridgeFolderInFinder()
+                            }
                         }
                         .buttonStyle(.bordered)
 
@@ -1010,7 +1012,30 @@ struct MenuContentView: View {
                     Text("General Performance keeps sampling lightweight. Sim Mode increases cadence and prioritizes simulator telemetry.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Toggle("Pause CruiseControl maintenance scans when simulator is active", isOn: $featureStore.pauseBackgroundScansDuringSim)
+                    Toggle(
+                        "Pause CruiseControl maintenance scans when simulator is active",
+                        isOn: Binding(
+                            get: { featureStore.pauseBackgroundScansDuringSim },
+                            set: { newValue in
+                                let before = sampler.metricSamples.last
+                                featureStore.pauseBackgroundScansDuringSim = newValue
+                                let outcome = ActionOutcome(
+                                    success: true,
+                                    message: newValue
+                                        ? "Paused background scans while Sim Mode is active."
+                                        : "Background scans remain active during Sim Mode."
+                                )
+                                sampler.recordActionReceipt(
+                                    kind: .pauseBackgroundScans,
+                                    params: ["value": newValue ? "true" : "false"],
+                                    outcome: outcome,
+                                    before: before,
+                                    after: sampler.metricSamples.last
+                                )
+                                processActionResult = outcome.message
+                            }
+                        )
+                    )
                 }
             }
 
@@ -1550,14 +1575,42 @@ struct MenuContentView: View {
             dashboardCard(title: "Diagnostics Export") {
                 VStack(alignment: .leading, spacing: 10) {
                     Button("Export Diagnostics") {
-                        let outcome = sampler.exportDiagnostics()
-                        diagnosticsExportResult = outcome.message
+                        runVerifiedAction(kind: .exportDiagnostics, params: [:]) {
+                            let outcome = sampler.exportDiagnostics()
+                            diagnosticsExportResult = outcome.message
+                            return ActionOutcome(success: outcome.success, message: outcome.message)
+                        }
                     }
                     .buttonStyle(.borderedProminent)
 
                     Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and regulator control status.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            dashboardCard(title: "Action Receipts") {
+                if sampler.actionReceipts.isEmpty {
+                    Text("No action receipts recorded yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(sampler.actionReceipts.suffix(12).reversed())) { receipt in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(timeOnly(receipt.timestamp))  -  \(receipt.kind.rawValue)  -  \(receipt.outcome ? "OK" : "Failed")")
+                                    .font(.subheadline)
+                                if let before = receipt.before, let after = receipt.after {
+                                    Text(String(format: "Before/After pressure index: %.2f -> %.2f", before.pressureIndex, after.pressureIndex))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(receipt.message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
                 }
             }
 
@@ -2428,10 +2481,43 @@ struct MenuContentView: View {
     }
 
     private func runProcessAction(process: ProcessSample, force: Bool) {
-        let outcome = settings.terminateProcess(pid: process.pid, force: force)
+        runVerifiedAction(
+            kind: force ? .forceQuitApp : .quitApp,
+            params: [
+                "pid": String(process.pid),
+                "name": process.name,
+                "force": force ? "true" : "false"
+            ]
+        ) {
+            let outcome = settings.terminateProcess(pid: process.pid, force: force)
+            if outcome.success {
+                refreshRunningApps()
+            }
+            return outcome
+        }
+    }
+
+    private func runVerifiedAction(
+        kind: ActionKind,
+        params: [String: String],
+        operation: @escaping () -> ActionOutcome
+    ) {
+        let before = sampler.metricSamples.last
+        let outcome = operation()
         processActionResult = outcome.message
-        if outcome.success {
-            refreshRunningApps()
+
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await MainActor.run {
+                let after = sampler.metricSamples.last
+                sampler.recordActionReceipt(
+                    kind: kind,
+                    params: params,
+                    outcome: outcome,
+                    before: before,
+                    after: after
+                )
+            }
         }
     }
 
