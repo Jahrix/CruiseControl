@@ -2219,6 +2219,9 @@ struct MenuContentView: View {
                 Text("UDP state: \(sampler.snapshot.udpStatus.state.displayName)")
                 Text("Last updated: \(lastUpdatedText)")
                     .foregroundStyle(isStale ? .orange : .secondary)
+                Text("Version: \(AppMaintenanceService.currentVersionString())")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Text("CruiseControl performs monitoring and user-approved actions only. It does not control scheduler internals, GPU clocks, kernel paths, or private macOS internals.")
                     .font(.subheadline)

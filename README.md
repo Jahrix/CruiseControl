@@ -1,89 +1,88 @@
-# CruiseControl v1.1.4
+# CruiseControl v1.2.0
 
-CruiseControl is a macOS SwiftUI desktop performance companion for X-Plane on Apple Silicon.
+CruiseControl is a macOS SwiftUI performance copilot for X-Plane sessions.
 
-## What it does
+## Positioning
 
-- Real-time system telemetry: CPU, memory pressure, compressed memory, swap, disk I/O, thermal state, top processes.
-- X-Plane UDP monitoring with explicit connection states: `IDLE`, `LISTENING`, `ACTIVE`, `MISCONFIG`.
-- Regulator bridge diagnostics for FlyWithLua (UDP ACK path + file fallback).
-- Cleaner Suite (safe, reversible by default):
-  - Smart Scan
-  - Cleaner
-  - Large Files
-  - Optimization
-  - Quarantine
+CruiseControl v1.2 is **Frame-Time Lab + X-Plane Companion**:
+- measure
+- diagnose
+- act (user-approved)
+- verify with receipts/proof
 
-## Smart Scan v1.1.4
+It is not a fake RAM cleaner and does not use private macOS control paths.
 
-Smart Scan runs these modules asynchronously with progress and cancellation:
+## Core v1.2 sections
 
-1. System Junk (safe user paths only)
-2. Trash Bins
-3. Large Files (selected scope only)
-4. Optimization
-5. Optional privacy cache scan
+- Overview
+- Frame-Time Lab
+- Top Processes
+- Profiles
+- X-Plane
+- Diagnostics
+- Smart Scan
+- Large Files
+- Quarantine
 
-`Run Clean` defaults to **Quarantine first**.
+## Frame-Time Lab
 
-## Quarantine / Restore model
+- Swift Charts timeline with selectable windows (`5m`, `10m`, `30m`)
+- Pressure Index + CPU trend lines
+- stutter markers (RuleMark)
+- stutter classifier (cause + confidence + evidence)
+- culprit ranking for last 10 minutes
 
-Quarantine root:
+## Profiles
 
-`~/Library/Application Support/CruiseControl/Quarantine/<timestamp>/`
+- `General Performance` (low overhead)
+- `Sim Mode` (higher cadence for sim sessions)
+- X-Plane detection can suggest switching to Sim Mode
 
-Each batch writes `manifest.json` with metadata:
+## Actions + receipts
 
-- `batchId`
-- `createdAt`
-- `totalBytes`
-- entries: `originalPath`, `quarantinedPath`, `sizeBytes`, `timestamp`, optional `sha256`
+Every key action can record an `ActionReceipt` with:
+- action kind and params
+- before/after samples
+- outcome message
 
-From the Quarantine section you can:
+Examples:
+- quit / force-quit process
+- open bridge folder
+- export diagnostics bundle
+- pause scan policy toggles
 
-- Restore batch
-- Delete batch permanently
-- View total quarantined size
+## X-Plane Companion
 
-## Memory Relief (honest behavior)
+### Regulator + proof
+- `LOD Applied` and `Recent Activity` are tracked separately
+- bridge modes: UDP ACK, File fallback, or disconnected
+- proof includes target/applied/delta, evidence age, and reasons
 
-CruiseControl does **not** claim fake global RAM purges.
+### Advisor
+Guidance cards are recommendations only:
+- symptom -> likely cause -> recommended change -> why
+- CruiseControl does not auto-edit X-Plane graphics config in v1.2
 
-Memory Relief focuses on useful actions:
+## Diagnostics export v2
 
-- shows pressure/swap/compressed memory trends
-- suggests top memory offenders
-- user-confirmed quit actions
-- optional limited purge clears CruiseControl-owned local cache only
+Export JSON bundle includes:
+- recent metric samples ring buffer
+- stutter events + cause summaries
+- action receipts
+- profile + settings snapshot
+- regulator proof snapshot
 
-## Safe path policy
+## Demo/Mock mode
 
-Included by default:
+- Toggle in Preferences and Diagnostics checklist
+- inject synthetic stutter/sample data for UI validation without X-Plane
 
-- `~/Library/Caches`
-- `~/Library/Logs`
-- `~/Library/Application Support/CruiseControl`
-- `~/Library/Saved Application State` (itemized)
-- `~/.Trash`
+## Safety model
 
-Excluded by default:
-
-- `/System`
-- `/Library`
-- `/private/var/vm`
-
-Advanced mode is required for out-of-allowlist actions.
-
-## Update checks and install
-
-- `Check for Updates…` now supports no-rebuild updates.
-- Primary path: Sparkle (`SUFeedURL` + `SUPublicEDKey`) when configured.
-- Fallback path: GitHub Releases auto-installer.
-  - CruiseControl checks latest release, finds a `.zip` app asset, downloads it, installs to a writable app location, then relaunches.
-  - If `/Applications` is not writable, it installs to `~/Applications` automatically.
-- Required release asset naming: publish a zip containing `CruiseControl.app` (for example `CruiseControl-v1.1.4-macOS.zip`).
-- If update check says no GitHub release published yet, create your first GitHub Release for `Jahrix/CruiseControl`.
-- `Show App in Finder`, `Open Applications Folder`, and `Install to /Applications` are available in app commands and Preferences.
+- no private APIs / no kernel extensions
+- user-confirmed destructive operations
+- quarantine-first cleaning flow
+- safe path allowlist defaults for maintenance features
 
 ## Build
 
@@ -94,16 +93,15 @@ xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-## Bundle Identifier Migration
+## Versioning
 
-- Current: `jahrix.CruiseControl`
-- Legacy: `jahrix.Speed-for-Mac`
-
-macOS treats these as different app identities; old preference domains are not auto-migrated.
+- Version: `1.2.0`
+- Build: `120`
+- Bundle ID: `jahrix.CruiseControl`
 
 ## Limitations
 
-- No kernel extensions.
-- No private macOS scheduler/GPU controls.
-- Process terminate/force-quit can fail due permissions/app behavior.
-- X-Plane companion features depend on correct sim UDP/FlyWithLua setup.
+- GPU utilization is heuristic unless exposed by sim telemetry.
+- Process termination can fail due app permissions/state.
+- X-Plane companion features depend on correct UDP/FlyWithLua setup.
+- Smart Scan/Cleaner are maintenance tools, not guaranteed FPS boosters.

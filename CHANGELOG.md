@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.2.0 - Frame-Time Lab + X-Plane Companion
+
+### Added
+- New performance-first navigation layout with dedicated `Frame-Time Lab` and `Profiles` sections.
+- Swift Charts-based frame-time timeline with selectable windows (`5m/10m/30m`) and stutter markers.
+- v1.2 telemetry models: `MetricSample`, `ProcessImpact`, `ActionReceipt`, and profile-aware sampler state.
+- Stutter classifier fields on events: cause, confidence, severity, evidence points, and window reference.
+- Process impact panel and expanded allowlist controls in process workflows.
+- Verified action flow with before/after metric evidence and `Action Receipts` diagnostics panel.
+- Workload Profile engine (`General Performance` / `Sim Mode`) persisted in feature store.
+- X-Plane Advisor cards (symptom -> cause -> recommendation -> why).
+- Sim Test Checklist in Diagnostics with Demo/Mock mode and mock stutter injection.
+- Diagnostics export bundle v2 with samples, stutter summaries, action receipts, profile, proof, and settings snapshot.
+
+### Changed
+- Version bumped to `1.2.0` (build `120`).
+- X-Plane auto-detection now suggests Sim Mode profile without forcing it.
+- Sampling cadence now respects profile defaults (general low overhead, sim tighter cadence).
+- Preferences now expose app version and Demo/Mock mode toggle.
+
+### Notes
+- Advisor remains guidance-only in v1.2; CruiseControl does not auto-edit X-Plane graphics settings.
+- Private APIs and kernel-level controls remain out of scope.
+
 ## v1.1.5 - Regulator Proof + Apply Stability Hotfix
 
 ### Changed
