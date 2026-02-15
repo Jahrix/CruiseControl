@@ -62,6 +62,17 @@ struct RunningAppChoice: Identifiable {
     let name: String
 }
 
+enum WizardCheckState {
+    case ok
+    case warn
+    case neutral
+}
+
+struct TerminationFallback {
+    let process: ProcessSample
+    let message: String
+}
+
 struct StatusStripPill: Identifiable {
     let id = UUID()
     let title: String
@@ -156,6 +167,8 @@ struct RecentActionsFeedView: View {
             base = "Open bridge folder"
         case .exportDiagnostics:
             base = "Export diagnostics"
+        case .cleanerAction:
+            base = "Cleaner action"
         }
 
         if let app = receipt.params["app"] ?? receipt.params["name"] {
@@ -225,6 +238,8 @@ struct MenuContentView: View {
     @State private var regulatorTestDurationSeconds: Double = 10.0
 
     @State private var showUDPSetupGuide: Bool = true
+    @State private var showXPlaneHelpSheet: Bool = false
+    @State private var terminationFallback: TerminationFallback?
     @AppStorage("showAdvancedXPlaneControls") private var showAdvancedXPlaneControls: Bool = false
     @State private var now: Date = Date()
 
@@ -305,6 +320,31 @@ struct MenuContentView: View {
                             feedbackCard(title: "Action Result", text: processActionResult)
                         }
 
+                        if let terminationFallback {
+                            dashboardCard(title: "Termination Help") {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(terminationFallback.message)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+
+                                    HStack {
+                                        Button("Open Activity Monitor") {
+                                            let outcome = settings.openInActivityMonitor(process: terminationFallback.process)
+                                            processActionResult = outcome.message
+                                        }
+                                        .buttonStyle(.bordered)
+
+                                        Button("Copy manual steps") {
+                                            let steps = "Open Activity Monitor, search PID \(terminationFallback.process.pid), then quit or force quit the app."
+                                            copyToClipboard(steps)
+                                            processActionResult = "Copied manual termination steps."
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                }
+                            }
+                        }
+
                         if let diagnosticsExportResult {
                             feedbackCard(title: "Diagnostics", text: diagnosticsExportResult)
                         }
@@ -333,6 +373,9 @@ struct MenuContentView: View {
             }
             .navigationSplitViewStyle(.balanced)
             .tint(neonBlue)
+            .sheet(isPresented: $showXPlaneHelpSheet) {
+                xPlaneHelpSheet
+            }
         }
         .onAppear {
             sampler.start()
@@ -657,12 +700,18 @@ struct MenuContentView: View {
                         .font(.subheadline)
 
                     if let telemetry = sampler.snapshot.xplaneTelemetry {
+                        let capabilities = telemetryCapabilities
                         HStack(spacing: 12) {
                             if let fps = telemetry.fps {
                                 metricPill(label: "Sim FPS", value: String(format: "%.1f", fps))
                             }
                             if let frameTime = telemetry.frameTimeMS {
                                 metricPill(label: "Frame Time", value: String(format: "%.2f ms", frameTime))
+                            }
+                            if capabilities.hasSimGpuFrameTime, let gpuTime = telemetry.gpuFrameTimeMS {
+                                metricPill(label: "Sim GPU", value: String(format: "%.2f ms", gpuTime))
+                            } else {
+                                metricPill(label: "GPU", value: "Unavailable")
                             }
                             if let agl = telemetry.altitudeAGLFeet {
                                 metricPill(label: "AGL", value: String(format: "%.0f ft", agl))
@@ -688,59 +737,6 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Recent Actions") {
                 RecentActionsFeedView(receipts: recentActionReceipts, now: now, maxItems: 5)
-            }
-
-            dashboardCard(title: "Connection Wizard") {
-
-                VStack(alignment: .leading, spacing: 8) {
-                    wizardStep(title: "1) X-Plane running", good: sampler.isSimActive, detail: sampler.isSimActive ? "Detected" : "Not detected")
-                    wizardStep(
-                        title: "2) Telemetry",
-                        good: sampler.snapshot.udpStatus.state == .active || sampler.snapshot.udpStatus.state == .listening,
-                        detail: "\(sampler.snapshot.udpStatus.state.displayName) | \(telemetryFreshnessText) | \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)) pkt/s"
-                    )
-                    wizardStep(
-                        title: "3) Control Bridge",
-                        good: regulatorBridgeConnected,
-                        detail: regulatorControlWizardDetail
-                    )
-                    wizardStep(
-                        title: "4) ACK",
-                        good: regulatorAckWizardHealthy,
-                        detail: regulatorAckWizardDetail
-                    )
-
-                    HStack {
-                        Button("Copy 127.0.0.1:\(String(settings.xPlaneUDPPort))") {
-                            copyToClipboard("127.0.0.1:\(String(settings.xPlaneUDPPort))")
-                            processActionResult = "Copied telemetry endpoint."
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Copy Lua listen port") {
-                            copyToClipboard(String(settings.governorCommandPort))
-                            processActionResult = "Copied Lua listen port."
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Test PING") {
-                            let outcome = sampler.sendGovernorPing()
-                            processActionResult = outcome.message
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Open Bridge Folder in Finder") {
-                            runVerifiedAction(kind: .openBridgeFolder, params: [:]) {
-                                sampler.openRegulatorBridgeFolderInFinder()
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    Text("Install Lua script in X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             dashboardCard(title: "Regulator Proof") {
@@ -980,12 +976,20 @@ struct MenuContentView: View {
 
                         Toggle("Pause CruiseControl background scans while sim is active", isOn: $featureStore.pauseBackgroundScansDuringSim)
 
+                        if shouldRecommendCleaner {
+                            Text("Cleaner recommendation: \(cleanerRecommendationDetail)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         HStack {
-                            Button("Run Cleaner recommendations") {
-                                selectedSection = .cleaner
-                                scanCleanerModule()
+                            if shouldRecommendCleaner {
+                                Button("Run Cleaner recommendations") {
+                                    selectedSection = .cleaner
+                                    scanCleanerModule()
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .buttonStyle(.bordered)
 
                             Button("Large Files: Downloads") {
                                 setLargeFileQuickScope(.downloadsDirectory)
@@ -1311,6 +1315,8 @@ struct MenuContentView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(processes) { process in
+                    let termination = terminationAvailability(for: process)
+
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("\(process.name) (PID \(process.pid))")
@@ -1336,18 +1342,26 @@ struct MenuContentView: View {
                                 runProcessAction(process: process, force: false)
                             }
                             .buttonStyle(.bordered)
+                            .disabled(!termination.allowed)
 
                             Button("Force Quit") {
                                 forceQuitCandidate = process
                             }
                             .buttonStyle(.bordered)
                             .tint(.red)
+                            .disabled(!termination.allowed)
 
                             Button("Allowlist") {
                                 featureStore.addProcessToAllowlist(process.name)
                                 processActionResult = "Added \(process.name) to Optimization allowlist."
                             }
                             .buttonStyle(.bordered)
+                        }
+
+                        if let reason = termination.reason {
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .padding(10)
@@ -1357,8 +1371,139 @@ struct MenuContentView: View {
         }
     }
 
+    private var connectionWizardCard: some View {
+        let udp = sampler.snapshot.udpStatus
+        let lastPacketAge = udp.lastPacketDate.map { now.timeIntervalSince($0) }
+        let telemetryLive = udp.packetsPerSecond > 0 && (lastPacketAge ?? 999) <= 2
+        let hadPackets = udp.totalPackets > 0
+        let simOffline = !sampler.isSimActive && !hadPackets && udp.state != .misconfig
+
+        let udpListenerState: WizardCheckState
+        let udpListenerDetail: String
+        switch udp.state {
+        case .listening, .active:
+            udpListenerState = simOffline ? .neutral : .ok
+            udpListenerDetail = "Listening on \(telemetryEndpoint)"
+        case .misconfig:
+            udpListenerState = .warn
+            udpListenerDetail = udp.detail ?? "UDP misconfiguration detected."
+        case .idle:
+            udpListenerState = .neutral
+            udpListenerDetail = "UDP listener disabled."
+        }
+
+        let telemetryState: WizardCheckState
+        let telemetryDetail: String
+        if simOffline {
+            telemetryState = .neutral
+            telemetryDetail = "Not started (sim offline)."
+        } else if telemetryLive {
+            telemetryState = .ok
+            telemetryDetail = "Live \(String(format: "%.1f", udp.packetsPerSecond)) pkt/s • last \(relativeAgeText(from: udp.lastPacketDate ?? now))"
+        } else if hadPackets {
+            telemetryState = .warn
+            telemetryDetail = "No recent packets • last \(relativeAgeText(from: udp.lastPacketDate ?? now))"
+        } else {
+            telemetryState = udp.state == .listening ? .neutral : .warn
+            telemetryDetail = "Waiting for telemetry packets."
+        }
+
+        let bridgeState: WizardCheckState
+        let bridgeDetail: String
+        switch sampler.regulatorControlState {
+        case .udpAckOK(let lastAck, _):
+            bridgeState = simOffline ? .neutral : .ok
+            bridgeDetail = simOffline ? "Not started (sim offline)." : "ACK OK • last \(relativeAgeText(from: lastAck))"
+        case .udpNoAck:
+            bridgeState = simOffline ? .neutral : .warn
+            bridgeDetail = simOffline ? "Not started (sim offline)." : "Waiting for ACK"
+        case .fileBridge(let lastUpdate):
+            let status = sampler.regulatorFileBridgeStatus
+            let updateDate = status?.lastUpdateDate ?? lastUpdate
+            let fresh = now.timeIntervalSince(updateDate) <= 5
+            if simOffline {
+                bridgeState = .neutral
+                bridgeDetail = "Not started (sim offline)."
+            } else {
+                bridgeState = fresh ? .ok : .warn
+                bridgeDetail = "File bridge update \(relativeAgeText(from: updateDate))"
+            }
+        case .disconnected:
+            bridgeState = simOffline ? .neutral : .warn
+            bridgeDetail = simOffline ? "Not started (sim offline)." : "Bridge not configured"
+        }
+
+        let proof = sampler.computeProofState(now: now)
+        let proofState: WizardCheckState
+        let proofDetail: String
+        if simOffline {
+            proofState = .neutral
+            proofDetail = "Not started (sim offline)."
+        } else if proof.lodApplied {
+            proofState = .ok
+            let delta = proof.deltaToTarget.map { String(format: "%.2f", $0) } ?? "-"
+            proofDetail = "Applied • Δ \(delta)"
+        } else {
+            proofState = .warn
+            proofDetail = "No applied evidence yet"
+        }
+
+        let headerText = simOffline ? "Simulator Offline" : (telemetryLive ? "Simulator Live" : "Awaiting Telemetry")
+
+        return dashboardCard(title: "Connection Wizard") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(headerText)
+                    .font(.headline)
+                Text("Endpoint: \(telemetryEndpoint)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                wizardChecklistRow(title: "UDP Listener", state: udpListenerState, detail: udpListenerDetail)
+                wizardChecklistRow(title: "Telemetry", state: telemetryState, detail: telemetryDetail)
+                wizardChecklistRow(title: "Bridge Script", state: bridgeState, detail: bridgeDetail)
+                wizardChecklistRow(title: "Proof: LOD Applied", state: proofState, detail: proofDetail)
+
+                HStack {
+                    Button("Copy Endpoint") {
+                        copyToClipboard(telemetryEndpoint)
+                        processActionResult = "Copied endpoint \(telemetryEndpoint)."
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Open Bridge Folder in Finder") {
+                        runVerifiedAction(kind: .openBridgeFolder, params: [:]) {
+                            sampler.openRegulatorBridgeFolderInFinder()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Open FlyWithLua Scripts Folder") {
+                        let outcome = openFlyWithLuaScriptsFolder()
+                        processActionResult = outcome.message
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                HStack {
+                    Button("How to enable UDP in X-Plane") {
+                        showXPlaneHelpSheet = true
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Test PING") {
+                        let outcome = sampler.sendGovernorPing()
+                        processActionResult = outcome.message
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+
     private var simModeSection: some View {
         VStack(alignment: .leading, spacing: 16) {
+            connectionWizardCard
+
             dashboardCard(title: "LOD Regulator") {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Enable LOD Regulator", isOn: $settings.governorModeEnabled)
@@ -2072,9 +2217,19 @@ struct MenuContentView: View {
                     Text("Safe targets only: ~/Library/Caches, ~/Library/Logs, ~/Library/Application Support/CruiseControl, optional Saved Application State.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Text("Caches may regenerate. Cleaning helps reduce pressure but is not a permanent speed hack.")
+                    Text("Maintenance can reduce stutters caused by low space or swap pressure, but it won’t increase FPS in all cases.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if shouldRecommendCleaner {
+                        Text("Recommended now: \(cleanerRecommendationDetail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("No pressure-based recommendation right now.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
                     HStack {
                         Button(cleanerLoading ? "Scanning..." : "Scan Cleaner") {
@@ -2227,6 +2382,8 @@ struct MenuContentView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(impact) { process in
+                            let termination = terminationAvailability(for: process)
+
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("\(process.name) (PID \(process.pid))")
                                     .font(.headline)
@@ -2239,18 +2396,26 @@ struct MenuContentView: View {
                                         runProcessAction(process: process, force: false)
                                     }
                                     .buttonStyle(.bordered)
+                                    .disabled(!termination.allowed)
 
                                     Button("Force Quit") {
                                         forceQuitCandidate = process
                                     }
                                     .buttonStyle(.bordered)
                                     .tint(.red)
+                                    .disabled(!termination.allowed)
 
                                     Button("Allowlist") {
                                         featureStore.addProcessToAllowlist(process.name)
                                         processActionResult = "Added \(process.name) to Optimization allowlist."
                                     }
                                     .buttonStyle(.bordered)
+                                }
+
+                                if let reason = termination.reason {
+                                    Text(reason)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
                             .padding(.vertical, 4)
@@ -2451,6 +2616,43 @@ struct MenuContentView: View {
         )
     }
 
+    private var xPlaneHelpSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Enable X-Plane UDP Output")
+                .font(.title2.weight(.bold))
+
+            Text("1) Open X-Plane > Settings > Data Output")
+            Text("2) Check Send network data output")
+            Text("3) Set IP to 127.0.0.1")
+            Text("4) Set Port to \(telemetryEndpoint)")
+            Text("5) Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)")
+
+            Text("If you use the FlyWithLua bridge, install the script in:")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Copy Endpoint") {
+                    copyToClipboard(telemetryEndpoint)
+                    processActionResult = "Copied endpoint \(telemetryEndpoint)."
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("Close") {
+                    showXPlaneHelpSheet = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
     private func feedbackCard(title: String, text: String) -> some View {
         dashboardCard(title: title) {
             Text(text)
@@ -2460,9 +2662,39 @@ struct MenuContentView: View {
 
     private func wizardStep(title: String, good: Bool, detail: String) -> some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(good ? neonMint : neonOrange)
-                .frame(width: 8, height: 8)
+            Image(systemName: good ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(good ? neonMint : neonOrange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func wizardChecklistRow(title: String, state: WizardCheckState, detail: String) -> some View {
+        let iconName: String
+        let color: Color
+        switch state {
+        case .ok:
+            iconName = "checkmark.circle.fill"
+            color = neonMint
+        case .warn:
+            iconName = "exclamationmark.triangle.fill"
+            color = neonOrange
+        case .neutral:
+            iconName = "minus.circle"
+            color = .secondary
+        }
+
+        return HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .foregroundStyle(color)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -2656,6 +2888,22 @@ struct MenuContentView: View {
             StatusStripPill(title: "Stutters (10m)", value: stutterValue, tint: stutterTint, action: { selectedSection = .frameTimeLab }),
             StatusStripPill(title: "Profile", value: profileValue, tint: neonBlue, action: { selectedSection = .profiles })
         ]
+    }
+
+    private var telemetryEndpoint: String {
+        let host = sampler.snapshot.udpStatus.listenHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpointHost = host.isEmpty ? "127.0.0.1" : host
+        return "\(endpointHost):\(sampler.snapshot.udpStatus.listenPort)"
+    }
+
+    private var telemetryCapabilities: TelemetryCapabilities {
+        let telemetry = sampler.snapshot.xplaneTelemetry
+        return TelemetryCapabilities(
+            hasSimCpuFrameTime: telemetry?.cpuFrameTimeMS != nil,
+            hasSimGpuFrameTime: telemetry?.gpuFrameTimeMS != nil,
+            hasAGL: telemetry?.altitudeAGLFeet != nil,
+            hasMSL: telemetry?.altitudeMSLFeet != nil
+        )
     }
 
     private var telemetryLastPacketAgeSeconds: TimeInterval? {
@@ -2996,20 +3244,76 @@ struct MenuContentView: View {
         }
     }
 
+    private func terminationAvailability(for process: ProcessSample) -> (allowed: Bool, reason: String?) {
+        guard let app = NSRunningApplication(processIdentifier: process.pid) else {
+            return (false, "Not permitted by macOS for this app.")
+        }
+        if app.isTerminated {
+            return (false, "App already quitting or closed.")
+        }
+        if !app.isFinishedLaunching {
+            return (false, "App is still launching.")
+        }
+        if app.activationPolicy != .regular {
+            return (false, "Not permitted by macOS for this app.")
+        }
+        return (true, nil)
+    }
+
+    private func mappedTerminationMessage(_ outcome: ActionOutcome, process: ProcessSample) -> String {
+        if outcome.success { return outcome.message }
+
+        let lowered = outcome.message.lowercased()
+        if lowered.contains("permission") || lowered.contains("denied") {
+            return "Termination denied by macOS for \(process.name)."
+        }
+        if lowered.contains("refus") || lowered.contains("did not respond") {
+            return "\(process.name) did not respond to quit."
+        }
+        if lowered.contains("not currently running") || lowered.contains("no longer running") {
+            return "\(process.name) is already quitting or closed."
+        }
+        return outcome.message
+    }
+
     private func runProcessAction(process: ProcessSample, force: Bool) {
-        runVerifiedAction(
-            kind: force ? .forceQuitApp : .quitApp,
-            params: [
-                "pid": String(process.pid),
-                "name": process.name,
-                "force": force ? "true" : "false"
-            ]
-        ) {
-            let outcome = settings.terminateProcess(pid: process.pid, force: force)
-            if outcome.success {
-                refreshRunningApps()
+        let availability = terminationAvailability(for: process)
+        guard availability.allowed else {
+            let message = availability.reason ?? "Not permitted by macOS for this app."
+            processActionResult = message
+            terminationFallback = TerminationFallback(process: process, message: message)
+            return
+        }
+
+        terminationFallback = nil
+        let before = sampler.metricSamples.last
+        let outcome = settings.terminateProcess(pid: process.pid, force: force)
+        let mapped = mappedTerminationMessage(outcome, process: process)
+        let finalOutcome = ActionOutcome(success: outcome.success, message: mapped)
+
+        processActionResult = mapped
+        terminationFallback = outcome.success ? nil : TerminationFallback(process: process, message: mapped)
+
+        if outcome.success {
+            refreshRunningApps()
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await MainActor.run {
+                let after = sampler.metricSamples.last
+                sampler.recordActionReceipt(
+                    kind: force ? .forceQuitApp : .quitApp,
+                    params: [
+                        "pid": String(process.pid),
+                        "name": process.name,
+                        "force": force ? "true" : "false"
+                    ],
+                    outcome: finalOutcome,
+                    before: before,
+                    after: after
+                )
             }
-            return outcome
         }
     }
 
@@ -3018,6 +3322,7 @@ struct MenuContentView: View {
         params: [String: String],
         operation: @escaping () -> ActionOutcome
     ) {
+        terminationFallback = nil
         let before = sampler.metricSamples.last
         let outcome = operation()
         processActionResult = outcome.message
@@ -3100,16 +3405,27 @@ struct MenuContentView: View {
                 )
             )
         }
-
+        let capabilities = telemetryCapabilities
         if let fps = telemetry?.fps, fps < 32, sampler.snapshot.cpuTotalPercent < 75 {
-            items.append(
-                AdvisorItem(
-                    symptom: "Low FPS with moderate CPU load",
-                    cause: "Likely GPU/graphics bound scenario",
-                    recommendation: "Reduce cloud quality and enable FSR if available",
-                    why: "GPU-side frame time can improve without major CPU changes."
+            if capabilities.hasSimGpuFrameTime {
+                items.append(
+                    AdvisorItem(
+                        symptom: "Low FPS with moderate CPU load",
+                        cause: "Likely GPU/graphics bound scenario",
+                        recommendation: "Reduce cloud quality and enable FSR if available",
+                        why: "Sim GPU frame time is elevated relative to CPU time."
+                    )
                 )
-            )
+            } else {
+                items.append(
+                    AdvisorItem(
+                        symptom: "Low FPS with moderate CPU load",
+                        cause: "GPU telemetry unavailable",
+                        recommendation: "If visuals look heavy, consider reducing clouds or AA (low confidence)",
+                        why: "No GPU frame time is available; this is a low-confidence heuristic."
+                    )
+                )
+            }
         }
 
         if sampler.snapshot.cpuTotalPercent > 82,
@@ -3209,6 +3525,26 @@ struct MenuContentView: View {
         processActionResult = "Regulator bridge set to \(host):\(String(port))."
     }
 
+    private var shouldRecommendCleaner: Bool {
+        let lowDisk = sampler.snapshot.freeDiskBytes > 0 && sampler.snapshot.freeDiskBytes < UInt64(15 * 1_024 * 1_024 * 1_024)
+        return sampler.snapshot.memoryPressure != .green
+            || sampler.snapshot.swapDelta5MinBytes > Int64(128 * 1_024 * 1_024)
+            || lowDisk
+    }
+
+    private var cleanerRecommendationDetail: String {
+        if sampler.snapshot.memoryPressure != .green {
+            return "Memory pressure is elevated."
+        }
+        if sampler.snapshot.swapDelta5MinBytes > Int64(128 * 1_024 * 1_024) {
+            return "Swap trend is rising."
+        }
+        if sampler.snapshot.freeDiskBytes > 0 && sampler.snapshot.freeDiskBytes < UInt64(15 * 1_024 * 1_024 * 1_024) {
+            return "Free disk space is low."
+        }
+        return "No current pressure or swap triggers."
+    }
+
     private func simBoundHeuristic() -> String {
         if sampler.snapshot.thermalState == .serious || sampler.snapshot.thermalState == .critical {
             return "Thermal"
@@ -3246,6 +3582,12 @@ struct MenuContentView: View {
 
         var lines: [String] = []
         for target in targets {
+            let availability = terminationAvailability(for: target)
+            guard availability.allowed else {
+                let reason = availability.reason ?? "Not permitted by macOS for this app."
+                lines.append("\(target.name): \(reason)")
+                continue
+            }
             let outcome = settings.terminateProcess(pid: target.pid, force: false)
             lines.append("\(target.name): \(outcome.message)")
         }
@@ -3545,12 +3887,14 @@ struct MenuContentView: View {
 
     private func quarantineSelectedScanItems() {
         let selected = selectedScanItemsForAction
+        let before = sampler.metricSamples.last
         let outcome = smartScanService.quarantine(
             items: selected,
             advancedModeEnabled: featureStore.advancedModeEnabled
         )
         processActionResult = outcome.message
         refreshQuarantineBatches()
+        recordCleanerActionReceipt(action: "quarantine", itemCount: selected.count, outcome: outcome, before: before)
     }
 
     private func deleteSelectedScanItems() {
@@ -3559,6 +3903,7 @@ struct MenuContentView: View {
         }
 
         let selected = selectedScanItemsForAction
+        let before = sampler.metricSamples.last
         let outcome = smartScanService.deletePermanently(
             items: selected,
             advancedModeEnabled: featureStore.advancedModeEnabled
@@ -3582,6 +3927,64 @@ struct MenuContentView: View {
         }
 
         refreshQuarantineBatches()
+        recordCleanerActionReceipt(action: "delete", itemCount: selected.count, outcome: outcome, before: before)
+    }
+
+    private func openFlyWithLuaScriptsFolder() -> ActionOutcome {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            home.appendingPathComponent("Library/Application Support/Steam/steamapps/common/X-Plane 12/Resources/plugins/FlyWithLua/Scripts"),
+            home.appendingPathComponent("Library/Application Support/Steam/steamapps/common/X-Plane 11/Resources/plugins/FlyWithLua/Scripts"),
+            home.appendingPathComponent("X-Plane 12/Resources/plugins/FlyWithLua/Scripts"),
+            home.appendingPathComponent("X-Plane 11/Resources/plugins/FlyWithLua/Scripts")
+        ]
+
+        for url in candidates {
+            if FileManager.default.fileExists(atPath: url.path) {
+                NSWorkspace.shared.open(url)
+                return ActionOutcome(success: true, message: "Opened FlyWithLua Scripts folder.")
+            }
+        }
+
+        return ActionOutcome(success: false, message: "Couldn't locate FlyWithLua Scripts folder. Install FlyWithLua and place scripts in X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts.")
+    }
+
+    private func cleanerVerificationLine(before: MetricSample?, after: MetricSample?) -> String {
+        guard let before, let after else {
+            return "Verification unavailable yet."
+        }
+        if after.memPressure.score < before.memPressure.score {
+            return "Memory pressure improved."
+        }
+        if after.swapUsed < before.swapUsed {
+            return "Swap usage decreased."
+        }
+        if after.swapDelta < before.swapDelta {
+            return "Swap trend improved."
+        }
+        return "No measurable change yet."
+    }
+
+    private func recordCleanerActionReceipt(action: String, itemCount: Int, outcome: ActionOutcome, before: MetricSample?) {
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await MainActor.run {
+                let after = sampler.metricSamples.last
+                let verification = cleanerVerificationLine(before: before, after: after)
+                let message = outcome.message.isEmpty ? verification : "\(outcome.message) • \(verification)"
+                let finalOutcome = ActionOutcome(success: outcome.success, message: message)
+                sampler.recordActionReceipt(
+                    kind: .cleanerAction,
+                    params: [
+                        "action": action,
+                        "count": String(itemCount)
+                    ],
+                    outcome: finalOutcome,
+                    before: before,
+                    after: after
+                )
+            }
+        }
     }
 
     private func openLoginItemsSettings() {

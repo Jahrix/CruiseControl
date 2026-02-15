@@ -101,7 +101,7 @@ xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj
 
 ## Limitations
 
-- GPU utilization is heuristic unless exposed by sim telemetry.
-- Process termination can fail due app permissions/state.
-- X-Plane companion features depend on correct UDP/FlyWithLua setup.
-- Smart Scan/Cleaner are maintenance tools, not guaranteed FPS boosters.
+- GPU metrics are shown only when sim telemetry provides GPU timing; otherwise GPU is marked unavailable (no fabricated utilization).
+- Process actions can fail; CruiseControl shows the reason and offers an Activity Monitor fallback.
+- X-Plane companion features include a Connection Wizard + self-test checklist to guide UDP/FlyWithLua setup.
+- Cleaner is maintenance-oriented; recommendations appear only when pressure/swap or low-space conditions suggest it may help.

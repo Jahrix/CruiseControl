@@ -99,10 +99,19 @@ struct SimTelemetrySnapshot: Codable {
     var source: String
     var fps: Double?
     var frameTimeMS: Double?
+    var cpuFrameTimeMS: Double?
+    var gpuFrameTimeMS: Double?
     var altitudeAGLFeet: Double?
     var altitudeMSLFeet: Double?
     var nearestAirportICAO: String?
     var lastPacketDate: Date?
+}
+
+struct TelemetryCapabilities {
+    var hasSimCpuFrameTime: Bool
+    var hasSimGpuFrameTime: Bool
+    var hasAGL: Bool
+    var hasMSL: Bool
 }
 
 struct PerformanceSnapshot {
@@ -236,6 +245,7 @@ enum ActionKind: String, Codable {
     case pauseBackgroundScans
     case openBridgeFolder
     case exportDiagnostics
+    case cleanerAction
 }
 
 struct ActionReceipt: Identifiable, Codable {
