@@ -1,40 +1,39 @@
-# CruiseControl v1.1.4 (Desktop App)
+# CruiseControl v1.2.0 (Desktop App)
 
-CruiseControl combines simulator telemetry and a safe Cleaner Suite.
+CruiseControl v1.2 centers the app around frame-time diagnostics and X-Plane companion workflows.
 
-## v1.1.4 highlights
+## Highlights
 
-- New sidebar sections: Smart Scan, Cleaner, Large Files, Optimization, Quarantine.
-- Async Smart Scan with per-module progress + cancel.
-- Hardened quarantine batches with restore/delete and manifest metadata.
-- Large Files scanning is scope-required (no full-disk default scans).
-- Optimization allowlist to avoid suggesting trusted apps.
-- Memory Relief messaging updated to be explicit and credible.
-- Update checks: Sparkle-configured path + GitHub fallback.
+- Frame-Time Lab with Swift Charts timeline + stutter markers
+- Stutter classifier (`swapThrash`, `diskStall`, `cpuSaturation`, `thermalThrottle`, `gpuBoundHeuristic`, `unknown`)
+- Workload Profiles (`General Performance`, `Sim Mode`)
+- Action receipts with before/after sample snapshots
+- X-Plane Advisor recommendation cards (guidance-only)
+- Diagnostics export v2 payload
+- Demo/Mock mode for no-sim UI/testing
 
-## Cleaner safety model
+## Diagnostics export v2 payload
 
-Default allowlist:
+- current snapshot + warnings + culprits
+- ring-buffer samples (`MetricSample`)
+- stutter events and cause summaries
+- action receipts
+- current workload profile
+- regulator proof snapshot
+- settings snapshot
 
-- `~/Library/Caches`
-- `~/Library/Logs`
-- `~/Library/Application Support/CruiseControl`
-- `~/Library/Saved Application State`
-- `~/.Trash`
+## Safety and scope
 
-Default exclusions:
+- no private macOS APIs
+- no kernel extensions
+- no fake “RAM purge” claims
+- reversible/confirmed actions where destructive
 
-- `/System`
-- `/Library`
-- `/private/var/vm`
+## Build
 
-Quarantine-first is the default clean flow.
-
-## Updates
-
-- `Check for Updates…` supports no-rebuild updates.
-- Sparkle path: configure `SUFeedURL` and `SUPublicEDKey` in `Info.plist`.
-- GitHub fallback path: CruiseControl fetches latest release metadata, downloads a `.zip` app asset, installs to a writable app location, and relaunches.
-- If `/Applications` is not writable, fallback install target is `~/Applications`.
-- Release requirement for fallback updater: publish a zip that contains `CruiseControl.app`.
-- If updater says no GitHub release is published, create your first release in `Jahrix/CruiseControl`.
+```bash
+xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj" \
+  -scheme "CruiseControl" \
+  -configuration Debug \
+  CODE_SIGNING_ALLOWED=NO build
+```

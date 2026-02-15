@@ -176,6 +176,101 @@ struct MetricHistoryPoint: Identifiable, Codable {
     var id: Date { timestamp }
 }
 
+enum ProfileKind: String, Codable, CaseIterable, Identifiable {
+    case generalPerformance
+    case simMode
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .generalPerformance:
+            return "General Performance"
+        case .simMode:
+            return "Sim Mode"
+        }
+    }
+
+    var preferredSamplingInterval: TimeInterval {
+        switch self {
+        case .generalPerformance:
+            return 1.0
+        case .simMode:
+            return 0.5
+        }
+    }
+}
+
+struct ProcessImpact: Identifiable, Codable, Hashable {
+    let pid: Int32
+    let name: String
+    let cpu: Double
+    let residentBytes: UInt64
+    let impactScore: Double
+
+    var id: String { "\(pid)-\(name)" }
+}
+
+struct MetricSample: Identifiable, Codable {
+    let timestamp: Date
+    let cpuTotal: Double
+    let memPressure: MemoryPressureLevel
+    let swapUsed: UInt64
+    let swapDelta: Int64
+    let diskRead: Double
+    let diskWrite: Double
+    let thermalRawValue: Int
+    let pressureIndex: Double
+    let topProcessImpacts: [ProcessImpact]
+
+    var id: Date { timestamp }
+
+    var thermalState: ProcessInfo.ThermalState {
+        ProcessInfo.ThermalState(rawValue: thermalRawValue) ?? .nominal
+    }
+}
+
+enum ActionKind: String, Codable {
+    case quitApp
+    case forceQuitApp
+    case pauseBackgroundScans
+    case openBridgeFolder
+    case exportDiagnostics
+}
+
+struct ActionReceipt: Identifiable, Codable {
+    let id: UUID
+    let timestamp: Date
+    let profile: ProfileKind
+    let kind: ActionKind
+    let params: [String: String]
+    let before: MetricSample?
+    let after: MetricSample?
+    let outcome: Bool
+    let message: String
+
+    init(
+        timestamp: Date,
+        profile: ProfileKind,
+        kind: ActionKind,
+        params: [String: String],
+        before: MetricSample?,
+        after: MetricSample?,
+        outcome: Bool,
+        message: String
+    ) {
+        self.id = UUID()
+        self.timestamp = timestamp
+        self.profile = profile
+        self.kind = kind
+        self.params = params
+        self.before = before
+        self.after = after
+        self.outcome = outcome
+        self.message = message
+    }
+}
+
 struct AlertFlags: Equatable {
     var memoryPressureRed: Bool
     var thermalCritical: Bool

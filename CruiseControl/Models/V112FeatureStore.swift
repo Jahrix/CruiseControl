@@ -7,6 +7,14 @@ final class V112FeatureStore: ObservableObject {
         didSet { save() }
     }
 
+    @Published var workloadProfile: ProfileKind {
+        didSet { save() }
+    }
+
+    @Published var demoMockModeEnabled: Bool {
+        didSet { save() }
+    }
+
     @Published var manualAirportICAO: String {
         didSet { save() }
     }
@@ -46,7 +54,7 @@ final class V112FeatureStore: ObservableObject {
         didSet { save() }
     }
 
-     var pauseBackgroundScansDuringSim: Bool {
+    @Published var pauseBackgroundScansDuringSim: Bool {
         didSet { save() }
     }
 
@@ -54,6 +62,8 @@ final class V112FeatureStore: ObservableObject {
 
     private enum Keys {
         static let historyDuration = "v112.history.duration"
+        static let workloadProfile = "v120.profile.kind"
+        static let demoMockModeEnabled = "v120.profile.demoMockMode"
         static let manualAirportICAO = "v112.airport.manualICAO"
         static let airportProfiles = "v112.airport.profiles"
         static let advancedModeEnabled = "v112.cleaner.advancedMode"
@@ -76,6 +86,14 @@ final class V112FeatureStore: ObservableObject {
             self.historyDuration = .tenMinutes
         }
 
+        if let raw = defaults.string(forKey: Keys.workloadProfile),
+           let parsed = ProfileKind(rawValue: raw) {
+            self.workloadProfile = parsed
+        } else {
+            self.workloadProfile = .generalPerformance
+        }
+
+        self.demoMockModeEnabled = defaults.object(forKey: Keys.demoMockModeEnabled) as? Bool ?? false
         self.manualAirportICAO = defaults.string(forKey: Keys.manualAirportICAO) ?? ""
 
         if let data = defaults.data(forKey: Keys.airportProfiles),
@@ -196,6 +214,8 @@ final class V112FeatureStore: ObservableObject {
 
     private func save() {
         defaults.set(historyDuration.rawValue, forKey: Keys.historyDuration)
+        defaults.set(workloadProfile.rawValue, forKey: Keys.workloadProfile)
+        defaults.set(demoMockModeEnabled, forKey: Keys.demoMockModeEnabled)
         defaults.set(manualAirportICAO, forKey: Keys.manualAirportICAO)
         defaults.set(advancedModeEnabled, forKey: Keys.advancedModeEnabled)
         defaults.set(advancedModeExtraConfirmation, forKey: Keys.advancedModeExtraConfirmation)

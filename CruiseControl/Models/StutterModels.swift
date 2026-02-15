@@ -101,9 +101,49 @@ struct StutterHeuristicConfig: Codable {
     )
 }
 
+struct StutterCauseSummary: Identifiable, Codable {
+    let cause: StutterCause
+    let count: Int
+    let averageConfidence: Double
+
+    var id: String { cause.rawValue }
+}
+
+enum StutterCause: String, Codable, CaseIterable {
+    case swapThrash
+    case diskStall
+    case cpuSaturation
+    case thermalThrottle
+    case gpuBoundHeuristic
+    case unknown
+
+    var displayName: String {
+        switch self {
+        case .swapThrash:
+            return "Swap Thrash"
+        case .diskStall:
+            return "Disk Stall"
+        case .cpuSaturation:
+            return "CPU Saturation"
+        case .thermalThrottle:
+            return "Thermal Throttle"
+        case .gpuBoundHeuristic:
+            return "GPU Bound (Heuristic)"
+        case .unknown:
+            return "Unknown"
+        }
+    }
+}
+
 struct StutterEvent: Identifiable, Codable {
     let id: UUID
     let timestamp: Date
+    let severity: Double
+    let classification: StutterCause
+    let confidence: Double
+    let evidencePoints: [String]
+    let windowRef: String
+
     let reason: String
     let rankedCulprits: [String]
     let memoryPressure: MemoryPressureLevel
@@ -130,10 +170,20 @@ struct StutterEvent: Identifiable, Codable {
         telemetryPacketsPerSecond: Double,
         telemetryFreshnessSeconds: Double,
         topCPUProcesses: [ProcessSample],
-        topMemoryProcesses: [ProcessSample]
+        topMemoryProcesses: [ProcessSample],
+        severity: Double,
+        classification: StutterCause,
+        confidence: Double,
+        evidencePoints: [String],
+        windowRef: String
     ) {
         self.id = UUID()
         self.timestamp = timestamp
+        self.severity = severity
+        self.classification = classification
+        self.confidence = confidence
+        self.evidencePoints = evidencePoints
+        self.windowRef = windowRef
         self.reason = reason
         self.rankedCulprits = rankedCulprits
         self.memoryPressure = memoryPressure
