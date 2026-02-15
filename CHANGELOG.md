@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0-rc3 - Capability-aware telemetry + safer actions
+
+### Added
+- Connection Wizard checklist with neutral offline states, plus quick actions (copy endpoint, open bridge folder, open FlyWithLua scripts folder).
+- Cleaner action receipts now include a verification line based on before/after pressure/swap samples.
+
+### Changed
+- GPU recommendations are shown only when sim GPU frame time is available; otherwise marked as unavailable with low-confidence guidance.
+- Process termination UX now prechecks macOS constraints and provides Activity Monitor fallback steps on failure.
+- Cleaner messaging is framed as maintenance and only recommended when pressure/swap/low-space conditions suggest it may help.
+
 ## v1.2.0 - Frame-Time Lab + X-Plane Companion
 
 ### Added

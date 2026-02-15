@@ -1684,7 +1684,9 @@ final class PerformanceSampler: ObservableObject {
             freshness = .infinity
         }
 
-        let classification: StutterCause
+        let hasSimGpuFrameTime = telemetry?.gpuFrameTimeMS != nil
+
+        var classification: StutterCause
         if swapJump >= Int64(stutterHeuristics.swapJumpBytes) || memoryPressure == .red {
             classification = .swapThrash
         } else if diskReadMBps + diskWriteMBps >= stutterHeuristics.diskSpikeMBps {
@@ -1694,7 +1696,10 @@ final class PerformanceSampler: ObservableObject {
         } else if cpuTotalPercent >= 85 {
             classification = .cpuSaturation
         } else if telemetry?.fps ?? 60 < 28 {
-            classification = .gpuBoundHeuristic
+            classification = hasSimGpuFrameTime ? .gpuBoundHeuristic : .unknown
+            if !hasSimGpuFrameTime {
+                evidencePoints.append("gpuTelemetry=unavailable")
+            }
         } else {
             classification = .unknown
         }
@@ -1705,7 +1710,10 @@ final class PerformanceSampler: ObservableObject {
             ((thermalState == .serious || thermalState == .critical) ? 0.2 : 0),
             0
         ), 1)
-        let confidence = min(max(0.35 + (Double(evidencePoints.count) * 0.12), 0), 1)
+        var confidence = min(max(0.35 + (Double(evidencePoints.count) * 0.12), 0), 1)
+        if classification == .unknown, evidencePoints.contains("gpuTelemetry=unavailable") {
+            confidence = min(confidence, 0.45)
+        }
 
         return StutterEvent(
             timestamp: now,

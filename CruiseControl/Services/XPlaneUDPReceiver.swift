@@ -329,6 +329,8 @@ final class XPlaneUDPReceiver {
             source: "X-Plane UDP Data Output",
             fps: fps,
             frameTimeMS: frameTime,
+            cpuFrameTimeMS: nil,
+            gpuFrameTimeMS: nil,
             altitudeAGLFeet: altitude.aglFeet,
             altitudeMSLFeet: altitude.mslFeet,
             nearestAirportICAO: nil,
