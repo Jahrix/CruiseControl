@@ -463,13 +463,25 @@ struct MenuContentView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("CruiseControl")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(neonViolet.opacity(0.35))
+                        .frame(width: 34, height: 34)
+                        .overlay(
+                            Image(systemName: "gauge.high")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(neonBlue)
+                        )
 
-                Text("FLIGHT PERFORMANCE LAB")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.6))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("CruiseControl")
+                            .font(.system(size: 26, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("FLIGHT PERFORMANCE LAB")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.52))
+                    }
+                }
 
                 HStack(spacing: 8) {
                     Circle()
