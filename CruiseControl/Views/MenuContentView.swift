@@ -62,6 +62,123 @@ struct RunningAppChoice: Identifiable {
     let name: String
 }
 
+struct StatusStripPill: Identifiable {
+    let id = UUID()
+    let title: String
+    let value: String
+    let tint: Color
+    let action: (() -> Void)?
+}
+
+struct StatusStripView: View {
+    let pills: [StatusStripPill]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(pills) { pill in
+                if let action = pill.action {
+                    Button(action: action) {
+                        pillContent(pill)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    pillContent(pill)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func pillContent(_ pill: StatusStripPill) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(pill.title.uppercased())
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.55))
+            Text(pill.value)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(pill.tint)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(pill.tint.opacity(0.12), in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(pill.tint.opacity(0.3), lineWidth: 1)
+        )
+    }
+}
+
+struct RecentActionsFeedView: View {
+    let receipts: [ActionReceipt]
+    let now: Date
+    let maxItems: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if receipts.isEmpty {
+                Text("No recent actions.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(receipts.prefix(maxItems)) { receipt in
+                    HStack(spacing: 10) {
+                        Text(relativeAgeShort(from: receipt.timestamp, now: now))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 56, alignment: .leading)
+
+                        Text(actionLabel(for: receipt))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                }
+            }
+        }
+    }
+
+    private func actionLabel(for receipt: ActionReceipt) -> String {
+        let base: String
+        switch receipt.kind {
+        case .quitApp:
+            base = "Quit app"
+        case .forceQuitApp:
+            base = "Force quit app"
+        case .pauseBackgroundScans:
+            base = "Background scans"
+        case .openBridgeFolder:
+            base = "Open bridge folder"
+        case .exportDiagnostics:
+            base = "Export diagnostics"
+        }
+
+        if let app = receipt.params["app"] ?? receipt.params["name"] {
+            return "\(base): \(app)"
+        }
+
+        let trimmed = receipt.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed.count > 64 ? String(trimmed.prefix(61)) + "..." : trimmed
+        }
+
+        return base
+    }
+
+    private func relativeAgeShort(from date: Date, now: Date) -> String {
+        let seconds = max(Int(now.timeIntervalSince(date)), 0)
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        if seconds < 86400 { return "\(seconds / 3600)h" }
+        return "\(seconds / 86400)d"
+    }
+}
+
 enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
     case fiveMinutes = "5m"
     case tenMinutes = "10m"
@@ -108,6 +225,7 @@ struct MenuContentView: View {
     @State private var regulatorTestDurationSeconds: Double = 10.0
 
     @State private var showUDPSetupGuide: Bool = true
+    @AppStorage("showAdvancedXPlaneControls") private var showAdvancedXPlaneControls: Bool = false
     @State private var now: Date = Date()
 
     @State private var selectedReliefPIDs: Set<Int32> = []
@@ -408,7 +526,13 @@ struct MenuContentView: View {
 
     @ViewBuilder
     private var detailContent: some View {
-        switch selectedSection ?? .overview {
+        let section = selectedSection ?? .overview
+
+        if shouldShowStatusStrip(for: section) {
+            statusStripView
+        }
+
+        switch section {
         case .overview:
             overviewSection
         case .frameTimeLab:
@@ -562,7 +686,12 @@ struct MenuContentView: View {
             }
 
 
+            dashboardCard(title: "Recent Actions") {
+                RecentActionsFeedView(receipts: recentActionReceipts, now: now, maxItems: 5)
+            }
+
             dashboardCard(title: "Connection Wizard") {
+
                 VStack(alignment: .leading, spacing: 8) {
                     wizardStep(title: "1) X-Plane running", good: sampler.isSimActive, detail: sampler.isSimActive ? "Detected" : "Not detected")
                     wizardStep(
@@ -1006,12 +1135,91 @@ struct MenuContentView: View {
     }
 
     private var profilesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            dashboardCard(title: "Workload Profiles") {
+        let templates = profileTemplates
+        let selectedTemplate = template(for: settings.selectedProfile)
+
+        return HStack(alignment: .top, spacing: 18) {
+            dashboardCard(title: "Profile Templates") {
+                VStack(alignment: .leading, spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                        ForEach(templates) { template in
+                            Button {
+                                settings.selectedProfile = template.mappedProfile
+                            } label: {
+                                profileTemplateCard(template, selected: template.mappedProfile == settings.selectedProfile)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    HStack {
+                        Button("New Profile") {
+                            processActionResult = "Custom profiles are not available in this build."
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(true)
+
+                        Spacer()
+
+                        Button("Delete") {
+                            processActionResult = "Built-in profiles cannot be deleted."
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(true)
+                    }
+                }
+            }
+
+            dashboardCard(title: "Profile Summary") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("General Performance keeps sampling lightweight. Sim Mode increases cadence and prioritizes simulator telemetry.")
+                    Text(selectedTemplate.name)
+                        .font(.title3.weight(.bold))
+
+                    Text(selectedTemplate.tagline)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+
+                    Text("What this changes")
+                        .font(.headline)
+
+                    ForEach(selectedTemplate.changes, id: \.self) { item in
+                        Text("• \(item)")
+                            .font(.subheadline)
+                    }
+
+                    Text("Ideal for: \(selectedTemplate.idealFor)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Text("Risk")
+                            .font(.subheadline.weight(.semibold))
+                        Text(selectedTemplate.risk)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.08), in: Capsule())
+                    }
+
+                    HStack {
+                        Button("Apply Profile") {
+                            settings.selectedProfile = selectedTemplate.mappedProfile
+                            processActionResult = "Applied profile \(selectedTemplate.name)."
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Duplicate") {
+                            processActionResult = "Duplicate is not available in this build."
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(true)
+                    }
+
+                    Divider()
+                        .padding(.vertical, 6)
+
+                    Text("Workload Profile")
+                        .font(.headline)
 
                     Picker("Workload profile", selection: $featureStore.workloadProfile) {
                         ForEach(ProfileKind.allCases) { profile in
@@ -1050,22 +1258,14 @@ struct MenuContentView: View {
                             }
                         )
                     )
-                }
-            }
 
-            dashboardCard(title: "Sim Mode Profiles") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Profile", selection: $settings.selectedProfile) {
-                        ForEach(SimModeProfileType.allCases) { profile in
-                            Text(profile.displayName).tag(profile)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    Divider()
+                        .padding(.vertical, 6)
 
-                    Toggle("Auto-enable when X-Plane launches", isOn: Binding(
-                        get: { settings.shouldAutoEnableForSelectedProfile() },
-                        set: { settings.updateAutoEnableForSelectedProfile($0) }
-                    ))
+                    Text("Recent Actions")
+                        .font(.headline)
+
+                    RecentActionsFeedView(receipts: recentActionReceipts, now: now, maxItems: 5)
                 }
             }
         }
@@ -1171,78 +1371,14 @@ struct MenuContentView: View {
                         metricPill(label: "Last Sent", value: sampler.governorLastSentLOD.map { String(format: "%.2f", $0) } ?? "-")
                     }
 
-
-                    Text("Control state: \(regulatorControlStateBadge)")
+                    Text(sampler.snapshot.governorStatusLine)
                         .font(.subheadline)
-                        .foregroundStyle(regulatorBridgeConnected ? .green : .orange)
-                    if case .udpAckOK(_, let payload) = sampler.regulatorControlState {
-                        Text("Last ACK: \(payload)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if case .fileBridge = sampler.regulatorControlState {
-                        Text("ACK not used in file bridge mode.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("Command status: \(sampler.governorCommandStatus)")
-                        .font(.subheadline)
-                        .foregroundStyle(regulatorBridgeConnected ? .green : .orange)
-                    if let pauseReason = sampler.governorPauseReason {
-                        Text(pauseReason)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-
-                    Text("Altitude thresholds (feet AGL)")
-                        .font(.headline)
-                    Toggle("Use MSL if AGL unavailable", isOn: $settings.governorUseMSLFallbackWhenAGLUnavailable)
-                    sliderRow(label: "GROUND upper (ft)", value: $settings.governorGroundMaxAGLFeet, range: 500...5000, step: 100)
-                    sliderRow(label: "CRUISE lower (ft)", value: $settings.governorCruiseMinAGLFeet, range: 6000...45000, step: 250)
-
-                    Text("Per-tier LOD targets")
-                        .font(.headline)
-                    Text("LOD bias: higher = shorter draw distance (more FPS), lower = longer draw distance (more visuals).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    sliderRow(label: "GROUND target (higher = more FPS)", value: $settings.governorTargetLODGround, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "TRANSITION target (higher = more FPS)", value: $settings.governorTargetLODClimbDescent, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "CRUISE target (higher = more FPS)", value: $settings.governorTargetLODCruise, range: 0.20...3.00, step: 0.05)
+                        .foregroundStyle(settings.governorModeEnabled ? .green : .secondary)
 
                     Text("Safety clamps")
                         .font(.headline)
                     sliderRow(label: "Min LOD bias (visual floor)", value: $settings.governorLODMinClamp, range: 0.20...2.00, step: 0.05)
                     sliderRow(label: "Max LOD bias (FPS ceiling)", value: $settings.governorLODMaxClamp, range: 0.50...3.00, step: 0.05)
-
-                    Text("Regulator behavior")
-                        .font(.headline)
-                    sliderRow(label: "Min time in tier (s)", value: $settings.governorMinimumTierHoldSeconds, range: 0...30, step: 1)
-                    sliderRow(label: "Ramp duration (s)", value: $settings.governorSmoothingDurationSeconds, range: 0.5...12, step: 0.5)
-                    sliderRow(label: "Command interval (s)", value: $settings.governorMinimumCommandIntervalSeconds, range: 0.1...3.0, step: 0.1)
-                    sliderRow(label: "Min send delta", value: $settings.governorMinimumCommandDelta, range: 0.01...0.30, step: 0.01)
-                    Text("Regulator config changes are debounced: command updates apply after 0.5s without further slider movement.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Text("Bridge Host")
-                        TextField("127.0.0.1", text: $governorHostText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 130)
-                        Text("Port")
-                        TextField("49006", text: $governorPortText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 90)
-                        Button("Apply") {
-                            applyGovernorBridgeEndpoint()
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Test PING") {
-                            let outcome = sampler.sendGovernorPing()
-                            processActionResult = outcome.message
-                        }
-                        .buttonStyle(.bordered)
-                    }
 
                     VStack(alignment: .leading, spacing: 8) {
                         let fpsTestValue = sampler.proposedRegulatorTestLOD(increase: true, step: max(regulatorTestStepUp, 0))
@@ -1279,23 +1415,6 @@ struct MenuContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        HStack {
-                            Text("Manual test LOD")
-                            TextField("1.00", text: $governorTestLODText)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 90)
-                            Button("Send once") {
-                                guard let lod = Double(governorTestLODText) else {
-                                    processActionResult = "Invalid LOD test value. Use a number like 0.95 or 1.25."
-                                    return
-                                }
-                                let outcome = sampler.sendGovernorTestCommand(lodValue: lod)
-                                processActionResult = outcome.message
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(sampler.regulatorTestActive)
-                        }
-
                         if sampler.regulatorTestActive {
                             Text("Test running... \(sampler.regulatorTestCountdownSeconds)s")
                                 .font(.caption)
@@ -1303,9 +1422,94 @@ struct MenuContentView: View {
                         }
                     }
 
-                    Text(sampler.snapshot.governorStatusLine)
-                        .font(.subheadline)
-                        .foregroundStyle(settings.governorModeEnabled ? .green : .secondary)
+                    DisclosureGroup("Advanced Options", isExpanded: $showAdvancedXPlaneControls) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Control state: \(regulatorControlStateBadge)")
+                                .font(.subheadline)
+                                .foregroundStyle(regulatorBridgeConnected ? .green : .orange)
+                            if case .udpAckOK(_, let payload) = sampler.regulatorControlState {
+                                Text("Last ACK: \(payload)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if case .fileBridge = sampler.regulatorControlState {
+                                Text("ACK not used in file bridge mode.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text("Command status: \(sampler.governorCommandStatus)")
+                                .font(.subheadline)
+                                .foregroundStyle(regulatorBridgeConnected ? .green : .orange)
+                            if let pauseReason = sampler.governorPauseReason {
+                                Text(pauseReason)
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+
+                            Text("Altitude thresholds (feet AGL)")
+                                .font(.headline)
+                            Toggle("Use MSL if AGL unavailable", isOn: $settings.governorUseMSLFallbackWhenAGLUnavailable)
+                            sliderRow(label: "GROUND upper (ft)", value: $settings.governorGroundMaxAGLFeet, range: 500...5000, step: 100)
+                            sliderRow(label: "CRUISE lower (ft)", value: $settings.governorCruiseMinAGLFeet, range: 6000...45000, step: 250)
+
+                            Text("Per-tier LOD targets")
+                                .font(.headline)
+                            Text("LOD bias: higher = shorter draw distance (more FPS), lower = longer draw distance (more visuals).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            sliderRow(label: "GROUND target (higher = more FPS)", value: $settings.governorTargetLODGround, range: 0.20...3.00, step: 0.05)
+                            sliderRow(label: "TRANSITION target (higher = more FPS)", value: $settings.governorTargetLODClimbDescent, range: 0.20...3.00, step: 0.05)
+                            sliderRow(label: "CRUISE target (higher = more FPS)", value: $settings.governorTargetLODCruise, range: 0.20...3.00, step: 0.05)
+
+                            Text("Regulator behavior")
+                                .font(.headline)
+                            sliderRow(label: "Min time in tier (s)", value: $settings.governorMinimumTierHoldSeconds, range: 0...30, step: 1)
+                            sliderRow(label: "Ramp duration (s)", value: $settings.governorSmoothingDurationSeconds, range: 0.5...12, step: 0.5)
+                            sliderRow(label: "Command interval (s)", value: $settings.governorMinimumCommandIntervalSeconds, range: 0.1...3.0, step: 0.1)
+                            sliderRow(label: "Min send delta", value: $settings.governorMinimumCommandDelta, range: 0.01...0.30, step: 0.01)
+                            Text("Regulator config changes are debounced: command updates apply after 0.5s without further slider movement.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            HStack {
+                                Text("Bridge Host")
+                                TextField("127.0.0.1", text: $governorHostText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 130)
+                                Text("Port")
+                                TextField("49006", text: $governorPortText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 90)
+                                Button("Apply") {
+                                    applyGovernorBridgeEndpoint()
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Test PING") {
+                                    let outcome = sampler.sendGovernorPing()
+                                    processActionResult = outcome.message
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            HStack {
+                                Text("Manual test LOD")
+                                TextField("1.00", text: $governorTestLODText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 90)
+                                Button("Send once") {
+                                    guard let lod = Double(governorTestLODText) else {
+                                        processActionResult = "Invalid LOD test value. Use a number like 0.95 or 1.25."
+                                        return
+                                    }
+                                    let outcome = sampler.sendGovernorTestCommand(lodValue: lod)
+                                    processActionResult = outcome.message
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(sampler.regulatorTestActive)
+                            }
+                        }
+                        .padding(.top, 4)
+                    }
                 }
             }
 
@@ -2361,6 +2565,222 @@ struct MenuContentView: View {
             .background(color.opacity(0.14), in: Capsule())
             .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
             .foregroundStyle(color)
+    }
+
+    private var recentActionReceipts: [ActionReceipt] {
+        Array(sampler.actionReceipts.reversed())
+    }
+
+    private var statusStripView: some View {
+        StatusStripView(pills: statusStripPills)
+    }
+
+    private func shouldShowStatusStrip(for section: DashboardSection) -> Bool {
+        switch section {
+        case .overview, .frameTimeLab, .simMode, .profiles:
+            return true
+        case .processes, .diagnostics, .smartScan, .cleaner, .largeFiles, .optimization, .quarantine, .history, .settings:
+            return false
+        }
+    }
+
+    private var statusStripPills: [StatusStripPill] {
+        let simValue: String
+        let simTint: Color
+        if telemetryIsLive {
+            simValue = "Live"
+            simTint = .green
+        } else if telemetryIsListening {
+            simValue = "Listening"
+            simTint = .orange
+        } else {
+            simValue = "Offline"
+            simTint = .secondary
+        }
+
+        let pressureIndexText: String
+        if let index = sampler.metricSamples.last?.pressureIndex {
+            pressureIndexText = String(format: "%.2f", index)
+        } else {
+            pressureIndexText = "—"
+        }
+        let pressureValue = "\(sampler.snapshot.memoryPressure.displayName) \(pressureIndexText)"
+        let pressureTint = color(for: sampler.snapshot.memoryPressure)
+
+        let bottleneckValue: String
+        let bottleneckTint: Color
+        if sampler.metricSamples.isEmpty {
+            bottleneckValue = "Unknown"
+            bottleneckTint = .secondary
+        } else if sampler.snapshot.memoryPressure != .green || sampler.alertFlags.swapRisingFast {
+            bottleneckValue = "Memory"
+            bottleneckTint = .orange
+        } else if sampler.snapshot.thermalState == .serious || sampler.snapshot.thermalState == .critical {
+            bottleneckValue = "Thermal"
+            bottleneckTint = .red
+        } else if sampler.snapshot.cpuTotalPercent >= 90 {
+            bottleneckValue = "CPU"
+            bottleneckTint = .orange
+        } else {
+            bottleneckValue = "OK"
+            bottleneckTint = .green
+        }
+
+        let proof = sampler.computeProofState(now: now)
+        let regulatorValue: String
+        let regulatorTint: Color
+        if !settings.governorModeEnabled {
+            regulatorValue = "Disabled"
+            regulatorTint = .secondary
+        } else if telemetryIsLive {
+            regulatorValue = proof.lodApplied ? "Active" : "Active"
+            regulatorTint = .green
+        } else {
+            regulatorValue = "Armed"
+            regulatorTint = .orange
+        }
+
+        let cutoff = now.addingTimeInterval(-600)
+        let stutterCount = sampler.stutterEvents.filter { $0.timestamp >= cutoff }.count
+        let topCause = sampler.stutterCauseSummaries.first?.cause.displayName ?? "None"
+        let stutterValue = "\(stutterCount) • \(topCause)"
+        let stutterTint: Color = stutterCount > 0 ? .orange : .green
+
+        let profileValue = profileDisplayName(for: settings.selectedProfile)
+
+        return [
+            StatusStripPill(title: "Sim", value: simValue, tint: simTint, action: { selectedSection = .simMode }),
+            StatusStripPill(title: "Pressure", value: pressureValue, tint: pressureTint, action: { selectedSection = .overview }),
+            StatusStripPill(title: "Bottleneck", value: bottleneckValue, tint: bottleneckTint, action: { selectedSection = .frameTimeLab }),
+            StatusStripPill(title: "Regulator", value: regulatorValue, tint: regulatorTint, action: { selectedSection = .simMode }),
+            StatusStripPill(title: "Stutters (10m)", value: stutterValue, tint: stutterTint, action: { selectedSection = .frameTimeLab }),
+            StatusStripPill(title: "Profile", value: profileValue, tint: neonBlue, action: { selectedSection = .profiles })
+        ]
+    }
+
+    private var telemetryLastPacketAgeSeconds: TimeInterval? {
+        let lastPacket = sampler.snapshot.udpStatus.lastPacketDate ?? sampler.snapshot.udpStatus.lastValidPacketDate
+        guard let lastPacket else { return nil }
+        return max(now.timeIntervalSince(lastPacket), 0)
+    }
+
+    private var telemetryIsLive: Bool {
+        if sampler.snapshot.udpStatus.packetsPerSecond > 0 {
+            return true
+        }
+        if let age = telemetryLastPacketAgeSeconds {
+            return age <= 2
+        }
+        return false
+    }
+
+    private var telemetryIsListening: Bool {
+        let state = sampler.snapshot.udpStatus.state
+        return state == .listening || state == .active
+    }
+
+    private struct ProfileTemplate: Identifiable {
+        let id: String
+        let name: String
+        let target: String
+        let lodSummary: String
+        let tagline: String
+        let idealFor: String
+        let risk: String
+        let changes: [String]
+        let mappedProfile: SimModeProfileType
+    }
+
+    private var profileTemplates: [ProfileTemplate] {
+        [
+            ProfileTemplate(
+                id: "balanced",
+                name: "Balanced",
+                target: "Target FPS 30",
+                lodSummary: "Moderate LOD bias",
+                tagline: "Balanced visuals & performance",
+                idealFor: "Most flights and mixed workloads",
+                risk: "Low",
+                changes: [
+                    "Balanced allowlist/blocklist presets",
+                    "Moderate LOD targets for stability",
+                    "No aggressive background app suppression"
+                ],
+                mappedProfile: .balanced
+            ),
+            ProfileTemplate(
+                id: "performance",
+                name: "Performance",
+                target: "Target FPS 45",
+                lodSummary: "Higher LOD bias for FPS",
+                tagline: "Prioritize frametime",
+                idealFor: "Busy hubs and heavy scenery",
+                risk: "Medium",
+                changes: [
+                    "Aggressive allowlist/blocklist presets",
+                    "Higher LOD bias under load",
+                    "Reduced background app noise"
+                ],
+                mappedProfile: .aggressive
+            ),
+            ProfileTemplate(
+                id: "ultra",
+                name: "Ultra",
+                target: "Target FPS 60",
+                lodSummary: "Visual-first LOD bias",
+                tagline: "Max visuals in cruise",
+                idealFor: "Cruise and capture flights",
+                risk: "High",
+                changes: [
+                    "Visual-leaning LOD targets",
+                    "Preserves streaming utilities",
+                    "Lower background suppression"
+                ],
+                mappedProfile: .streaming
+            )
+        ]
+    }
+
+    private func template(for profile: SimModeProfileType) -> ProfileTemplate {
+        profileTemplates.first { $0.mappedProfile == profile } ?? profileTemplates[0]
+    }
+
+    private func profileDisplayName(for profile: SimModeProfileType) -> String {
+        switch profile {
+        case .balanced:
+            return "Balanced"
+        case .aggressive:
+            return "Performance"
+        case .streaming:
+            return "Ultra"
+        }
+    }
+
+    private func profileTemplateCard(_ template: ProfileTemplate, selected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(template.name)
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text(template.target)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("LOD policy: \(template.lodSummary)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(template.tagline)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.72))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(selected ? neonBlue.opacity(0.7) : Color.white.opacity(0.08), lineWidth: selected ? 2 : 1)
+        )
     }
 
     private var lastPacketText: String {
