@@ -84,6 +84,9 @@ struct StatusStripPill: Identifiable {
 struct StatusStripView: View {
     let pills: [StatusStripPill]
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage("useGlassEffects") private var useGlassEffects: Bool = true
+
     var body: some View {
         HStack(spacing: 10) {
             ForEach(pills) { pill in
@@ -92,16 +95,21 @@ struct StatusStripView: View {
                         pillContent(pill)
                     }
                     .buttonStyle(.plain)
+                    .glassHover(opacity: 0.97)
                 } else {
                     pillContent(pill)
                 }
             }
         }
         .padding(12)
-        .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        .background(
+            GlassSurface(
+                variant: .card,
+                cornerRadius: 14,
+                isHovering: false,
+                reduceTransparency: reduceTransparency,
+                useGlassEffects: useGlassEffects
+            )
         )
     }
 
@@ -116,10 +124,21 @@ struct StatusStripView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(pill.tint.opacity(0.12), in: Capsule())
+        .background(
+            ZStack {
+                GlassSurface(
+                    variant: .pill,
+                    cornerRadius: 999,
+                    isHovering: false,
+                    reduceTransparency: reduceTransparency,
+                    useGlassEffects: useGlassEffects
+                )
+                Capsule().fill(pill.tint.opacity(0.12))
+            }
+        )
         .overlay(
             Capsule()
-                .stroke(pill.tint.opacity(0.3), lineWidth: 1)
+                .stroke(pill.tint.opacity(0.35), lineWidth: 1)
         )
     }
 }
@@ -215,6 +234,8 @@ struct MenuContentView: View {
     @EnvironmentObject private var sampler: PerformanceSampler
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var featureStore: V112FeatureStore
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage("useGlassEffects") private var useGlassEffects: Bool = true
 
     @State private var selectedSection: DashboardSection? = .overview
 
@@ -491,9 +512,7 @@ struct MenuContentView: View {
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(sampler.isSimActive ? neonMint : .orange)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.black.opacity(0.22), in: Capsule())
+                .glassPill()
                 .overlay(Capsule().stroke((sampler.isSimActive ? neonMint : .orange).opacity(0.55), lineWidth: 1))
             }
             .padding(.top, 8)
@@ -537,6 +556,7 @@ struct MenuContentView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .glassHover(opacity: 0.98)
                 }
             }
 
@@ -558,12 +578,20 @@ struct MenuContentView: View {
         .padding(18)
         .frame(minWidth: 268, maxWidth: 286)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(cardInk.opacity(0.78))
+            GlassSurface(
+                variant: .sidebar,
+                cornerRadius: 18,
+                isHovering: false,
+                reduceTransparency: reduceTransparency,
+                useGlassEffects: useGlassEffects
+            )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(neonBlue.opacity(0.24), lineWidth: 1)
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 1)
+                .padding(.vertical, 12),
+            alignment: .trailing
         )
     }
 
@@ -647,35 +675,10 @@ struct MenuContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.72))
             }
-            .padding(18)
+            .glassCard()
             .frame(maxWidth: 420, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.09, green: 0.16, blue: 0.28).opacity(0.9),
-                                Color(red: 0.19, green: 0.14, blue: 0.36).opacity(0.8)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(neonBlue.opacity(0.35), lineWidth: 1)
-            )
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.black.opacity(0.24))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(neonMint.opacity(0.2), lineWidth: 1)
-        )
+        .glassCard()
     }
 
     private var overviewSection: some View {
@@ -2536,6 +2539,7 @@ struct MenuContentView: View {
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
                 Toggle("Enable Demo/Mock mode", isOn: $featureStore.demoMockModeEnabled)
                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
+                Toggle("Use Glass Effects", isOn: $useGlassEffects)
                 Stepper("Large Files top results: \(featureStore.largeFilesTopN)", value: $featureStore.largeFilesTopN, in: 10...200, step: 5)
 
                 HStack {
@@ -2608,12 +2612,7 @@ struct MenuContentView: View {
             content()
                 .foregroundStyle(.white.opacity(0.92))
         }
-        .padding(16)
-        .background(.ultraThinMaterial.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
+        .glassCard()
     }
 
     private var xPlaneHelpSheet: some View {
@@ -4017,14 +4016,25 @@ struct MenuContentView: View {
 }
 
 private struct CruiseBackgroundView: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage("useGlassEffects") private var useGlassEffects: Bool = true
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                GlassSurface(
+                    variant: .windowBackdrop,
+                    cornerRadius: 0,
+                    isHovering: false,
+                    reduceTransparency: reduceTransparency,
+                    useGlassEffects: useGlassEffects
+                )
+
                 LinearGradient(
                     colors: [
-                        Color(red: 0.02, green: 0.04, blue: 0.09),
-                        Color(red: 0.03, green: 0.06, blue: 0.12),
-                        Color(red: 0.02, green: 0.03, blue: 0.07)
+                        Color(red: 0.02, green: 0.04, blue: 0.09).opacity(0.55),
+                        Color(red: 0.03, green: 0.06, blue: 0.12).opacity(0.45),
+                        Color(red: 0.02, green: 0.03, blue: 0.07).opacity(0.4)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -4047,19 +4057,19 @@ private struct CruiseBackgroundView: View {
                             x += 8
                         }
 
-                        context.stroke(path, with: .color(Color.white.opacity(0.08)), lineWidth: 0.7)
+                        context.stroke(path, with: .color(Color.white.opacity(0.06)), lineWidth: 0.7)
                         y += spacing
                     }
                 }
 
                 Circle()
-                    .fill(Color(red: 0.43, green: 0.35, blue: 1.0).opacity(0.24))
+                    .fill(Color(red: 0.43, green: 0.35, blue: 1.0).opacity(0.16))
                     .blur(radius: 45)
                     .frame(width: 220, height: 220)
                     .position(x: geo.size.width * 0.12, y: 90)
 
                 Circle()
-                    .fill(Color(red: 0.24, green: 0.95, blue: 0.72).opacity(0.20))
+                    .fill(Color(red: 0.24, green: 0.95, blue: 0.72).opacity(0.14))
                     .blur(radius: 50)
                     .frame(width: 260, height: 260)
                     .position(x: geo.size.width * 0.78, y: geo.size.height * 0.18)
