@@ -32,3 +32,6 @@ fastlane/test_output/
 # Local temp build output
 build_tmp/
 Scripts/CruiseControl_Governor.lua
+
+# DMG packaging artifacts
+dist/
