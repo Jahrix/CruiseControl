@@ -37,11 +37,14 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var regulatorLODChanging: Bool = false
     @Published private(set) var regulatorProofState: RegulatorProofState = .empty
     @Published private(set) var regulatorWhyNotChanging: [String] = []
+    @Published private(set) var telemetryLiveState: TelemetryLiveState = .offline
+    @Published private(set) var lastSessionSnapshot: SessionSnapshot?
     @Published private(set) var regulatorTierEvents: [RegulatorActionLog] = []
     @Published private(set) var regulatorRecentActions: [RegulatorActionLog] = []
     @Published private(set) var regulatorTestActive: Bool = false
     @Published private(set) var regulatorTestCountdownSeconds: Int = 0
     @Published private(set) var stutterEvents: [StutterEvent] = []
+    @Published private(set) var stutterEpisodes: [StutterEpisode] = []
     @Published private(set) var metricSamples: [MetricSample] = []
     @Published private(set) var actionReceipts: [ActionReceipt] = []
     @Published private(set) var workloadProfile: ProfileKind = .generalPerformance
@@ -100,13 +103,76 @@ final class PerformanceSampler: ObservableObject {
     private var lastSessionTargetLOD: Double?
     private var lastSessionAppliedLOD: Double?
     private var lastSessionAt: Date?
+    private var previousTelemetryState: TelemetryLiveState = .offline
+
+    private struct ActiveTelemetrySession {
+        var sessionStartAt: Date
+        var packetBaseline: UInt64
+        var lastLiveSnapshot: SessionSnapshot?
+        var ackOkCount: Int
+        var ackTimeoutCount: Int
+        var previousAckWasHealthy: Bool?
+    }
+
+    private var currentTelemetrySession: ActiveTelemetrySession?
+    private var lastSessionSnapshotState: SessionSnapshot?
 
     private var stutterHeuristics: StutterHeuristicConfig = .default
     private var stutterBuffer: [StutterEvent] = []
+    private var finalizedStutterEpisodes: [StutterEpisode] = []
+    private var stutterEpisodeBuffer: [StutterEpisode] = []
+    private var stutterLastEmissionAt: [StutterCause: Date] = [:]
+    private let stutterEpisodeContinuationSeconds: TimeInterval = 8.0
+    private let swapThrashCooldownSeconds: TimeInterval = 5.0
     private var previousFrameTimeMS: Double?
     private var previousFPS: Double?
     private var previousCPUTotalPercent: Double?
     private var previousThermalState: ProcessInfo.ThermalState = .nominal
+
+    private struct StutterEpisodeAccumulator {
+        var id: UUID
+        var cause: StutterCause
+        var startAt: Date
+        var endAt: Date
+        var count: Int
+        var peakSeverity: Double
+        var confidenceSum: Double
+        var evidenceCounts: [String: Int]
+
+        mutating func absorb(event: StutterEvent, at time: Date) {
+            endAt = time
+            count += 1
+            peakSeverity = max(peakSeverity, event.severity)
+            confidenceSum += event.confidence
+            for evidence in event.evidencePoints where !evidence.isEmpty {
+                evidenceCounts[evidence, default: 0] += 1
+            }
+        }
+
+        func materialized() -> StutterEpisode {
+            let summary = evidenceCounts
+                .sorted {
+                    if $0.value == $1.value {
+                        return $0.key < $1.key
+                    }
+                    return $0.value > $1.value
+                }
+                .prefix(3)
+                .map(\.key)
+            return StutterEpisode(
+                id: id,
+                cause: cause,
+                startAt: startAt,
+                endAt: endAt,
+                count: count,
+                peakSeverity: peakSeverity,
+                avgConfidence: confidenceSum / Double(max(count, 1)),
+                evidenceSummary: summary
+            )
+        }
+    }
+
+    private var stutterEpisodeAccumulators: [StutterCause: StutterEpisodeAccumulator] = [:]
 
     func configureSampling(interval: TimeInterval, alpha: Double) {
         let clampedInterval = max(0.25, min(interval, 2.0))
@@ -210,6 +276,28 @@ final class PerformanceSampler: ObservableObject {
     }
 
     @MainActor
+    func clearSessionSnapshot() {
+        lastSessionSnapshot = nil
+        queue.async { [weak self] in
+            self?.currentTelemetrySession = nil
+            self?.lastSessionSnapshotState = nil
+            self?.previousTelemetryState = .offline
+        }
+    }
+
+    @MainActor
+    func stutterEpisodesInWindow(lastMinutes minutes: Int) -> [StutterEpisode] {
+        let cutoff = Date().addingTimeInterval(-Double(max(minutes, 1)) * 60.0)
+        return stutterEpisodes.filter { $0.endAt >= cutoff }
+    }
+
+    @MainActor
+    func rawStutterEventsInWindow(lastMinutes minutes: Int) -> [StutterEvent] {
+        let cutoff = Date().addingTimeInterval(-Double(max(minutes, 1)) * 60.0)
+        return stutterEvents.filter { $0.timestamp >= cutoff }
+    }
+
+    @MainActor
     func exportDiagnostics(settingsSnapshot: [String: String] = [:]) -> DiagnosticsExportOutcome {
         struct ExportReport: Codable {
             let generatedAt: Date
@@ -217,6 +305,8 @@ final class PerformanceSampler: ObservableObject {
             let simActive: Bool
             let snapshot: SnapshotBody
             let proof: ProofBody
+            let liveState: LiveStateBody
+            let lastSessionSnapshot: SessionSnapshot?
             let warnings: [String]
             let culprits: [String]
             let topCPUProcesses: [ProcessSample]
@@ -224,6 +314,7 @@ final class PerformanceSampler: ObservableObject {
             let recentHistory: [MetricHistoryPoint]
             let recentSamples: [MetricSample]
             let stutterEvents: [StutterEvent]
+            let stutterEpisodes: [StutterEpisode]
             let stutterCauseSummaries: [StutterCauseSummary]
             let actionReceipts: [ActionReceipt]
             let governorDecision: GovernorDecision?
@@ -273,11 +364,35 @@ final class PerformanceSampler: ObservableObject {
                 let evidenceLine: String?
                 let reasons: [String]
             }
+
+            struct LiveStateBody: Codable {
+                let telemetryState: String
+                let telemetryFreshnessSeconds: Double?
+                let hasSimData: Bool
+                let proof: ProofBody
+            }
         }
 
-        let proof = computeProofState(now: Date())
+        let now = Date()
+        let proof = computeProofState(now: now)
+        let proofBody = ExportReport.ProofBody(
+            bridgeModeLabel: proof.bridgeModeLabel,
+            lodApplied: proof.lodApplied,
+            recentActivity: proof.recentActivity,
+            onTarget: proof.onTarget,
+            targetLOD: proof.targetLOD,
+            appliedLOD: proof.appliedLOD,
+            deltaToTarget: proof.deltaToTarget,
+            lastSentAt: proof.lastSentAt,
+            lastEvidenceAt: proof.lastEvidenceAt,
+            evidenceLine: proof.evidenceLine,
+            reasons: proof.reasons
+        )
+        let freshness = snapshot.udpStatus.lastValidPacketDate.map {
+            max(now.timeIntervalSince($0), 0)
+        }
         let report = ExportReport(
-            generatedAt: Date(),
+            generatedAt: now,
             profile: workloadProfile.rawValue,
             simActive: isSimActive,
             snapshot: .init(
@@ -310,26 +425,22 @@ final class PerformanceSampler: ObservableObject {
                 governorLastCommand: governorLastCommandText,
                 governorLastACK: governorLastACKText
             ),
-            proof: .init(
-                bridgeModeLabel: proof.bridgeModeLabel,
-                lodApplied: proof.lodApplied,
-                recentActivity: proof.recentActivity,
-                onTarget: proof.onTarget,
-                targetLOD: proof.targetLOD,
-                appliedLOD: proof.appliedLOD,
-                deltaToTarget: proof.deltaToTarget,
-                lastSentAt: proof.lastSentAt,
-                lastEvidenceAt: proof.lastEvidenceAt,
-                evidenceLine: proof.evidenceLine,
-                reasons: proof.reasons
+            proof: proofBody,
+            liveState: .init(
+                telemetryState: telemetryLiveState.rawValue,
+                telemetryFreshnessSeconds: freshness,
+                hasSimData: proof.hasSimData,
+                proof: proofBody
             ),
+            lastSessionSnapshot: lastSessionSnapshot,
             warnings: warnings,
             culprits: culprits,
             topCPUProcesses: topCPUProcesses,
             topMemoryProcesses: topMemoryProcesses,
             recentHistory: Array(history.suffix(1800)),
             recentSamples: Array(metricSamples.suffix(1800)),
-            stutterEvents: Array(stutterEvents.suffix(120)),
+            stutterEvents: stutterEvents,
+            stutterEpisodes: stutterEpisodes,
             stutterCauseSummaries: stutterCauseSummaries,
             actionReceipts: Array(actionReceipts.suffix(120)),
             governorDecision: governorDecision,
@@ -417,6 +528,7 @@ final class PerformanceSampler: ObservableObject {
 
         let processDetected = isXPlaneProcessRunning(processes: scannedProcesses)
         let simActive = processDetected || udpStatus.state == .active
+        let liveState = telemetryState(for: udpStatus, simActive: simActive, now: now)
 
 
         let swapDelta5Min = computeSwapDelta(windowSeconds: 300, now: now)
@@ -439,6 +551,15 @@ final class PerformanceSampler: ObservableObject {
             controlState: controlState,
             fileBridgeStatus: fileBridgeStatus,
             governorResult: governorResult
+        )
+        updateTelemetrySession(
+            now: now,
+            liveState: liveState,
+            udpStatus: udpStatus,
+            proofState: proofState,
+            controlState: controlState,
+            ackState: governorResult.ackState,
+            lastAckAt: governorResult.lastACKDate
         )
         let lodChanging = proofState.recentActivity
         let testCountdown = pendingRegulatorTest.map { max(Int(ceil($0.endsAt.timeIntervalSince(now))), 0) } ?? 0
@@ -540,11 +661,9 @@ final class PerformanceSampler: ObservableObject {
             topCPU: Array((scannedProcesses ?? topCPUProcesses).prefix(5)),
             topMemory: Array((scannedProcesses ?? topMemoryProcesses).prefix(5))
         ) {
-            stutterBuffer.append(stutterEvent)
-            if stutterBuffer.count > 120 {
-                stutterBuffer.removeFirst(stutterBuffer.count - 120)
-            }
+            recordStutterDetection(stutterEvent, at: now)
         }
+        refreshStutterEpisodeBuffer(reference: now)
 
         Task { @MainActor in
             snapshot = PerformanceSnapshot(
@@ -608,7 +727,10 @@ final class PerformanceSampler: ObservableObject {
             regulatorTierEvents = Array(regulatorTierEvents.suffix(10))
             regulatorTestActive = pendingRegulatorTest != nil
             regulatorTestCountdownSeconds = testCountdown
+            telemetryLiveState = liveState
+            lastSessionSnapshot = lastSessionSnapshotState
             stutterEvents = stutterBuffer
+            stutterEpisodes = stutterEpisodeBuffer
 
             alertFlags = AlertFlags(
                 memoryPressureRed: memoryPressure == .red,
@@ -618,6 +740,140 @@ final class PerformanceSampler: ObservableObject {
         }
 
         previousSwapUsedBytes = swapUsedBytes
+    }
+
+    private func telemetryState(for udpStatus: XPlaneUDPStatus, simActive: Bool, now: Date) -> TelemetryLiveState {
+        if udpStatus.state == .idle {
+            return .offline
+        }
+
+        if let lastValid = udpStatus.lastValidPacketDate {
+            let age = max(now.timeIntervalSince(lastValid), 0)
+            if age <= 2.0 {
+                return .live
+            }
+            if age > 10.0 {
+                return .stale
+            }
+            return .listening
+        }
+
+        if simActive || udpStatus.state == .listening || udpStatus.state == .active || udpStatus.state == .misconfig {
+            return .listening
+        }
+
+        return .offline
+    }
+
+    private func updateTelemetrySession(
+        now: Date,
+        liveState: TelemetryLiveState,
+        udpStatus: XPlaneUDPStatus,
+        proofState: RegulatorProofState,
+        controlState: RegulatorControlState,
+        ackState: GovernorAckState,
+        lastAckAt: Date?
+    ) {
+        if liveState == .live, currentTelemetrySession == nil {
+            if previousTelemetryState == .offline {
+                lastSessionSnapshotState = nil
+            }
+            currentTelemetrySession = ActiveTelemetrySession(
+                sessionStartAt: udpStatus.lastValidPacketDate ?? now,
+                packetBaseline: udpStatus.totalPackets,
+                lastLiveSnapshot: nil,
+                ackOkCount: 0,
+                ackTimeoutCount: 0,
+                previousAckWasHealthy: nil
+            )
+        }
+
+        if liveState == .live, var activeSession = currentTelemetrySession {
+            let ackHealthy = ackState == .ackOK
+            if activeSession.previousAckWasHealthy == nil, ackHealthy {
+                activeSession.ackOkCount += 1
+            } else if activeSession.previousAckWasHealthy == false, ackHealthy {
+                activeSession.ackOkCount += 1
+            } else if activeSession.previousAckWasHealthy == true, ackState == .noAck {
+                activeSession.ackTimeoutCount += 1
+            }
+            activeSession.previousAckWasHealthy = ackHealthy
+            activeSession.lastLiveSnapshot = buildSessionSnapshot(
+                now: now,
+                sessionStartAt: activeSession.sessionStartAt,
+                packetBaseline: activeSession.packetBaseline,
+                udpStatus: udpStatus,
+                proofState: proofState,
+                controlState: controlState,
+                lastAckAt: lastAckAt,
+                ackOkCount: activeSession.ackOkCount,
+                ackTimeoutCount: activeSession.ackTimeoutCount
+            )
+            currentTelemetrySession = activeSession
+        }
+
+        let transitionFromLive = previousTelemetryState == .live
+        let shouldFreeze = transitionFromLive && (liveState == .stale || liveState == .offline)
+        if shouldFreeze, let session = currentTelemetrySession, var frozen = session.lastLiveSnapshot {
+            frozen.sessionEndAt = now
+            lastSessionSnapshotState = frozen
+            currentTelemetrySession = nil
+        }
+
+        previousTelemetryState = liveState
+    }
+
+    private func buildSessionSnapshot(
+        now: Date,
+        sessionStartAt: Date,
+        packetBaseline: UInt64,
+        udpStatus: XPlaneUDPStatus,
+        proofState: RegulatorProofState,
+        controlState: RegulatorControlState,
+        lastAckAt: Date?,
+        ackOkCount: Int,
+        ackTimeoutCount: Int
+    ) -> SessionSnapshot {
+        let packetDelta = udpStatus.totalPackets >= packetBaseline
+            ? udpStatus.totalPackets - packetBaseline
+            : udpStatus.totalPackets
+        let elapsed = max(now.timeIntervalSince(sessionStartAt), 0)
+        let avgPackets = elapsed > 0.25 ? Double(packetDelta) / elapsed : nil
+
+        return SessionSnapshot(
+            capturedAt: now,
+            sessionStartAt: sessionStartAt,
+            sessionEndAt: nil,
+            telemetrySummary: .init(
+                totalPackets: packetDelta,
+                avgPacketsPerSec: avgPackets,
+                lastValidPacketAt: udpStatus.lastValidPacketDate
+            ),
+            regulatorSummary: .init(
+                lastTarget: proofState.targetLOD,
+                lastApplied: proofState.appliedLOD,
+                lastDelta: proofState.deltaToTarget,
+                lastAckAt: lastAckAt ?? proofState.lastEvidenceAt,
+                evidenceSource: regulatorEvidenceSource(from: controlState),
+                bridgeMode: proofState.bridgeModeLabel,
+                appliedOK: proofState.lodApplied,
+                activityRecent: proofState.recentActivity,
+                reasons: proofState.reasons
+            ),
+            governorAckOkCount: ackOkCount,
+            ackTimeoutCount: ackTimeoutCount
+        )
+    }
+
+    private func regulatorEvidenceSource(from controlState: RegulatorControlState) -> RegulatorEvidenceSource {
+        switch controlState {
+        case .udpAckOK:
+            return .udpAck
+        case .fileBridge:
+            return .fileStatus
+        case .udpNoAck, .disconnected:
+            return .unknown
+        }
     }
 
     private func evaluateGovernor(
@@ -1346,13 +1602,32 @@ final class PerformanceSampler: ObservableObject {
     }
 
     private func computeSwapDelta(windowSeconds: TimeInterval, now: Date) -> Int64 {
+        computeSwapDeltaSignal(windowSeconds: windowSeconds, now: now).delta
+    }
+
+    private func computeSwapDeltaSignal(windowSeconds: TimeInterval, now: Date) -> (delta: Int64, available: Bool) {
         guard let reference = historyBuffer.last(where: { now.timeIntervalSince($0.timestamp) >= windowSeconds }) else {
-            return 0
+            return (0, false)
         }
         guard let current = historyBuffer.last else {
-            return 0
+            return (0, false)
         }
-        return Int64(current.swapUsedBytes) - Int64(reference.swapUsedBytes)
+        return (Int64(current.swapUsedBytes) - Int64(reference.swapUsedBytes), true)
+    }
+
+    private func isSwapUsedIncreasingAcrossSamples(minIncreases: Int, sampleWindow: Int, minimumStepBytes: UInt64 = 4 * 1_024 * 1_024) -> Bool {
+        let points = Array(historyBuffer.suffix(max(sampleWindow, minIncreases + 1)))
+        guard points.count >= minIncreases + 1 else { return false }
+
+        var increases = 0
+        for index in 1..<points.count {
+            let previous = points[index - 1].swapUsedBytes
+            let current = points[index].swapUsedBytes
+            if current > previous && (current - previous) >= minimumStepBytes {
+                increases += 1
+            }
+        }
+        return increases >= minIncreases
     }
 
     private func computeDiskRates(current: DiskIOSnapshot?, now: Date) -> (readMBps: Double, writeMBps: Double) {
@@ -1434,6 +1709,29 @@ final class PerformanceSampler: ObservableObject {
         } else {
             metricSampleBuffer.removeAll(keepingCapacity: true)
         }
+
+        if let firstStutterIndex = stutterBuffer.firstIndex(where: { $0.timestamp >= cutoff }) {
+            if firstStutterIndex > 0 {
+                stutterBuffer.removeFirst(firstStutterIndex)
+            }
+        } else {
+            stutterBuffer.removeAll(keepingCapacity: true)
+        }
+
+        if let firstEpisodeIndex = finalizedStutterEpisodes.firstIndex(where: { $0.endAt >= cutoff }) {
+            if firstEpisodeIndex > 0 {
+                finalizedStutterEpisodes.removeFirst(firstEpisodeIndex)
+            }
+        } else {
+            finalizedStutterEpisodes.removeAll(keepingCapacity: true)
+        }
+
+        stutterEpisodeAccumulators = stutterEpisodeAccumulators.filter { _, accumulator in
+            accumulator.endAt >= cutoff
+        }
+        stutterLastEmissionAt = stutterLastEmissionAt.filter { _, timestamp in
+            timestamp >= cutoff
+        }
     }
 
     private func appendDemoMetricSample(now: Date) {
@@ -1494,10 +1792,8 @@ final class PerformanceSampler: ObservableObject {
                 evidencePoints: ["demoMode=true", "syntheticSwapBurst=true", "syntheticDiskSpike=true"],
                 windowRef: "demo-\(Int(now.timeIntervalSince1970))"
             )
-            stutterBuffer.append(mock)
-            if stutterBuffer.count > 120 {
-                stutterBuffer.removeFirst(stutterBuffer.count - 120)
-            }
+            recordStutterDetection(mock, at: now)
+            refreshStutterEpisodeBuffer(reference: now)
         }
     }
 
@@ -1506,6 +1802,7 @@ final class PerformanceSampler: ObservableObject {
         demoMockModeEnabled = true
         appendDemoMetricSample(now: Date())
         stutterEvents = stutterBuffer
+        stutterEpisodes = stutterEpisodeBuffer
         metricSamples = metricSampleBuffer
         stutterCauseSummaries = recentStutterCauseRanking(lastMinutes: 10)
     }
@@ -1626,6 +1923,9 @@ final class PerformanceSampler: ObservableObject {
     ) -> StutterEvent? {
         var triggerReasons: [String] = []
         var evidencePoints: [String] = []
+        let diskTotalMBps = diskReadMBps + diskWriteMBps
+        let diskSpike = diskTotalMBps >= stutterHeuristics.diskSpikeMBps
+        let compressedHighThreshold: UInt64 = 2 * 1_024 * 1_024 * 1_024
 
         if let frameTime = telemetry?.frameTimeMS,
            frameTime >= stutterHeuristics.frameTimeSpikeMS {
@@ -1646,15 +1946,38 @@ final class PerformanceSampler: ObservableObject {
             evidencePoints.append(String(format: "cpuDelta=%.2f", cpuTotalPercent - previousCPU))
         }
 
-        if diskReadMBps + diskWriteMBps >= stutterHeuristics.diskSpikeMBps {
+        if diskSpike {
             triggerReasons.append("Disk I/O spike")
-            evidencePoints.append(String(format: "diskMBps=%.2f", diskReadMBps + diskWriteMBps))
+            evidencePoints.append(String(format: "diskMBps=%.2f", diskTotalMBps))
         }
 
-        let swapJump = computeSwapDelta(windowSeconds: 90, now: now)
+        let swapDelta90s = computeSwapDeltaSignal(windowSeconds: 90, now: now)
+        let swapJump = swapDelta90s.delta
         if swapJump >= Int64(stutterHeuristics.swapJumpBytes) {
             triggerReasons.append("Swap jump")
             evidencePoints.append("swapJump=\(swapJump)")
+        }
+
+        let swapDeltaPerMinute = computeSwapDeltaSignal(windowSeconds: 60, now: now)
+        let swapPerMinuteThreshold = Int64(Double(stutterHeuristics.swapJumpBytes) * (60.0 / 90.0))
+        let swapRisingFast = swapDeltaPerMinute.available && swapDeltaPerMinute.delta >= swapPerMinuteThreshold
+        let swapUsedRising = isSwapUsedIncreasingAcrossSamples(minIncreases: 2, sampleWindow: 4)
+        let diskSpikeWithPressure = diskSpike && (memoryPressure == .yellow || memoryPressure == .red)
+        let pressureOrCompressedHigh = memoryPressure == .yellow || memoryPressure == .red || compressedBytes >= compressedHighThreshold
+
+        if swapDeltaPerMinute.available {
+            evidencePoints.append("swapDeltaPerMin=\(swapDeltaPerMinute.delta)")
+        } else {
+            evidencePoints.append("swapDeltaPerMin=unavailable")
+        }
+        if swapUsedRising {
+            evidencePoints.append("swapUsedTrend=rising")
+        }
+        if compressedBytes >= compressedHighThreshold {
+            evidencePoints.append("compressedHigh=true")
+        }
+        if memoryPressure == .yellow || memoryPressure == .red {
+            evidencePoints.append("memPressure=\(memoryPressure.rawValue)")
         }
 
         if previousThermalState.rawValue < thermalState.rawValue,
@@ -1663,9 +1986,8 @@ final class PerformanceSampler: ObservableObject {
             evidencePoints.append("thermal=\(thermalStateDescription(thermalState))")
         }
 
-        if memoryPressure == .red {
+        if memoryPressure == .red && (swapRisingFast || swapUsedRising || diskSpikeWithPressure || compressedBytes >= compressedHighThreshold) {
             triggerReasons.append("Memory pressure red")
-            evidencePoints.append("memPressure=red")
         }
 
         previousCPUTotalPercent = cpuTotalPercent
@@ -1685,11 +2007,12 @@ final class PerformanceSampler: ObservableObject {
         }
 
         let hasSimGpuFrameTime = telemetry?.gpuFrameTimeMS != nil
+        let swapSignalCount = [swapRisingFast, swapUsedRising, diskSpikeWithPressure].filter { $0 }.count
 
         var classification: StutterCause
-        if swapJump >= Int64(stutterHeuristics.swapJumpBytes) || memoryPressure == .red {
+        if pressureOrCompressedHigh && swapSignalCount > 0 {
             classification = .swapThrash
-        } else if diskReadMBps + diskWriteMBps >= stutterHeuristics.diskSpikeMBps {
+        } else if diskSpike {
             classification = .diskStall
         } else if thermalState == .serious || thermalState == .critical {
             classification = .thermalThrottle
@@ -1711,6 +2034,17 @@ final class PerformanceSampler: ObservableObject {
             0
         ), 1)
         var confidence = min(max(0.35 + (Double(evidencePoints.count) * 0.12), 0), 1)
+        if classification == .swapThrash {
+            if swapSignalCount >= 2 && pressureOrCompressedHigh {
+                confidence = min(confidence + 0.16, 0.96)
+            } else {
+                confidence = min(confidence, 0.62)
+            }
+            if !swapDeltaPerMinute.available {
+                confidence = min(confidence, 0.45)
+                evidencePoints.append("swapSignalMissing=deltaUnavailable")
+            }
+        }
         if classification == .unknown, evidencePoints.contains("gpuTelemetry=unavailable") {
             confidence = min(confidence, 0.45)
         }
@@ -1735,6 +2069,87 @@ final class PerformanceSampler: ObservableObject {
             evidencePoints: evidencePoints,
             windowRef: "\(Int(now.timeIntervalSince1970))"
         )
+    }
+
+    private func recordStutterDetection(_ event: StutterEvent, at now: Date) {
+        upsertStutterEpisode(with: event, at: now)
+
+        let cooldown = cooldownSeconds(for: event.classification)
+        if let lastEmission = stutterLastEmissionAt[event.classification],
+           now.timeIntervalSince(lastEmission) < cooldown {
+            return
+        }
+
+        stutterBuffer.append(event)
+        stutterLastEmissionAt[event.classification] = now
+    }
+
+    private func upsertStutterEpisode(with event: StutterEvent, at now: Date) {
+        if var accumulator = stutterEpisodeAccumulators[event.classification] {
+            let gap = now.timeIntervalSince(accumulator.endAt)
+            if gap <= stutterEpisodeContinuationSeconds {
+                accumulator.absorb(event: event, at: now)
+                stutterEpisodeAccumulators[event.classification] = accumulator
+            } else {
+                finalizedStutterEpisodes.append(accumulator.materialized())
+                stutterEpisodeAccumulators[event.classification] = StutterEpisodeAccumulator(
+                    id: UUID(),
+                    cause: event.classification,
+                    startAt: now,
+                    endAt: now,
+                    count: 1,
+                    peakSeverity: event.severity,
+                    confidenceSum: event.confidence,
+                    evidenceCounts: evidenceFrequencyMap(from: event.evidencePoints)
+                )
+            }
+        } else {
+            stutterEpisodeAccumulators[event.classification] = StutterEpisodeAccumulator(
+                id: UUID(),
+                cause: event.classification,
+                startAt: now,
+                endAt: now,
+                count: 1,
+                peakSeverity: event.severity,
+                confidenceSum: event.confidence,
+                evidenceCounts: evidenceFrequencyMap(from: event.evidencePoints)
+            )
+        }
+    }
+
+    private func refreshStutterEpisodeBuffer(reference: Date) {
+        let staleCauses = stutterEpisodeAccumulators.compactMap { cause, accumulator in
+            if reference.timeIntervalSince(accumulator.endAt) > stutterEpisodeContinuationSeconds {
+                return cause
+            }
+            return nil
+        }
+        for cause in staleCauses {
+            if let accumulator = stutterEpisodeAccumulators.removeValue(forKey: cause) {
+                finalizedStutterEpisodes.append(accumulator.materialized())
+            }
+        }
+
+        let activeEpisodes = stutterEpisodeAccumulators.values.map { $0.materialized() }
+        stutterEpisodeBuffer = (finalizedStutterEpisodes + activeEpisodes)
+            .sorted { $0.endAt < $1.endAt }
+    }
+
+    private func evidenceFrequencyMap(from points: [String]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for point in points where !point.isEmpty {
+            counts[point, default: 0] += 1
+        }
+        return counts
+    }
+
+    private func cooldownSeconds(for cause: StutterCause) -> TimeInterval {
+        switch cause {
+        case .swapThrash:
+            return swapThrashCooldownSeconds
+        default:
+            return 0
+        }
     }
 
     @MainActor

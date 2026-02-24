@@ -83,9 +83,7 @@ struct StatusStripPill: Identifiable {
 
 struct StatusStripView: View {
     let pills: [StatusStripPill]
-
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @AppStorage("useGlassEffects") private var useGlassEffects: Bool = true
+    private let stripFill = Color(red: 0.06, green: 0.09, blue: 0.16)
 
     var body: some View {
         HStack(spacing: 10) {
@@ -95,7 +93,6 @@ struct StatusStripView: View {
                         pillContent(pill)
                     }
                     .buttonStyle(.plain)
-                    .glassHover(opacity: 0.97)
                 } else {
                     pillContent(pill)
                 }
@@ -103,14 +100,14 @@ struct StatusStripView: View {
         }
         .padding(12)
         .background(
-            GlassSurface(
-                variant: .card,
-                cornerRadius: 14,
-                isHovering: false,
-                reduceTransparency: reduceTransparency,
-                useGlassEffects: useGlassEffects
-            )
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(stripFill.opacity(0.94))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.24), radius: 12, x: 0, y: 6)
     }
 
     private func pillContent(_ pill: StatusStripPill) -> some View {
@@ -125,16 +122,8 @@ struct StatusStripView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(
-            ZStack {
-                GlassSurface(
-                    variant: .pill,
-                    cornerRadius: 999,
-                    isHovering: false,
-                    reduceTransparency: reduceTransparency,
-                    useGlassEffects: useGlassEffects
-                )
-                Capsule().fill(pill.tint.opacity(0.12))
-            }
+            Capsule()
+                .fill(Color.black.opacity(0.26))
         )
         .overlay(
             Capsule()
@@ -234,8 +223,6 @@ struct MenuContentView: View {
     @EnvironmentObject private var sampler: PerformanceSampler
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var featureStore: V112FeatureStore
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @AppStorage("useGlassEffects") private var useGlassEffects: Bool = true
 
     @State private var selectedSection: DashboardSection? = .overview
 
@@ -305,6 +292,9 @@ struct MenuContentView: View {
 
     @State private var updateCheckStatus: String?
     @State private var frameTimeRange: FrameTimeRangeOption = .tenMinutes
+    @State private var showRawStutterEvents: Bool = false
+    @State private var showLastSessionSnapshot: Bool = false
+    @State private var selectedStutterEpisodeID: UUID?
     @State private var selectedStutterEventID: UUID?
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -483,108 +473,19 @@ struct MenuContentView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(neonViolet.opacity(0.35))
-                        .frame(width: 34, height: 34)
-                        .overlay(
-                            Image(systemName: "gauge.high")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(neonBlue)
-                        )
+            sidebarHeader
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("CruiseControl")
-                            .font(.system(size: 26, weight: .black, design: .rounded))
-                            .foregroundStyle(.white)
-                        Text("FLIGHT PERFORMANCE LAB")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.52))
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(sampler.isSimActive ? neonMint : .orange)
-                        .frame(width: 8, height: 8)
-                    Text(sampler.isSimActive ? "SIM ACTIVE" : "STANDBY")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(sampler.isSimActive ? neonMint : .orange)
-                }
-                .glassPill()
-                .overlay(Capsule().stroke((sampler.isSimActive ? neonMint : .orange).opacity(0.55), lineWidth: 1))
-            }
-            .padding(.top, 8)
-
-            VStack(spacing: 6) {
-                ForEach(DashboardSection.allCases) { section in
-                    let isActive = (selectedSection ?? .overview) == section
-
-                    Button {
-                        selectedSection = section
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: section.icon)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(isActive ? neonBlue : .white.opacity(0.6))
-                                .frame(width: 18)
-
-                            Text(section.title)
-                                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                                .foregroundStyle(isActive ? .white : .white.opacity(0.72))
-
-                            Spacer()
-
-                            if isActive {
-                                Circle()
-                                    .fill(neonMint)
-                                    .frame(width: 6, height: 6)
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(isActive ? Color(red: 0.10, green: 0.18, blue: 0.31).opacity(0.92) : Color.clear)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(isActive ? neonBlue.opacity(0.45) : Color.white.opacity(0.06), lineWidth: 1)
-                        )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .glassHover(opacity: 0.98)
-                }
-            }
+            sidebarSectionButtons
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .leading, spacing: 8) {
-                quickMetric(title: "CPU", value: percentString(sampler.snapshot.cpuTotalPercent))
-                quickMetric(title: "Pressure", value: "\(sampler.snapshot.memoryPressure.displayName) \(sampler.snapshot.memoryPressureTrend.icon)")
-                quickMetric(title: "UDP", value: sampler.snapshot.udpStatus.state.displayName)
-                quickMetric(title: "Regulator", value: settings.governorModeEnabled ? "ON" : "OFF")
-            }
-            .padding(12)
-            .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(neonBlue.opacity(0.28), lineWidth: 1)
-            )
+            sidebarQuickMetrics
         }
         .padding(18)
         .frame(minWidth: 268, maxWidth: 286)
         .background(
-            GlassSurface(
-                variant: .sidebar,
-                cornerRadius: 18,
-                isHovering: false,
-                reduceTransparency: reduceTransparency,
-                useGlassEffects: useGlassEffects
-            )
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(red: 0.04, green: 0.07, blue: 0.14).opacity(0.97))
         )
         .overlay(
             Rectangle()
@@ -592,6 +493,110 @@ struct MenuContentView: View {
                 .frame(width: 1)
                 .padding(.vertical, 12),
             alignment: .trailing
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+    }
+
+    private var sidebarHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(neonViolet.opacity(0.35))
+                    .frame(width: 34, height: 34)
+                    .overlay(
+                        Image(systemName: "gauge.high")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(neonBlue)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CruiseControl")
+                        .font(.system(size: 26, weight: .black, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("FLIGHT PERFORMANCE LAB")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.52))
+                }
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(sampler.isSimActive ? neonMint : .orange)
+                    .frame(width: 8, height: 8)
+                Text(sampler.isSimActive ? "SIM ACTIVE" : "STANDBY")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(sampler.isSimActive ? neonMint : .orange)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.black.opacity(0.24)))
+            .overlay(Capsule().stroke((sampler.isSimActive ? neonMint : .orange).opacity(0.55), lineWidth: 1))
+        }
+        .padding(.top, 8)
+    }
+
+    private var sidebarSectionButtons: some View {
+        VStack(spacing: 6) {
+            ForEach(DashboardSection.allCases) { section in
+                sidebarSectionButton(for: section)
+            }
+        }
+    }
+
+    private func sidebarSectionButton(for section: DashboardSection) -> some View {
+        let isActive = (selectedSection ?? .overview) == section
+        return Button {
+            selectedSection = section
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: section.icon)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(isActive ? neonBlue : .white.opacity(0.6))
+                    .frame(width: 18)
+
+                Text(section.title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(isActive ? .white : .white.opacity(0.72))
+
+                Spacer()
+
+                if isActive {
+                    Circle()
+                        .fill(neonMint)
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isActive ? Color(red: 0.10, green: 0.18, blue: 0.31).opacity(0.92) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isActive ? neonBlue.opacity(0.45) : Color.white.opacity(0.06), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sidebarQuickMetrics: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            quickMetric(title: "CPU", value: percentString(sampler.snapshot.cpuTotalPercent))
+            quickMetric(title: "Pressure", value: "\(sampler.snapshot.memoryPressure.displayName) \(sampler.snapshot.memoryPressureTrend.icon)")
+            quickMetric(title: "UDP", value: sampler.snapshot.udpStatus.state.displayName)
+            quickMetric(title: "Regulator", value: settings.governorModeEnabled ? "ON" : "OFF")
+        }
+        .padding(12)
+        .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(neonBlue.opacity(0.28), lineWidth: 1)
         )
     }
 
@@ -675,10 +680,21 @@ struct MenuContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.72))
             }
-            .glassCard()
+            .padding(16)
+            .background(Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.94), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.11), lineWidth: 1)
+            )
             .frame(maxWidth: 420, alignment: .leading)
         }
-        .glassCard()
+        .padding(18)
+        .background(Color(red: 0.05, green: 0.08, blue: 0.15).opacity(0.95), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 8)
     }
 
     private var overviewSection: some View {
@@ -744,11 +760,24 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Regulator Proof") {
                 let proof = sampler.computeProofState(now: now)
+                let liveState = sampler.telemetryLiveState
                 let fpsTestValue = sampler.proposedRegulatorTestLOD(increase: true, step: regulatorTestStepUp)
                 let visualTestValue = sampler.proposedRegulatorTestLOD(increase: false, step: regulatorTestStepDown)
                 let testDuration = max(Int(regulatorTestDurationSeconds.rounded()), 1)
 
                 VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("LIVE STATE: \(liveState.displayName.uppercased())")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(telemetryLiveStateColor(liveState))
+                        Spacer()
+                        if let age = telemetryLastPacketAgeSeconds {
+                            Text("Telemetry age \(String(format: "%.1fs", age))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     HStack {
                         Text("LOD APPLIED: \(proof.lodApplied ? "YES" : "NO")")
                             .font(.headline)
@@ -797,10 +826,36 @@ struct MenuContentView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if !proof.hasSimData {
-                        Text("No sim data. Last session target/applied: \(proof.lastSessionTargetLOD.map { String(format: "%.2f", $0) } ?? "-") / \(proof.lastSessionAppliedLOD.map { String(format: "%.2f", $0) } ?? "-") at \(proof.lastSessionAt.map(relativeAgeText(from:)) ?? "unknown")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    DisclosureGroup("Last Session", isExpanded: $showLastSessionSnapshot) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let lastSession = sampler.lastSessionSnapshot {
+                                let summary = lastSession.regulatorSummary
+                                Text("Session time: \(sessionRangeText(start: lastSession.sessionStartAt, end: lastSession.sessionEndAt))")
+                                    .font(.caption)
+                                Text("Target \(summary.lastTarget.map { String(format: "%.2f", $0) } ?? "-") • Applied \(summary.lastApplied.map { String(format: "%.2f", $0) } ?? "-") • Δ \(summary.lastDelta.map { String(format: "%.3f", $0) } ?? "-")")
+                                    .font(.caption)
+                                Text("ACK age at end: \(ackAgeAtEndText(for: lastSession))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Packets: \(lastSession.telemetrySummary.totalPackets) • Avg \(lastSession.telemetrySummary.avgPacketsPerSec.map { String(format: "%.1f pkt/s", $0) } ?? "n/a")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if !summary.reasons.isEmpty {
+                                    Text("Reasons: \(summary.reasons.prefix(3).joined(separator: " | "))")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Button("Clear Session") {
+                                    sampler.clearSessionSnapshot()
+                                }
+                                .buttonStyle(.bordered)
+                            } else {
+                                Text("No frozen session snapshot yet.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.top, 4)
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -1038,9 +1093,8 @@ struct MenuContentView: View {
 
     private var frameTimeLabSection: some View {
         let samples = sampler.metricSamplesInWindow(lastMinutes: frameTimeRange.minutes)
-        let stutters = sampler.stutterEvents.filter {
-            Date().timeIntervalSince($0.timestamp) <= Double(frameTimeRange.minutes) * 60.0
-        }
+        let episodes = sampler.stutterEpisodesInWindow(lastMinutes: frameTimeRange.minutes)
+        let stutters = sampler.rawStutterEventsInWindow(lastMinutes: frameTimeRange.minutes)
 
         return VStack(alignment: .leading, spacing: 16) {
             dashboardCard(title: "Frame-Time Lab") {
@@ -1084,7 +1138,8 @@ struct MenuContentView: View {
 
                     HStack(spacing: 12) {
                         metricPill(label: "Samples", value: String(samples.count))
-                        metricPill(label: "Stutters", value: String(stutters.count))
+                        metricPill(label: "Episodes", value: String(episodes.count))
+                        metricPill(label: "Raw", value: String(stutters.count))
                         metricPill(label: "Pressure", value: String(format: "%.2f", samples.last?.pressureIndex ?? 0))
                     }
 
@@ -1102,21 +1157,21 @@ struct MenuContentView: View {
                 }
             }
 
-            dashboardCard(title: "Stutter Events") {
-                if stutters.isEmpty {
-                    Text("No stutter events detected in this range.")
+            dashboardCard(title: "Stutter Episodes") {
+                if episodes.isEmpty {
+                    Text("No stutter episodes detected in this range.")
                         .foregroundStyle(.secondary)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(stutters.suffix(12).reversed())) { event in
+                        ForEach(Array(episodes.suffix(12).reversed())) { episode in
                             Button {
-                                selectedStutterEventID = event.id
+                                selectedStutterEpisodeID = episode.id
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(timeOnly(event.timestamp)) • \(event.classification.displayName)")
+                                        Text("\(timeOnly(episode.startAt)) • \(episode.cause.displayName)")
                                             .font(.subheadline.weight(.semibold))
-                                        Text("Severity \(String(format: "%.2f", event.severity)) • Confidence \(String(format: "%.2f", event.confidence))")
+                                        Text("\(episodeDurationText(episode.startAt, episode.endAt)) • Count \(episode.count) • Peak \(String(format: "%.2f", episode.peakSeverity)) • Avg conf \(String(format: "%.2f", episode.avgConfidence))")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -1126,13 +1181,52 @@ struct MenuContentView: View {
                             }
                             .buttonStyle(.plain)
 
-                            if selectedStutterEventID == event.id {
-                                Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
+                            if selectedStutterEpisodeID == episode.id {
+                                Text("Evidence: \(episode.evidenceSummary.joined(separator: " | "))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text("Suggested action: \(event.rankedCulprits.first ?? "Review top impact processes and memory pressure.")")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                }
+
+                Toggle("Show raw events", isOn: $showRawStutterEvents)
+                    .toggleStyle(.switch)
+                    .padding(.top, 8)
+
+                if showRawStutterEvents {
+                    if stutters.isEmpty {
+                        Text("No raw stutter events detected in this range.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(stutters.suffix(12).reversed())) { event in
+                                Button {
+                                    selectedStutterEventID = event.id
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("\(timeOnly(event.timestamp)) • \(event.classification.displayName)")
+                                                .font(.subheadline.weight(.semibold))
+                                            Text("Severity \(String(format: "%.2f", event.severity)) • Confidence \(String(format: "%.2f", event.confidence))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                if selectedStutterEventID == event.id {
+                                    Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("Suggested action: \(event.rankedCulprits.first ?? "Review top impact processes and memory pressure.")")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
                             }
                         }
                     }
@@ -1341,18 +1435,20 @@ struct MenuContentView: View {
                             }
                             .buttonStyle(.bordered)
 
-                            Button("Quit") {
-                                runProcessAction(process: process, force: false)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(!termination.allowed)
+                            if termination.showTerminationControls {
+                                Button("Quit") {
+                                    runProcessAction(process: process, force: false)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!termination.allowed)
 
-                            Button("Force Quit") {
-                                forceQuitCandidate = process
+                                Button("Force Quit") {
+                                    forceQuitCandidate = process
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.red)
+                                .disabled(!termination.allowed)
                             }
-                            .buttonStyle(.bordered)
-                            .tint(.red)
-                            .disabled(!termination.allowed)
 
                             Button("Allowlist") {
                                 featureStore.addProcessToAllowlist(process.name)
@@ -1365,6 +1461,12 @@ struct MenuContentView: View {
                             Text(reason)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+
+                        if let helperNote = termination.helperNote {
+                            Text(helperNote)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
                         }
                     }
                     .padding(10)
@@ -2395,18 +2497,26 @@ struct MenuContentView: View {
                                     .foregroundStyle(.secondary)
 
                                 HStack {
-                                    Button("Quit") {
-                                        runProcessAction(process: process, force: false)
+                                    Button("Show in Activity Monitor") {
+                                        let outcome = settings.openInActivityMonitor(process: process)
+                                        processActionResult = outcome.message
                                     }
                                     .buttonStyle(.bordered)
-                                    .disabled(!termination.allowed)
 
-                                    Button("Force Quit") {
-                                        forceQuitCandidate = process
+                                    if termination.showTerminationControls {
+                                        Button("Quit") {
+                                            runProcessAction(process: process, force: false)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(!termination.allowed)
+
+                                        Button("Force Quit") {
+                                            forceQuitCandidate = process
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .tint(.red)
+                                        .disabled(!termination.allowed)
                                     }
-                                    .buttonStyle(.bordered)
-                                    .tint(.red)
-                                    .disabled(!termination.allowed)
 
                                     Button("Allowlist") {
                                         featureStore.addProcessToAllowlist(process.name)
@@ -2419,6 +2529,12 @@ struct MenuContentView: View {
                                     Text(reason)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                }
+
+                                if let helperNote = termination.helperNote {
+                                    Text(helperNote)
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
                                 }
                             }
                             .padding(.vertical, 4)
@@ -2539,7 +2655,6 @@ struct MenuContentView: View {
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
                 Toggle("Enable Demo/Mock mode", isOn: $featureStore.demoMockModeEnabled)
                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
-                Toggle("Use Glass Effects", isOn: $useGlassEffects)
                 Stepper("Large Files top results: \(featureStore.largeFilesTopN)", value: $featureStore.largeFilesTopN, in: 10...200, step: 5)
 
                 HStack {
@@ -2612,7 +2727,13 @@ struct MenuContentView: View {
             content()
                 .foregroundStyle(.white.opacity(0.92))
         }
-        .glassCard()
+        .padding(16)
+        .background(Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.95), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
     }
 
     private var xPlaneHelpSheet: some View {
@@ -2818,13 +2939,17 @@ struct MenuContentView: View {
     private var statusStripPills: [StatusStripPill] {
         let simValue: String
         let simTint: Color
-        if telemetryIsLive {
+        switch sampler.telemetryLiveState {
+        case .live:
             simValue = "Live"
             simTint = .green
-        } else if telemetryIsListening {
+        case .stale:
+            simValue = "Stale"
+            simTint = .orange
+        case .listening:
             simValue = "Listening"
             simTint = .orange
-        } else {
+        case .offline:
             simValue = "Offline"
             simTint = .secondary
         }
@@ -2871,11 +2996,11 @@ struct MenuContentView: View {
             regulatorTint = .orange
         }
 
-        let cutoff = now.addingTimeInterval(-600)
-        let stutterCount = sampler.stutterEvents.filter { $0.timestamp >= cutoff }.count
+        let episodeCount = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
+        let rawStutterCount = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
         let topCause = sampler.stutterCauseSummaries.first?.cause.displayName ?? "None"
-        let stutterValue = "\(stutterCount) • \(topCause)"
-        let stutterTint: Color = stutterCount > 0 ? .orange : .green
+        let stutterValue = "\(episodeCount) episodes (\(rawStutterCount) raw) • \(topCause)"
+        let stutterTint: Color = episodeCount > 0 ? .orange : .green
 
         let profileValue = profileDisplayName(for: settings.selectedProfile)
 
@@ -2912,18 +3037,16 @@ struct MenuContentView: View {
     }
 
     private var telemetryIsLive: Bool {
-        if sampler.snapshot.udpStatus.packetsPerSecond > 0 {
-            return true
-        }
-        if let age = telemetryLastPacketAgeSeconds {
-            return age <= 2
-        }
-        return false
+        sampler.telemetryLiveState == .live
     }
 
     private var telemetryIsListening: Bool {
-        let state = sampler.snapshot.udpStatus.state
-        return state == .listening || state == .active
+        switch sampler.telemetryLiveState {
+        case .listening, .live, .stale:
+            return true
+        case .offline:
+            return false
+        }
     }
 
     private struct ProfileTemplate: Identifiable {
@@ -3168,6 +3291,50 @@ struct MenuContentView: View {
         }
         return "\(secondsAgo)s ago"
     }
+
+    private func telemetryLiveStateColor(_ state: TelemetryLiveState) -> Color {
+        switch state {
+        case .live:
+            return .green
+        case .stale, .listening:
+            return .orange
+        case .offline:
+            return .secondary
+        }
+    }
+
+    private func episodeDurationText(_ start: Date, _ end: Date) -> String {
+        let duration = Int(max(end.timeIntervalSince(start), 0))
+        return durationText(seconds: duration)
+    }
+
+    private func sessionRangeText(start: Date?, end: Date?) -> String {
+        guard let start else { return "Unknown start" }
+        let effectiveEnd = end ?? Date()
+        return "\(timeOnly(start)) - \(timeOnly(effectiveEnd)) (\(durationText(seconds: Int(max(effectiveEnd.timeIntervalSince(start), 0)))))"
+    }
+
+    private func ackAgeAtEndText(for snapshot: SessionSnapshot) -> String {
+        guard let ackAt = snapshot.regulatorSummary.lastAckAt else { return "n/a" }
+        let endReference = snapshot.sessionEndAt ?? snapshot.capturedAt
+        let age = Int(max(endReference.timeIntervalSince(ackAt), 0))
+        return "\(age)s"
+    }
+
+    private func durationText(seconds: Int) -> String {
+        if seconds < 60 {
+            return "\(seconds)s"
+        }
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        if minutes < 60 {
+            return "\(minutes)m \(remainder)s"
+        }
+        let hours = minutes / 60
+        let minutesRemainder = minutes % 60
+        return "\(hours)h \(minutesRemainder)m"
+    }
+
     private var isStale: Bool {
         sampler.isSamplingStale(at: now)
     }
@@ -3243,34 +3410,43 @@ struct MenuContentView: View {
         }
     }
 
-    private func terminationAvailability(for process: ProcessSample) -> (allowed: Bool, reason: String?) {
-        guard let app = NSRunningApplication(processIdentifier: process.pid) else {
-            return (false, "Not permitted by macOS for this app.")
+    private func terminationAvailability(for process: ProcessSample) -> (allowed: Bool, showTerminationControls: Bool, reason: String?, helperNote: String?) {
+        let helperNote = process.name.localizedCaseInsensitiveContains("helper")
+            ? "Helper may relaunch. Quit the parent app for best results."
+            : nil
+
+        let selfPID = Int32(ProcessInfo.processInfo.processIdentifier)
+        if process.pid == selfPID {
+            return (false, false, "Not allowed (CruiseControl).", helperNote)
+        }
+
+        guard let app = NSRunningApplication(processIdentifier: pid_t(process.pid)) else {
+            return (false, false, "This process cannot be terminated programmatically. Open Activity Monitor.", helperNote)
         }
         if app.isTerminated {
-            return (false, "App already quitting or closed.")
+            return (false, true, "Already quitting...", helperNote)
         }
         if !app.isFinishedLaunching {
-            return (false, "App is still launching.")
+            return (false, true, "App is still launching.", helperNote)
         }
-        if app.activationPolicy != .regular {
-            return (false, "Not permitted by macOS for this app.")
-        }
-        return (true, nil)
+        return (true, true, nil, helperNote)
     }
 
-    private func mappedTerminationMessage(_ outcome: ActionOutcome, process: ProcessSample) -> String {
+    private func mappedTerminationMessage(_ outcome: ActionOutcome) -> String {
         if outcome.success { return outcome.message }
 
         let lowered = outcome.message.lowercased()
-        if lowered.contains("permission") || lowered.contains("denied") {
-            return "Termination denied by macOS for \(process.name)."
+        if lowered.contains("not allowed (cruisecontrol)") {
+            return "Not allowed (CruiseControl)."
         }
-        if lowered.contains("refus") || lowered.contains("did not respond") {
-            return "\(process.name) did not respond to quit."
+        if lowered.contains("already quitting") {
+            return "Already quitting..."
         }
-        if lowered.contains("not currently running") || lowered.contains("no longer running") {
-            return "\(process.name) is already quitting or closed."
+        if lowered.contains("did not respond") {
+            return "App did not respond to Quit. Try Force Quit."
+        }
+        if lowered.contains("cannot be terminated programmatically") {
+            return "This process cannot be terminated programmatically. Open Activity Monitor."
         }
         return outcome.message
     }
@@ -3278,7 +3454,7 @@ struct MenuContentView: View {
     private func runProcessAction(process: ProcessSample, force: Bool) {
         let availability = terminationAvailability(for: process)
         guard availability.allowed else {
-            let message = availability.reason ?? "Not permitted by macOS for this app."
+            let message = availability.reason ?? "This process cannot be terminated programmatically. Open Activity Monitor."
             processActionResult = message
             terminationFallback = TerminationFallback(process: process, message: message)
             return
@@ -3287,7 +3463,7 @@ struct MenuContentView: View {
         terminationFallback = nil
         let before = sampler.metricSamples.last
         let outcome = settings.terminateProcess(pid: process.pid, force: force)
-        let mapped = mappedTerminationMessage(outcome, process: process)
+        let mapped = mappedTerminationMessage(outcome)
         let finalOutcome = ActionOutcome(success: outcome.success, message: mapped)
 
         processActionResult = mapped
@@ -3583,7 +3759,7 @@ struct MenuContentView: View {
         for target in targets {
             let availability = terminationAvailability(for: target)
             guard availability.allowed else {
-                let reason = availability.reason ?? "Not permitted by macOS for this app."
+                let reason = availability.reason ?? "This process cannot be terminated programmatically. Open Activity Monitor."
                 lines.append("\(target.name): \(reason)")
                 continue
             }
@@ -4016,19 +4192,10 @@ struct MenuContentView: View {
 }
 
 private struct CruiseBackgroundView: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @AppStorage("useGlassEffects") private var useGlassEffects: Bool = true
-
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                GlassSurface(
-                    variant: .windowBackdrop,
-                    cornerRadius: 0,
-                    isHovering: false,
-                    reduceTransparency: reduceTransparency,
-                    useGlassEffects: useGlassEffects
-                )
+                Color(red: 0.02, green: 0.04, blue: 0.09)
 
                 LinearGradient(
                     colors: [

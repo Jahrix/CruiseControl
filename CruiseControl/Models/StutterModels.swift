@@ -43,6 +43,51 @@ enum RegulatorControlState {
     }
 }
 
+enum TelemetryLiveState: String, Codable {
+    case offline
+    case listening
+    case live
+    case stale
+
+    var displayName: String {
+        rawValue.capitalized
+    }
+}
+
+enum RegulatorEvidenceSource: String, Codable {
+    case udpAck
+    case fileStatus
+    case unknown
+}
+
+struct SessionSnapshot: Codable {
+    var capturedAt: Date
+    var sessionStartAt: Date?
+    var sessionEndAt: Date?
+    var telemetrySummary: TelemetrySummary
+    var regulatorSummary: RegulatorSummary
+    var governorAckOkCount: Int?
+    var ackTimeoutCount: Int?
+
+    struct TelemetrySummary: Codable {
+        var totalPackets: UInt64
+        var avgPacketsPerSec: Double?
+        var lastValidPacketAt: Date?
+    }
+
+    struct RegulatorSummary: Codable {
+        var lastTarget: Double?
+        var lastApplied: Double?
+        var lastDelta: Double?
+        var lastAckAt: Date?
+        var evidenceSource: RegulatorEvidenceSource
+        var bridgeMode: String
+        var appliedOK: Bool
+        var activityRecent: Bool
+        var reasons: [String]
+    }
+}
+
 struct RegulatorActionLog: Identifiable {
     let id = UUID()
     let timestamp: Date
@@ -197,6 +242,17 @@ struct StutterEvent: Identifiable, Codable {
         self.topCPUProcesses = topCPUProcesses
         self.topMemoryProcesses = topMemoryProcesses
     }
+}
+
+struct StutterEpisode: Identifiable, Codable {
+    let id: UUID
+    let cause: StutterCause
+    let startAt: Date
+    let endAt: Date
+    let count: Int
+    let peakSeverity: Double
+    let avgConfidence: Double
+    let evidenceSummary: [String]
 }
 
 enum HistoryDurationOption: String, CaseIterable, Identifiable, Codable {

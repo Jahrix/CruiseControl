@@ -156,6 +156,7 @@ final class SettingsStore: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private var recentTerminationAttempts: [Int32: Date] = [:]
 
     private enum Keys {
         static let quitSelectedApps = "simMode.quitSelectedApps"
@@ -403,26 +404,34 @@ final class SettingsStore: ObservableObject {
     }
 
     func openInActivityMonitor(process: ProcessSample) -> ActionOutcome {
-        let openProcess = Process()
-        openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        openProcess.arguments = ["-a", "Activity Monitor"]
-
-        do {
-            try openProcess.run()
-            openProcess.waitUntilExit()
-            if openProcess.terminationStatus == 0 {
-                return ActionOutcome(success: true, message: "Opened Activity Monitor. Search PID \(process.pid).")
-            }
-            return ActionOutcome(success: false, message: "Could not open Activity Monitor (exit code \(openProcess.terminationStatus)).")
-        } catch {
-            return ActionOutcome(success: false, message: "Could not launch Activity Monitor: \(error.localizedDescription)")
+        let activityMonitorURL = URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")
+        if NSWorkspace.shared.open(activityMonitorURL) {
+            return ActionOutcome(success: true, message: "Opened Activity Monitor. Search PID \(process.pid).")
         }
+        return ActionOutcome(success: false, message: "Could not open Activity Monitor.")
     }
 
     func terminateProcess(pid: Int32, force: Bool) -> ActionOutcome {
-        guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
-            return ActionOutcome(success: false, message: "Process \(pid) is no longer running or is not controllable via NSRunningApplication.")
+        let selfPID = Int32(ProcessInfo.processInfo.processIdentifier)
+        if pid == selfPID {
+            return ActionOutcome(success: false, message: "Not allowed (CruiseControl).")
         }
+
+        guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+            return ActionOutcome(success: false, message: "This process cannot be terminated programmatically. Open Activity Monitor.")
+        }
+
+        if app.isTerminated {
+            return ActionOutcome(success: false, message: "Already quitting...")
+        }
+
+        let now = Date()
+        if !force,
+           let previousAttempt = recentTerminationAttempts[pid],
+           now.timeIntervalSince(previousAttempt) < 2.0 {
+            return ActionOutcome(success: false, message: "Already quitting...")
+        }
+        recentTerminationAttempts[pid] = now
 
         if let bundleID = app.bundleIdentifier {
             let protectedIDs = Set(profileConfig(for: selectedProfile).allowlist + profileConfig(for: selectedProfile).doNotTouch)
@@ -434,15 +443,35 @@ final class SettingsStore: ObservableObject {
         let success = force ? app.forceTerminate() : app.terminate()
         let appName = app.localizedName ?? app.bundleIdentifier ?? "pid \(pid)"
 
-        if success {
-            return ActionOutcome(success: true, message: force ? "Force quit requested for \(appName)." : "Quit requested for \(appName).")
+        if !success {
+            if force {
+                return ActionOutcome(success: false, message: "This process cannot be terminated programmatically. Open Activity Monitor.")
+            }
+            return ActionOutcome(success: false, message: "App did not respond to Quit.")
+        }
+
+        if waitForProcessExit(pid: pid, timeout: force ? 1.0 : 1.5) {
+            return ActionOutcome(success: true, message: force ? "Force quit completed for \(appName)." : "Quit completed for \(appName).")
         }
 
         if force {
-            return ActionOutcome(success: false, message: "Force quit failed for \(appName). macOS may block this target or required permissions are missing.")
+            return ActionOutcome(success: false, message: "This process cannot be terminated programmatically. Open Activity Monitor.")
         }
+        return ActionOutcome(success: false, message: "App did not respond to Quit.")
+    }
 
-        return ActionOutcome(success: false, message: "Quit failed for \(appName). The app may have refused termination or requires user confirmation.")
+    private func waitForProcessExit(pid: Int32, timeout: TimeInterval) -> Bool {
+        let start = Date()
+        while Date().timeIntervalSince(start) <= timeout {
+            guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+                return true
+            }
+            if app.isTerminated {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return false
     }
 
     private func runningApplicationBundlePath(bundleID: String) -> String? {
