@@ -23,8 +23,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var didSuggestSimProfile = false
 
     private let warningCategoryIdentifier = "PROJECT_SPEED_WARNING"
+    private let defaults = UserDefaults.standard
+
+    private enum LifecycleKeys {
+        static let cleanShutdown = "app.lifecycle.cleanShutdown"
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let wasCleanShutdown = defaults.object(forKey: LifecycleKeys.cleanShutdown) as? Bool ?? false
+        let modifierRequestedSafeMode = NSEvent.modifierFlags.contains(.option)
+        defaults.set(false, forKey: LifecycleKeys.cleanShutdown)
+
         NSApp.setActivationPolicy(.regular)
         configureNotifications()
         configureSparkleIfAvailable()
@@ -105,12 +114,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         sampler.configureSampling(interval: settingsStore.samplingInterval.seconds, alpha: settingsStore.smoothingAlpha)
         sampler.configureXPlaneUDP(enabled: settingsStore.xPlaneUDPListeningEnabled, port: settingsStore.xPlaneUDPPort)
+
+        if !wasCleanShutdown || modifierRequestedSafeMode || featureStore.safeModeEnabled {
+            featureStore.activateSafeMode()
+        }
+
         applyRuntimeConfigs()
         sampler.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         pendingRuntimeConfigApplyTask?.cancel()
+        defaults.set(true, forKey: LifecycleKeys.cleanShutdown)
         sampler.stop()
     }
 
@@ -160,10 +175,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let baseConfig = settingsStore.governorConfig
         let telemetryICAO = sampler.snapshot.xplaneTelemetry?.nearestAirportICAO
         let effectiveConfig = featureStore.effectiveGovernorConfig(base: baseConfig, telemetryICAO: telemetryICAO)
+        let effectiveProfile: ProfileKind = featureStore.safeModeEnabled ? .generalPerformance : featureStore.workloadProfile
+        let demoMockModeEnabled = featureStore.safeModeEnabled ? false : featureStore.demoMockModeEnabled
+
         sampler.configureGovernor(config: effectiveConfig)
         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
-        sampler.configureWorkloadProfile(featureStore.workloadProfile)
-        sampler.configureDemoMockMode(enabled: featureStore.demoMockModeEnabled)
+        sampler.configureWorkloadProfile(effectiveProfile)
+        sampler.configureDemoMockMode(enabled: demoMockModeEnabled)
     }
 
     private func scheduleRuntimeConfigApply(delayMilliseconds: UInt64 = 500) {

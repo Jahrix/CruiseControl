@@ -175,6 +175,8 @@ struct RecentActionsFeedView: View {
             base = "Open bridge folder"
         case .exportDiagnostics:
             base = "Export diagnostics"
+        case .createSupportPack:
+            base = "Create support pack"
         case .cleanerAction:
             base = "Cleaner action"
         }
@@ -231,6 +233,7 @@ struct MenuContentView: View {
     @State private var lastActionReport: SimModeActionReport?
     @State private var processActionResult: String?
     @State private var diagnosticsExportResult: String?
+    @State private var supportPackSummary: String = ""
     @State private var forceQuitCandidate: ProcessSample?
 
     @State private var allowlistText: String = ""
@@ -604,6 +607,10 @@ struct MenuContentView: View {
     private var detailContent: some View {
         let section = selectedSection ?? .overview
 
+        if featureStore.safeModeEnabled {
+            safeModeBanner
+        }
+
         if shouldShowStatusStrip(for: section) {
             statusStripView
         }
@@ -636,6 +643,33 @@ struct MenuContentView: View {
         case .settings:
             preferencesSection
         }
+    }
+
+    private var safeModeBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "shield.lefthalf.filled")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Safe Mode enabled")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("Demo mode is off, workload profile is General, and heavy scans are paused.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Exit Safe Mode") {
+                featureStore.deactivateSafeMode()
+                processActionResult = "Safe Mode disabled."
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.orange.opacity(0.5), lineWidth: 1)
+        )
     }
 
     private var heroBanner: some View {
@@ -1250,6 +1284,7 @@ struct MenuContentView: View {
                                 profileTemplateCard(template, selected: template.mappedProfile == settings.selectedProfile)
                             }
                             .buttonStyle(.plain)
+                            .disabled(featureStore.safeModeEnabled)
                         }
                     }
 
@@ -1308,6 +1343,7 @@ struct MenuContentView: View {
                             processActionResult = "Applied profile \(selectedTemplate.name)."
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(featureStore.safeModeEnabled)
 
                         Button("Duplicate") {
                             processActionResult = "Duplicate is not available in this build."
@@ -1328,6 +1364,13 @@ struct MenuContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .disabled(featureStore.safeModeEnabled)
+
+                    if featureStore.safeModeEnabled {
+                        Text("Safe Mode locks workload profile to General Performance.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
 
                     if sampler.isSimActive && featureStore.workloadProfile != .simMode {
                         Text("X-Plane is active. Sim Mode profile is recommended for tighter sampling.")
@@ -1359,6 +1402,7 @@ struct MenuContentView: View {
                             }
                         )
                     )
+                    .disabled(featureStore.safeModeEnabled)
 
                     Divider()
                         .padding(.vertical, 6)
@@ -2072,6 +2116,60 @@ struct MenuContentView: View {
 
     private var diagnosticsSection: some View {
         VStack(alignment: .leading, spacing: 16) {
+            dashboardCard(title: "Troubleshooting Center") {
+                let cards = activeTroubleshootingCards()
+
+                if cards.isEmpty {
+                    Text("No active blockers detected. Telemetry and bridge signals look healthy.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(cards) { card in
+                            troubleshootingCard(card)
+                        }
+                    }
+                }
+            }
+
+            dashboardCard(title: "Support Pack") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Button("Create Support Pack") {
+                            runVerifiedAction(kind: .createSupportPack, params: [:]) {
+                                let outcome = sampler.createSupportPack(settingsSnapshot: diagnosticsSettingsSnapshot())
+                                supportPackSummary = outcome.summary
+                                diagnosticsExportResult = outcome.message
+                                return ActionOutcome(success: outcome.success, message: outcome.message)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Copy Summary") {
+                            let summary = sampler.supportSummaryText()
+                            supportPackSummary = summary
+                            copyToClipboard(summary)
+                            processActionResult = "Copied support summary to clipboard."
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Text("Includes diagnostics JSON v2 and a short machine/session summary for support.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    ScrollView {
+                        Text(supportPackSummary.isEmpty ? sampler.supportSummaryText() : supportPackSummary)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(minHeight: 120, maxHeight: 180)
+                    .padding(8)
+                    .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+
             dashboardCard(title: "Diagnostics Export") {
                 VStack(alignment: .leading, spacing: 10) {
                     Button("Export Diagnostics") {
@@ -2096,19 +2194,62 @@ struct MenuContentView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(sampler.actionReceipts.suffix(12).reversed())) { receipt in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(timeOnly(receipt.timestamp))  -  \(receipt.kind.rawValue)  -  \(receipt.outcome ? "OK" : "Failed")")
-                                    .font(.subheadline)
+                            let presentation = receiptPresentation(receipt)
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Image(systemName: receipt.outcome ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                        .foregroundStyle(receipt.outcome ? neonMint : neonOrange)
+                                    Text(presentation.title)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text(relativeAgeText(from: receipt.timestamp))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 if let before = receipt.before, let after = receipt.after {
                                     Text(String(format: "Before/After pressure index: %.2f -> %.2f", before.pressureIndex, after.pressureIndex))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
-                                Text(receipt.message)
+                                Text(presentation.detail)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+
+                                if !receipt.outcome, !presentation.trySteps.isEmpty {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Try this:")
+                                            .font(.caption.weight(.semibold))
+                                        ForEach(presentation.trySteps, id: \.self) { step in
+                                            Text("• \(step)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
+                                    HStack {
+                                        if receipt.kind == .quitApp || receipt.kind == .forceQuitApp {
+                                            Button("Open Activity Monitor") {
+                                                if openActivityMonitorApp() {
+                                                    processActionResult = "Opened Activity Monitor."
+                                                } else {
+                                                    processActionResult = "Couldn't open Activity Monitor automatically."
+                                                }
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+
+                                        Button("Open Privacy Settings") {
+                                            if openPrivacySecuritySettings() {
+                                                processActionResult = "Opened Privacy & Security settings."
+                                            } else {
+                                                processActionResult = "Open System Settings > Privacy & Security."
+                                            }
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                }
                             }
-                            .padding(.vertical, 2)
+                            .padding(.vertical, 4)
                         }
                     }
                 }
@@ -2136,6 +2277,7 @@ struct MenuContentView: View {
 
                     HStack {
                         Toggle("Demo/Mock Mode", isOn: $featureStore.demoMockModeEnabled)
+                            .disabled(featureStore.safeModeEnabled)
                         Button("Inject Mock Stutter") {
                             sampler.injectMockStutterEvent()
                             processActionResult = "Injected mock stutter event for diagnostics validation."
@@ -2224,7 +2366,7 @@ struct MenuContentView: View {
                             runSmartScan()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(smartScanRunState.isRunning)
+                        .disabled(smartScanRunState.isRunning || featureStore.safeModeEnabled)
 
                         if smartScanRunState.isRunning {
                             Button("Cancel") {
@@ -2341,7 +2483,7 @@ struct MenuContentView: View {
                             scanCleanerModule()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(cleanerLoading)
+                        .disabled(cleanerLoading || featureStore.safeModeEnabled)
 
                         Button("Quarantine Selected") {
                             confirmQuarantineSelection = true
@@ -2427,7 +2569,7 @@ struct MenuContentView: View {
                             scanLargeFilesModule()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(largeFilesLoading || smartScanRoots.isEmpty)
+                        .disabled(largeFilesLoading || smartScanRoots.isEmpty || featureStore.safeModeEnabled)
 
                         Button("Quarantine Selected") {
                             confirmQuarantineSelection = true
@@ -2654,7 +2796,23 @@ struct MenuContentView: View {
                 Toggle("Listen for X-Plane UDP", isOn: $settings.xPlaneUDPListeningEnabled)
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
                 Toggle("Enable Demo/Mock mode", isOn: $featureStore.demoMockModeEnabled)
+                    .disabled(featureStore.safeModeEnabled)
                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
+                Toggle(
+                    "Launch in Safe Mode",
+                    isOn: Binding(
+                        get: { featureStore.safeModeEnabled },
+                        set: { newValue in
+                            if newValue {
+                                featureStore.activateSafeMode()
+                                processActionResult = "Safe Mode enabled. Demo mode disabled and heavy scans paused."
+                            } else {
+                                featureStore.deactivateSafeMode()
+                                processActionResult = "Safe Mode disabled."
+                            }
+                        }
+                    )
+                )
                 Stepper("Large Files top results: \(featureStore.largeFilesTopN)", value: $featureStore.largeFilesTopN, in: 10...200, step: 5)
 
                 HStack {
@@ -2778,6 +2936,256 @@ struct MenuContentView: View {
             Text(text)
                 .font(.subheadline)
         }
+    }
+
+    private struct TroubleshootingGuideCard: Identifiable {
+        let id: String
+        let title: String
+        let whatItMeans: String
+        let steps: [String]
+    }
+
+    private struct ReceiptPresentation {
+        let title: String
+        let detail: String
+        let trySteps: [String]
+    }
+
+    private func activeTroubleshootingCards() -> [TroubleshootingGuideCard] {
+        var cards: [TroubleshootingGuideCard] = []
+        let hasTelemetryPacket = sampler.snapshot.udpStatus.totalPackets > 0
+        let isListeningIssue = sampler.telemetryLiveState == .offline || sampler.telemetryLiveState == .listening
+        let hasTelemetry = sampler.snapshot.xplaneTelemetry != nil
+
+        if isListeningIssue {
+            cards.append(
+                TroubleshootingGuideCard(
+                    id: "no-telemetry",
+                    title: "No telemetry packets (Offline/Listening)",
+                    whatItMeans: "CruiseControl is listening, but no live X-Plane data packets are arriving yet.",
+                    steps: [
+                        "In X-Plane Data Output, enable network output to 127.0.0.1 and port \(sampler.snapshot.udpStatus.listenPort).",
+                        "Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude).",
+                        "Toggle UDP listening off/on in Preferences, then confirm packet rate increases."
+                    ]
+                )
+            )
+        }
+
+        switch sampler.regulatorControlState {
+        case .udpNoAck, .disconnected:
+            if sampler.isSimActive || hasTelemetryPacket || settings.governorModeEnabled {
+                cards.append(
+                    TroubleshootingGuideCard(
+                        id: "no-ack",
+                        title: "No ACK / bridge not responding",
+                        whatItMeans: "CruiseControl can send commands, but the bridge is not returning fresh ACK evidence.",
+                        steps: [
+                            "Open the bridge folder and confirm FlyWithLua bridge files are present and updating.",
+                            "Run Test PING in X-Plane and check for ACK/PONG in the regulator status area.",
+                            "Check local firewall/security prompts for UDP/file access blocks."
+                        ]
+                    )
+                )
+            }
+        case .udpAckOK, .fileBridge:
+            break
+        }
+
+        if hasTelemetry, sampler.snapshot.xplaneTelemetry?.altitudeAGLFeet == nil {
+            cards.append(
+                TroubleshootingGuideCard(
+                    id: "agl-unavailable",
+                    title: "AGL unavailable (MSL fallback tips)",
+                    whatItMeans: "Altitude-above-ground is missing, so regulator logic may pause or use MSL fallback.",
+                    steps: [
+                        "Ensure Data Set 20 is enabled in X-Plane so AGL/MSL fields are sent.",
+                        "Keep \"Use MSL if AGL unavailable\" enabled while validating data flow.",
+                        "After takeoff/position update, confirm AGL starts reporting in the LOD card."
+                    ]
+                )
+            )
+        }
+
+        if sampler.telemetryLiveState == .stale || (telemetryLastPacketAgeSeconds ?? 0) > 10 {
+            cards.append(
+                TroubleshootingGuideCard(
+                    id: "stale-data",
+                    title: "Stale data (freshness explanation)",
+                    whatItMeans: "Packets were seen before, but updates are now too old to treat as live telemetry.",
+                    steps: [
+                        "Unpause the sim and confirm Data Output remains enabled after loading flights/scenery.",
+                        "Verify the endpoint/port still match CruiseControl and no second tool is consuming the feed.",
+                        "If using file bridge mode, confirm lod_status.txt update timestamps continue changing."
+                    ]
+                )
+            )
+        }
+
+        return cards
+    }
+
+    private func troubleshootingCard(_ card: TroubleshootingGuideCard) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(card.title)
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text(card.whatItMeans)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            ForEach(Array(card.steps.enumerated()), id: \.offset) { index, step in
+                Text("\(index + 1). \(step)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Copy Endpoint") {
+                    copyToClipboard(telemetryEndpoint)
+                    processActionResult = "Copied endpoint \(telemetryEndpoint)."
+                }
+                .buttonStyle(.bordered)
+
+                Button("Open Bridge Folder") {
+                    runVerifiedAction(kind: .openBridgeFolder, params: ["source": "troubleshooting"]) {
+                        sampler.openRegulatorBridgeFolderInFinder()
+                    }
+                }
+                .buttonStyle(.bordered)
+
+                Button("Open FlyWithLua Scripts instructions") {
+                    showXPlaneHelpSheet = true
+                    processActionResult = "Opened FlyWithLua scripts setup instructions."
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func receiptPresentation(_ receipt: ActionReceipt) -> ReceiptPresentation {
+        let appName = receipt.params["name"] ?? receipt.params["app"] ?? "App"
+        let detail = softenedReceiptMessage(receipt.message)
+
+        if receipt.outcome {
+            switch receipt.kind {
+            case .quitApp:
+                return ReceiptPresentation(title: "\(appName) is closing", detail: detail, trySteps: [])
+            case .forceQuitApp:
+                return ReceiptPresentation(title: "\(appName) was force quit", detail: detail, trySteps: [])
+            case .pauseBackgroundScans:
+                return ReceiptPresentation(title: "Background scan policy updated", detail: detail, trySteps: [])
+            case .openBridgeFolder:
+                return ReceiptPresentation(title: "Bridge folder opened", detail: detail, trySteps: [])
+            case .exportDiagnostics:
+                return ReceiptPresentation(title: "Diagnostics export completed", detail: detail, trySteps: [])
+            case .createSupportPack:
+                return ReceiptPresentation(title: "Support Pack created", detail: detail, trySteps: [])
+            case .cleanerAction:
+                return ReceiptPresentation(title: "Cleaner action completed", detail: detail, trySteps: [])
+            }
+        }
+
+        switch receipt.kind {
+        case .quitApp, .forceQuitApp:
+            return ReceiptPresentation(
+                title: "Couldn’t close \(appName) yet",
+                detail: detail,
+                trySteps: [
+                    "Open Activity Monitor and end the process manually if it is still running.",
+                    "If macOS blocked automation, review Privacy & Security permissions for CruiseControl.",
+                    "Retry from CruiseControl after relaunching the target app."
+                ]
+            )
+        case .openBridgeFolder:
+            return ReceiptPresentation(
+                title: "Couldn’t open bridge folder",
+                detail: detail,
+                trySteps: [
+                    "Create ~/Library/Application Support/CruiseControl if it is missing.",
+                    "Check Finder permissions for your home Library folder.",
+                    "Retry Open Bridge Folder."
+                ]
+            )
+        case .exportDiagnostics:
+            return ReceiptPresentation(
+                title: "Diagnostics export didn’t complete",
+                detail: detail,
+                trySteps: [
+                    "Save to Downloads first, then move the file later.",
+                    "Confirm CruiseControl can write to the selected folder.",
+                    "Retry export and include the error line when contacting support."
+                ]
+            )
+        case .createSupportPack:
+            return ReceiptPresentation(
+                title: "Support Pack creation didn’t complete",
+                detail: detail,
+                trySteps: [
+                    "Save as .zip in Downloads first.",
+                    "Check free disk space and folder write permissions.",
+                    "Use Copy Summary and attach diagnostics JSON if zip creation keeps failing."
+                ]
+            )
+        case .pauseBackgroundScans:
+            return ReceiptPresentation(
+                title: "Background scan policy update failed",
+                detail: detail,
+                trySteps: [
+                    "Toggle the setting again and wait 2-3 seconds.",
+                    "Ensure Safe Mode is not forcing scan pause behavior.",
+                    "Restart CruiseControl if the UI appears out of sync."
+                ]
+            )
+        case .cleanerAction:
+            return ReceiptPresentation(
+                title: "Cleaner action did not complete",
+                detail: detail,
+                trySteps: [
+                    "Try Quarantine first, then delete after verification.",
+                    "Close apps using the selected files before retrying.",
+                    "Review permissions for the affected folder paths."
+                ]
+            )
+        }
+    }
+
+    private func softenedReceiptMessage(_ message: String) -> String {
+        let lowered = message.lowercased()
+        if lowered.contains("operation not permitted") || lowered.contains("not permitted") {
+            return "macOS blocked that step before it finished. Check Privacy & Security permissions, then retry."
+        }
+        if lowered.contains("failed to export diagnostics") {
+            return "CruiseControl could not write the diagnostics file to that location."
+        }
+        if lowered.contains("unable to open bridge folder") {
+            return "CruiseControl could not open the bridge folder in Finder."
+        }
+        return message
+    }
+
+    private func openActivityMonitorApp() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Activity Monitor"]
+        do {
+            try process.run()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func openPrivacySecuritySettings() -> Bool {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security") else {
+            return false
+        }
+        return NSWorkspace.shared.open(url)
     }
 
     private func wizardStep(title: String, good: Bool, detail: String) -> some View {
@@ -3437,7 +3845,7 @@ struct MenuContentView: View {
 
         let lowered = outcome.message.lowercased()
         if lowered.contains("not allowed (cruisecontrol)") {
-            return "Not allowed (CruiseControl)."
+            return "CruiseControl cannot terminate itself."
         }
         if lowered.contains("already quitting") {
             return "Already quitting..."
@@ -3446,7 +3854,10 @@ struct MenuContentView: View {
             return "App did not respond to Quit. Try Force Quit."
         }
         if lowered.contains("cannot be terminated programmatically") {
-            return "This process cannot be terminated programmatically. Open Activity Monitor."
+            return "This app can’t be closed directly by CruiseControl. Use Activity Monitor."
+        }
+        if lowered.contains("operation not permitted") || lowered.contains("not permitted") {
+            return "macOS blocked the close request. Check Privacy & Security permissions, then try again."
         }
         return outcome.message
     }
@@ -3500,7 +3911,7 @@ struct MenuContentView: View {
         terminationFallback = nil
         let before = sampler.metricSamples.last
         let outcome = operation()
-        processActionResult = outcome.message
+        processActionResult = softenedReceiptMessage(outcome.message)
 
         Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -3883,6 +4294,11 @@ struct MenuContentView: View {
     private func runSmartScan() {
         guard !smartScanRunState.isRunning else { return }
 
+        guard !featureStore.safeModeEnabled else {
+            processActionResult = "Safe Mode is enabled. Exit Safe Mode to run Smart Scan."
+            return
+        }
+
         guard !smartScanRoots.isEmpty else {
             processActionResult = "Select at least one Large Files scope before running Smart Scan."
             return
@@ -3914,7 +4330,7 @@ struct MenuContentView: View {
             }
 
             await scanOptimizationModule()
-            if !(featureStore.pauseBackgroundScansDuringSim && sampler.isSimActive) {
+            if !featureStore.safeModeEnabled && !(featureStore.pauseBackgroundScansDuringSim && sampler.isSimActive) {
                 scanCleanerModule()
                 scanLargeFilesModule()
             }
@@ -3926,6 +4342,10 @@ struct MenuContentView: View {
 
     private func scanCleanerModule() {
         guard !cleanerLoading else { return }
+        guard !featureStore.safeModeEnabled else {
+            processActionResult = "Safe Mode is enabled. Exit Safe Mode to run Cleaner scans."
+            return
+        }
         cleanerLoading = true
 
         Task {
@@ -3941,6 +4361,10 @@ struct MenuContentView: View {
 
     private func scanLargeFilesModule() {
         guard !largeFilesLoading else { return }
+        guard !featureStore.safeModeEnabled else {
+            processActionResult = "Safe Mode is enabled. Exit Safe Mode to run Large Files scans."
+            return
+        }
         guard !smartScanRoots.isEmpty else {
             processActionResult = "Choose at least one folder scope for Large Files scan."
             return
@@ -4179,6 +4603,7 @@ struct MenuContentView: View {
             "udpPort": String(settings.xPlaneUDPPort),
             "workloadProfile": featureStore.workloadProfile.rawValue,
             "demoMockMode": featureStore.demoMockModeEnabled ? "true" : "false",
+            "safeModeEnabled": featureStore.safeModeEnabled ? "true" : "false",
             "governorEnabled": settings.governorModeEnabled ? "true" : "false",
             "governorHost": settings.governorCommandHost,
             "governorPort": String(settings.governorCommandPort)

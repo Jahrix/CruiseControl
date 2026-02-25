@@ -245,6 +245,7 @@ enum ActionKind: String, Codable {
     case pauseBackgroundScans
     case openBridgeFolder
     case exportDiagnostics
+    case createSupportPack
     case cleanerAction
 }
 
