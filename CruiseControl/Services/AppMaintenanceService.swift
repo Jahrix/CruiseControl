@@ -6,6 +6,7 @@ struct UpdateCheckOutcome {
     let message: String
     let latestVersion: String?
     let releaseURL: URL?
+    let isUpdateAvailable: Bool = false
 }
 
 private struct GitHubReleaseInfo {
@@ -153,7 +154,8 @@ enum AppMaintenanceService {
                 success: false,
                 message: "Update \(release.latestVersion) found, but no .zip app asset was published. Open Releases and download manually.",
                 latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL
+                releaseURL: release.releaseURL,
+                isUpdateAvailable: true
             )
         }
 
@@ -168,7 +170,8 @@ enum AppMaintenanceService {
                 success: true,
                 message: "Update \(release.latestVersion) is available.",
                 latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL
+                releaseURL: release.releaseURL,
+                isUpdateAvailable: true
             )
         case .openReleases:
             if let releaseURL = release.releaseURL {
@@ -178,7 +181,8 @@ enum AppMaintenanceService {
                 success: true,
                 message: "Opened releases page for update \(release.latestVersion).",
                 latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL
+                releaseURL: release.releaseURL,
+                isUpdateAvailable: true
             )
         case .installNow:
             do {
@@ -187,14 +191,16 @@ enum AppMaintenanceService {
                     success: true,
                     message: installMessage,
                     latestVersion: release.latestVersion,
-                    releaseURL: release.releaseURL
+                    releaseURL: release.releaseURL,
+                    isUpdateAvailable: true
                 )
             } catch {
                 return UpdateCheckOutcome(
                     success: false,
                     message: "Update download/install failed: \(error.localizedDescription)",
                     latestVersion: release.latestVersion,
-                    releaseURL: release.releaseURL
+                    releaseURL: release.releaseURL,
+                    isUpdateAvailable: true
                 )
             }
         }
@@ -218,7 +224,8 @@ enum AppMaintenanceService {
                 success: true,
                 message: "New version available: \(release.latestVersion) (current \(release.currentVersion)).",
                 latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL
+                releaseURL: release.releaseURL,
+                isUpdateAvailable: true
             )
         }
         return UpdateCheckOutcome(

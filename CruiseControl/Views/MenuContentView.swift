@@ -1106,6 +1106,12 @@ struct MenuContentView: View {
                     }
                     .pickerStyle(.segmented)
 
+                    if !telemetryIsLive {
+                        Text("Last session / historical data. Live telemetry is \(sampler.telemetryLiveState.displayName).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     if samples.isEmpty {
                         Text("No timeline samples yet.")
                             .foregroundStyle(.secondary)
@@ -1253,21 +1259,9 @@ struct MenuContentView: View {
                         }
                     }
 
-                    HStack {
-                        Button("New Profile") {
-                            processActionResult = "Custom profiles are not available in this build."
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(true)
-
-                        Spacer()
-
-                        Button("Delete") {
-                            processActionResult = "Built-in profiles cannot be deleted."
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(true)
-                    }
+                    Text("Custom profile create/delete is coming soon in this beta.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -1309,9 +1303,7 @@ struct MenuContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Button("Duplicate") {
-                            processActionResult = "Duplicate is not available in this build."
-                        }
+                        Button("Duplicate (Coming soon)") {}
                         .buttonStyle(.bordered)
                         .disabled(true)
                     }
@@ -2086,6 +2078,20 @@ struct MenuContentView: View {
                     Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and regulator control status.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+
+                    if let lastProcessSampleAt = sampler.lastProcessSampleAt {
+                        Text("Process sampler last success: \(relativeAgeText(from: lastProcessSampleAt))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let processSamplingStatusMessage = sampler.processSamplingStatusMessage {
+                        Text("Process sampler: \(processSamplingStatusMessage)")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Process sampler: waiting for first sample.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -2690,7 +2696,7 @@ struct MenuContentView: View {
                     Button("Check for Updates...") {
                         Task {
                             let current = AppMaintenanceService.currentVersionString()
-                            let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(currentVersion: current)
+                            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current)
                             await MainActor.run {
                                 updateCheckStatus = outcome.message
                             }
@@ -2940,10 +2946,10 @@ struct MenuContentView: View {
         let simValue: String
         let simTint: Color
         switch sampler.telemetryLiveState {
-        case .live:
+        case .live where simIsFresh:
             simValue = "Live"
             simTint = .green
-        case .stale:
+        case .live, .stale:
             simValue = "Stale"
             simTint = .orange
         case .listening:
@@ -2954,18 +2960,28 @@ struct MenuContentView: View {
             simTint = .secondary
         }
 
-        let pressureIndexText: String
-        if let index = sampler.metricSamples.last?.pressureIndex {
-            pressureIndexText = String(format: "%.2f", index)
+        let pressureValue: String
+        let pressureTint: Color
+        if systemIsFresh {
+            let pressureIndexText: String
+            if let index = sampler.metricSamples.last?.pressureIndex {
+                pressureIndexText = String(format: "%.2f", index)
+            } else {
+                pressureIndexText = "—"
+            }
+            pressureValue = "\(sampler.snapshot.memoryPressure.displayName) \(pressureIndexText)"
+            pressureTint = color(for: sampler.snapshot.memoryPressure)
         } else {
-            pressureIndexText = "—"
+            pressureValue = "—"
+            pressureTint = .secondary
         }
-        let pressureValue = "\(sampler.snapshot.memoryPressure.displayName) \(pressureIndexText)"
-        let pressureTint = color(for: sampler.snapshot.memoryPressure)
 
         let bottleneckValue: String
         let bottleneckTint: Color
-        if sampler.metricSamples.isEmpty {
+        if !systemIsFresh {
+            bottleneckValue = "Idle"
+            bottleneckTint = .secondary
+        } else if sampler.metricSamples.isEmpty {
             bottleneckValue = "Unknown"
             bottleneckTint = .secondary
         } else if sampler.snapshot.memoryPressure != .green || sampler.alertFlags.swapRisingFast {
@@ -2996,11 +3012,18 @@ struct MenuContentView: View {
             regulatorTint = .orange
         }
 
-        let episodeCount = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
-        let rawStutterCount = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
-        let topCause = sampler.stutterCauseSummaries.first?.cause.displayName ?? "None"
-        let stutterValue = "\(episodeCount) episodes (\(rawStutterCount) raw) • \(topCause)"
-        let stutterTint: Color = episodeCount > 0 ? .orange : .green
+        let stutterValue: String
+        let stutterTint: Color
+        if systemIsFresh {
+            let episodeCount = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
+            let rawStutterCount = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
+            let topCause = sampler.stutterCauseSummaries.first?.cause.displayName ?? "None"
+            stutterValue = "\(episodeCount) episodes (\(rawStutterCount) raw) • \(topCause)"
+            stutterTint = episodeCount > 0 ? .orange : .green
+        } else {
+            stutterValue = "—"
+            stutterTint = .secondary
+        }
 
         let profileValue = profileDisplayName(for: settings.selectedProfile)
 
@@ -3034,6 +3057,21 @@ struct MenuContentView: View {
         let lastPacket = sampler.snapshot.udpStatus.lastPacketDate ?? sampler.snapshot.udpStatus.lastValidPacketDate
         guard let lastPacket else { return nil }
         return max(now.timeIntervalSince(lastPacket), 0)
+    }
+
+    private var systemSampleAgeSeconds: TimeInterval? {
+        guard let lastUpdated = sampler.snapshot.lastUpdated else { return nil }
+        return max(now.timeIntervalSince(lastUpdated), 0)
+    }
+
+    private var systemIsFresh: Bool {
+        guard let age = systemSampleAgeSeconds else { return false }
+        return age <= 10.0
+    }
+
+    private var simIsFresh: Bool {
+        guard let age = telemetryLastPacketAgeSeconds else { return false }
+        return age <= 10.0
     }
 
     private var telemetryIsLive: Bool {
@@ -3290,6 +3328,14 @@ struct MenuContentView: View {
             return "Just now"
         }
         return "\(secondsAgo)s ago"
+    }
+
+    private func relativeAgeShort(from date: Date, now: Date) -> String {
+        let seconds = max(Int(now.timeIntervalSince(date)), 0)
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        if seconds < 86400 { return "\(seconds / 3600)h" }
+        return "\(seconds / 86400)d"
     }
 
     private func telemetryLiveStateColor(_ state: TelemetryLiveState) -> Color {
