@@ -25,8 +25,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var overlayPanel: NSPanel?
 
     private let warningCategoryIdentifier = "PROJECT_SPEED_WARNING"
+    private let defaults = UserDefaults.standard
+
+    private enum LifecycleKeys {
+        static let cleanShutdown = "app.lifecycle.cleanShutdown"
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let wasCleanShutdown = defaults.object(forKey: LifecycleKeys.cleanShutdown) as? Bool ?? false
+        let modifierRequestedSafeMode = NSEvent.modifierFlags.contains(.option)
+        defaults.set(false, forKey: LifecycleKeys.cleanShutdown)
+
         NSApp.setActivationPolicy(.regular)
         configureNotifications()
         configureSparkleIfAvailable()
@@ -123,12 +132,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         sampler.configureSampling(interval: settingsStore.samplingInterval.seconds, alpha: settingsStore.smoothingAlpha)
         sampler.configureXPlaneUDP(enabled: settingsStore.xPlaneUDPListeningEnabled, port: settingsStore.xPlaneUDPPort)
+
+        if !wasCleanShutdown || modifierRequestedSafeMode || featureStore.safeModeEnabled {
+            featureStore.activateSafeMode()
+        }
+
         applyRuntimeConfigs()
         sampler.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         pendingRuntimeConfigApplyTask?.cancel()
+        defaults.set(true, forKey: LifecycleKeys.cleanShutdown)
         sampler.stop()
     }
 
@@ -160,8 +175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let alert = NSAlert()
             alert.messageText = "CruiseControl Update Check"
             alert.alertStyle = .informational
-            alert.informativeText = "Current \(AppMaintenanceService.currentVersionBuildString())\n\(outcome.message)"
-            if outcome.isUpdateAvailable, outcome.releaseURL != nil {
+            alert.informativeText = "Current \(AppMaintenanceService.currentVersionString())\n\(outcome.message)"
+            if outcome.releaseURL != nil {
                 alert.addButton(withTitle: "Open latest release")
                 alert.addButton(withTitle: "OK")
             } else {
@@ -179,12 +194,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let baseConfig = settingsStore.governorConfig
         let telemetryICAO = sampler.snapshot.xplaneTelemetry?.nearestAirportICAO
         let effectiveConfig = featureStore.effectiveGovernorConfig(base: baseConfig, telemetryICAO: telemetryICAO)
+        let effectiveProfile: ProfileKind = featureStore.safeModeEnabled ? .generalPerformance : featureStore.workloadProfile
+        let demoMockModeEnabled = featureStore.safeModeEnabled ? false : featureStore.demoMockModeEnabled
+
         sampler.configureGovernor(config: effectiveConfig)
         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
-        sampler.configureWorkloadProfile(featureStore.workloadProfile)
+        sampler.configureWorkloadProfile(effectiveProfile)
         sampler.configureRetention(window: featureStore.historyDuration)
         sampler.configureCPUBudgetMode(enabled: featureStore.cpuBudgetModeEnabled)
-        sampler.configureDemoMockMode(enabled: featureStore.demoMockModeEnabled)
+        sampler.configureDemoMockMode(enabled: demoMockModeEnabled)
     }
 
     private func updateOverlayVisibility(enabled: Bool) {

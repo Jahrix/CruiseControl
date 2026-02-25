@@ -208,6 +208,24 @@ enum ProfileKind: String, Codable, CaseIterable, Identifiable {
             return 0.5
         }
     }
+
+    var minimumSamplingInterval: TimeInterval {
+        switch self {
+        case .generalPerformance:
+            return 1.0
+        case .simMode:
+            return 0.5
+        }
+    }
+
+    var maximumSamplingInterval: TimeInterval {
+        switch self {
+        case .generalPerformance:
+            return 2.0
+        case .simMode:
+            return 1.0
+        }
+    }
 }
 
 struct ProcessImpact: Identifiable, Codable, Hashable {
@@ -245,6 +263,7 @@ enum ActionKind: String, Codable {
     case pauseBackgroundScans
     case openBridgeFolder
     case exportDiagnostics
+    case createSupportPack
     case cleanerAction
 }
 

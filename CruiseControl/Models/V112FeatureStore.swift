@@ -91,6 +91,10 @@ final class V112FeatureStore: ObservableObject {
         didSet { save() }
     }
 
+    @Published var safeModeEnabled: Bool {
+        didSet { save() }
+    }
+
     private let defaults: UserDefaults
 
     private enum Keys {
@@ -111,6 +115,7 @@ final class V112FeatureStore: ObservableObject {
         static let largeFilesTopN = "v114.largeFiles.topN"
         static let largeFilesDefaultScopes = "v114.largeFiles.defaultScopes"
         static let pauseBackgroundScansDuringSim = "v114.scans.pauseWhenSimActive"
+        static let safeModeEnabled = "v120.safeMode.enabled"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -163,6 +168,18 @@ final class V112FeatureStore: ObservableObject {
 
         self.largeFilesDefaultScopes = defaults.array(forKey: Keys.largeFilesDefaultScopes) as? [String] ?? []
         self.pauseBackgroundScansDuringSim = defaults.object(forKey: Keys.pauseBackgroundScansDuringSim) as? Bool ?? true
+        self.safeModeEnabled = defaults.object(forKey: Keys.safeModeEnabled) as? Bool ?? false
+    }
+
+    func activateSafeMode() {
+        safeModeEnabled = true
+        demoMockModeEnabled = false
+        pauseBackgroundScansDuringSim = true
+        workloadProfile = .generalPerformance
+    }
+
+    func deactivateSafeMode() {
+        safeModeEnabled = false
     }
 
     func upsertAirportProfile(_ profile: AirportGovernorProfile) {
@@ -298,6 +315,7 @@ final class V112FeatureStore: ObservableObject {
         defaults.set(largeFilesTopN, forKey: Keys.largeFilesTopN)
         defaults.set(largeFilesDefaultScopes, forKey: Keys.largeFilesDefaultScopes)
         defaults.set(pauseBackgroundScansDuringSim, forKey: Keys.pauseBackgroundScansDuringSim)
+        defaults.set(safeModeEnabled, forKey: Keys.safeModeEnabled)
 
         if let profilesData = try? JSONEncoder().encode(airportProfiles) {
             defaults.set(profilesData, forKey: Keys.airportProfiles)
