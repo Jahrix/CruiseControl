@@ -6,7 +6,24 @@ struct UpdateCheckOutcome {
     let message: String
     let latestVersion: String?
     let releaseURL: URL?
-    let isUpdateAvailable: Bool = false
+    let isUpdateAvailable: Bool
+    let isOffline: Bool
+
+    init(
+        success: Bool,
+        message: String,
+        latestVersion: String?,
+        releaseURL: URL?,
+        isUpdateAvailable: Bool = false,
+        isOffline: Bool = false
+    ) {
+        self.success = success
+        self.message = message
+        self.latestVersion = latestVersion
+        self.releaseURL = releaseURL
+        self.isUpdateAvailable = isUpdateAvailable
+        self.isOffline = isOffline
+    }
 }
 
 private struct GitHubReleaseInfo {
@@ -145,7 +162,8 @@ enum AppMaintenanceService {
                 success: true,
                 message: "You are up to date (\(release.currentVersion)).",
                 latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL
+                releaseURL: release.releaseURL,
+                isUpdateAvailable: false
             )
         }
 
@@ -213,6 +231,18 @@ enum AppMaintenanceService {
         return "Unknown"
     }
 
+    static func currentBuildString() -> String {
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+           !build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return build
+        }
+        return "Unknown"
+    }
+
+    static func currentVersionBuildString() -> String {
+        "\(currentVersionString()) (\(currentBuildString()))"
+    }
+
     private static func checkGitHubReleases(currentVersion: String) async -> UpdateCheckOutcome {
         let fetched = await fetchGitHubReleaseInfo(currentVersion: currentVersion)
         guard let release = fetched.info else {
@@ -232,7 +262,8 @@ enum AppMaintenanceService {
             success: true,
             message: "You are up to date (\(release.currentVersion)).",
             latestVersion: release.latestVersion,
-            releaseURL: release.releaseURL
+            releaseURL: release.releaseURL,
+            isUpdateAvailable: false
         )
     }
 
@@ -331,6 +362,19 @@ enum AppMaintenanceService {
                 outcome: nil
             )
         } catch {
+            if isOfflineError(error) {
+                return GitHubReleaseFetch(
+                    info: nil,
+                    outcome: UpdateCheckOutcome(
+                        success: true,
+                        message: "You appear to be offline. Current version is \(currentVersionBuildString()). Connect to the internet and check again.",
+                        latestVersion: nil,
+                        releaseURL: githubReleasesPageURL,
+                        isUpdateAvailable: false,
+                        isOffline: true
+                    )
+                )
+            }
             return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: \(error.localizedDescription)", latestVersion: nil, releaseURL: githubReleasesPageURL))
         }
     }
@@ -397,6 +441,19 @@ enum AppMaintenanceService {
     private static func normalizedVersion(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "v", with: "", options: [.caseInsensitive, .anchored])
+    }
+
+    private static func isOfflineError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+
+        switch urlError.code {
+        case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     private enum UpdateInstallAction {

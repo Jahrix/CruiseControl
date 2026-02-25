@@ -7,15 +7,18 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_PATH="${REPO_ROOT}/CruiseControl.xcodeproj"
 SCHEME="CruiseControl"
 DERIVED_DATA_PATH="${REPO_ROOT}/build"
-APP_PATH="${DERIVED_DATA_PATH}/Build/Products/Release/CruiseControl.app"
+DEFAULT_APP_PATH="${DERIVED_DATA_PATH}/Build/Products/Release/CruiseControl.app"
+APP_SOURCE_PATH="${APP_SOURCE_PATH:-${DEFAULT_APP_PATH}}"
 
 DIST_DIR="${REPO_ROOT}/dist"
 STAGE_DIR="${DIST_DIR}/stage"
 DMG_DIR="${DIST_DIR}/dmg"
 
 VOLUME_NAME="CruiseControl"
-DMG_PATH="${DMG_DIR}/CruiseControl.dmg"
-TEMP_RW_DMG="${DMG_DIR}/CruiseControl-temp.dmg"
+
+function sanitize_component() {
+  printf "%s" "$1" | tr " " "-" | tr -cd "[:alnum:]._-"
+}
 
 function log_info() {
   printf "[build_dmg] %s\n" "$1"
@@ -39,21 +42,42 @@ mkdir -p "${DIST_DIR}" "${DMG_DIR}"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
 
-log_info "Building Release app (${SCHEME})"
-xcodebuild -project "${PROJECT_PATH}" \
-  -scheme "${SCHEME}" \
-  -configuration Release \
-  -derivedDataPath "${DERIVED_DATA_PATH}" \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  log_info "Building Release app (${SCHEME})"
+  xcodebuild -project "${PROJECT_PATH}" \
+    -scheme "${SCHEME}" \
+    -configuration Release \
+    -derivedDataPath "${DERIVED_DATA_PATH}" \
+    CODE_SIGNING_ALLOWED=NO \
+    build
+else
+  log_info "Skipping xcodebuild (SKIP_BUILD=1); packaging app at ${APP_SOURCE_PATH}"
+fi
 
-if [[ ! -d "${APP_PATH}" ]]; then
-  echo "Expected app not found: ${APP_PATH}"
+if [[ ! -d "${APP_SOURCE_PATH}" ]]; then
+  echo "Expected app not found: ${APP_SOURCE_PATH}"
   exit 1
 fi
 
+APP_INFO_PLIST="${APP_SOURCE_PATH}/Contents/Info.plist"
+if [[ ! -f "${APP_INFO_PLIST}" ]]; then
+  echo "Expected Info.plist not found: ${APP_INFO_PLIST}"
+  exit 1
+fi
+
+VERSION_RAW="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_INFO_PLIST}" 2>/dev/null || true)"
+BUILD_RAW="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_INFO_PLIST}" 2>/dev/null || true)"
+VERSION="$(sanitize_component "${VERSION_RAW:-0.0.0}")"
+BUILD="$(sanitize_component "${BUILD_RAW:-0}")"
+if [[ -z "${VERSION}" ]]; then VERSION="0.0.0"; fi
+if [[ -z "${BUILD}" ]]; then BUILD="0"; fi
+
+DMG_FILENAME="CruiseControl-${VERSION}-${BUILD}.dmg"
+DMG_PATH="${DMG_DIR}/${DMG_FILENAME}"
+TEMP_RW_DMG="${DMG_DIR}/CruiseControl-${VERSION}-${BUILD}-temp.dmg"
+
 log_info "Preparing DMG staging folder"
-cp -R "${APP_PATH}" "${STAGE_DIR}/CruiseControl.app"
+cp -R "${APP_SOURCE_PATH}" "${STAGE_DIR}/CruiseControl.app"
 ln -s /Applications "${STAGE_DIR}/Applications"
 rm -f "${DMG_PATH}" "${TEMP_RW_DMG}"
 

@@ -154,6 +154,50 @@ struct StutterCauseSummary: Identifiable, Codable {
     var id: String { cause.rawValue }
 }
 
+struct SessionReport: Codable {
+    let sessionStartAt: Date
+    let sessionEndAt: Date
+    let durationSeconds: Int
+    let avgPressureIndex: Double
+    let maxPressureIndex: Double
+    let stutterEpisodesCount: Int
+    let topCauses: [TopCause]
+    let worstWindow: WorstWindow?
+    let actionsTakenSummary: ActionsTakenSummary
+    let advisorTriggersSummary: AdvisorTriggersSummary?
+    let keyRecommendations: [String]
+
+    struct TopCause: Codable, Identifiable {
+        let cause: String
+        let count: Int
+
+        var id: String { cause }
+    }
+
+    struct WorstWindow: Codable {
+        let startAt: Date
+        let endAt: Date
+        let reason: String
+    }
+
+    struct ActionsTakenSummary: Codable {
+        let count: Int
+        let topActions: [ActionBreakdown]
+
+        struct ActionBreakdown: Codable, Identifiable {
+            let action: String
+            let count: Int
+
+            var id: String { action }
+        }
+    }
+
+    struct AdvisorTriggersSummary: Codable {
+        let count: Int
+        let topTriggers: [String]
+    }
+}
+
 enum StutterCause: String, Codable, CaseIterable {
     case swapThrash
     case diskStall
@@ -180,12 +224,30 @@ enum StutterCause: String, Codable, CaseIterable {
     }
 }
 
+enum StutterMetricAvailability: String, Codable {
+    case full
+    case partial
+    case unavailable
+
+    var displayName: String {
+        switch self {
+        case .full:
+            return "Full"
+        case .partial:
+            return "Partial"
+        case .unavailable:
+            return "Unavailable"
+        }
+    }
+}
+
 struct StutterEvent: Identifiable, Codable {
     let id: UUID
     let timestamp: Date
     let severity: Double
     let classification: StutterCause
     let confidence: Double
+    let metricAvailability: StutterMetricAvailability
     let evidencePoints: [String]
     let windowRef: String
 
@@ -219,6 +281,7 @@ struct StutterEvent: Identifiable, Codable {
         severity: Double,
         classification: StutterCause,
         confidence: Double,
+        metricAvailability: StutterMetricAvailability = .full,
         evidencePoints: [String],
         windowRef: String
     ) {
@@ -227,6 +290,7 @@ struct StutterEvent: Identifiable, Codable {
         self.severity = severity
         self.classification = classification
         self.confidence = confidence
+        self.metricAvailability = metricAvailability
         self.evidencePoints = evidencePoints
         self.windowRef = windowRef
         self.reason = reason
@@ -257,8 +321,8 @@ struct StutterEpisode: Identifiable, Codable {
 
 enum HistoryDurationOption: String, CaseIterable, Identifiable, Codable {
     case tenMinutes = "10m"
-    case twentyMinutes = "20m"
     case thirtyMinutes = "30m"
+    case sixtyMinutes = "60m"
 
     var id: String { rawValue }
 
@@ -266,10 +330,10 @@ enum HistoryDurationOption: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .tenMinutes:
             return 600
-        case .twentyMinutes:
-            return 1_200
         case .thirtyMinutes:
             return 1_800
+        case .sixtyMinutes:
+            return 3_600
         }
     }
 }

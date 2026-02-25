@@ -1,10 +1,19 @@
 # CruiseControl DMG Release Workflow
 
-This repo includes a local DMG packager for CruiseControl.
+This document shows the fastest path to produce a distributable DMG for CruiseControl.
 
-Note: this repository already used an uppercase `Scripts/` directory, so the packager is `./Scripts/build_dmg.sh`.
+## Prerequisites
 
-## One-command build
+- Full Xcode installed
+- `xcodebuild` available in your shell
+
+If `xcodebuild` fails because CommandLineTools is selected:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+```
+
+## Build DMG (default local flow)
 
 From repo root:
 
@@ -12,73 +21,71 @@ From repo root:
 ./Scripts/build_dmg.sh
 ```
 
-The script will:
-- Build `CruiseControl.app` in Release mode using Xcode (`CODE_SIGNING_ALLOWED=NO`)
-- Stage files into `dist/stage/`
-- Create `dist/dmg/CruiseControl.dmg`
+What this script does:
 
-Output app path used by script:
-- `build/Build/Products/Release/CruiseControl.app`
+1. Builds `CruiseControl.app` (Release, unsigned local build)
+2. Stages a DMG folder with:
+   - `CruiseControl.app`
+   - `Applications` symlink
+3. Creates a versioned DMG file:
+   - `dist/dmg/CruiseControl-<version>-<build>.dmg`
 
-Output DMG path:
-- `dist/dmg/CruiseControl.dmg`
+Version/build comes from `CruiseControl.app/Contents/Info.plist`:
+- `CFBundleShortVersionString` -> `<version>`
+- `CFBundleVersion` -> `<build>`
 
-## Optional DMG window cosmetics
+## Optional Finder layout cosmetics
 
-Enable simple Finder icon positioning:
+To attempt icon positioning inside the DMG window:
 
 ```bash
 DMG_COSMETIC=1 ./Scripts/build_dmg.sh
 ```
 
-This is optional and non-blocking. If Finder scripting fails, DMG creation continues.
+If Finder scripting fails, DMG creation still succeeds.
 
-## Install flow
+## Verify DMG contents quickly
 
-1. Open `dist/dmg/CruiseControl.dmg`
-2. Drag `CruiseControl.app` to `Applications`
-3. Launch from `Applications`
+```bash
+LATEST_DMG="$(ls -t dist/dmg/CruiseControl-*.dmg | head -n 1)"
+MOUNT_POINT="$(mktemp -d /tmp/cruisecontrol-dmg.XXXXXX)"
+hdiutil attach "$LATEST_DMG" -mountpoint "$MOUNT_POINT" -nobrowse
+ls -la "$MOUNT_POINT"
+hdiutil detach "$MOUNT_POINT"
+```
 
-## Gatekeeper notes (unsigned local builds)
+You should see:
+- `CruiseControl.app`
+- `Applications -> /Applications`
 
-Unsigned local builds can show “cannot be opened” warnings.
+## Install test
 
-Preferred:
-- Right-click app -> `Open` -> confirm `Open`
+1. Open the generated DMG.
+2. Drag `CruiseControl.app` into `Applications`.
+3. Launch `/Applications/CruiseControl.app`.
 
-If needed for local testing only:
+For unsigned local builds, macOS may warn on first run. Use right-click `Open` once.
+
+## Optional signing + notarization
+
+Local DMG creation is intentionally non-blocking and does not require Apple signing credentials.
+
+When you are ready to sign/notarize, use:
+- [NOTARIZATION.md](./NOTARIZATION.md)
+- `./Scripts/notarize_dmg.sh`
+
+## Troubleshooting
+
+### DMG not generated
+
+- Confirm the app exists at `build/Build/Products/Release/CruiseControl.app`
+- Re-run `./Scripts/build_dmg.sh` and inspect the first failing command
+
+### App fails to open after copying to `/Applications`
+
+- Confirm path: `/Applications/CruiseControl.app`
+- For unsigned local testing only:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/CruiseControl.app
 ```
-
-## Optional future: Developer ID signing + notarization
-
-When ready for public distribution:
-- Sign app with Developer ID Application certificate
-- Notarize with `notarytool`
-- Staple notarization ticket
-- Rebuild/sign DMG as needed
-
-These steps are intentionally not enforced in the local script.
-
-## Troubleshooting
-
-### `xcodebuild` requires full Xcode
-
-If you see CommandLineTools errors:
-
-```bash
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-```
-
-### App does not open after copy
-
-- Confirm app exists at `/Applications/CruiseControl.app`
-- Use right-click `Open`
-- Remove quarantine attribute (local testing only) shown above
-
-### DMG not generated
-
-- Ensure the app exists at `build/Build/Products/Release/CruiseControl.app`
-- Re-run script and check first failing command
