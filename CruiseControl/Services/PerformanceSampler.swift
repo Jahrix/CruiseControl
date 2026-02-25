@@ -131,6 +131,8 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var actionReceipts: [ActionReceipt] = []
     @Published private(set) var workloadProfile: ProfileKind = .generalPerformance
     @Published private(set) var stutterCauseSummaries: [StutterCauseSummary] = []
+    @Published private(set) var lastProcessSampleAt: Date?
+    @Published private(set) var processSamplingStatusMessage: String?
     @Published private(set) var sessionReport: SessionReport?
     @Published private(set) var configuredRetentionSeconds: TimeInterval = HistoryDurationOption.tenMinutes.seconds
     @Published private(set) var cpuBudgetModeEnabled: Bool = false
@@ -273,6 +275,13 @@ final class PerformanceSampler: ObservableObject {
     }
 
     private var stutterEpisodeAccumulators: [StutterCause: StutterEpisodeAccumulator] = [:]
+    private var latestTopCPUProcesses: [ProcessSample] = []
+    private var latestTopMemoryProcesses: [ProcessSample] = []
+    private var lastProcessScanAttemptAt: Date?
+    private var lastProcessSampleAtState: Date?
+    private var processSamplingStatusMessageState: String?
+    private let processSamplingIntervalNormalSeconds: TimeInterval = 2.0
+    private let processSamplingIntervalBudgetSeconds: TimeInterval = 8.0
 
     func configureSampling(interval: TimeInterval, alpha: Double) {
         let clampedInterval = max(0.25, min(interval, 2.0))
@@ -859,18 +868,42 @@ final class PerformanceSampler: ObservableObject {
         let telemetry = udpSnapshot.telemetry
 
         var scannedProcesses: [ProcessSample]? = nil
-        let processScanEverySeconds: TimeInterval
-        if cpuBudgetModeEnabledInternal {
-            processScanEverySeconds = profileMode == .simMode ? 2.5 : 4.0
-        } else {
-            processScanEverySeconds = profileMode == .simMode ? 1.2 : 2.0
-        }
-        let processScanModulo = max(Int((processScanEverySeconds / max(samplingIntervalSeconds, 0.2)).rounded(.awayFromZero)), 1)
-        if sampleCount % UInt64(processScanModulo) == 0 {
+        if shouldRunProcessScan(at: now) {
+            lastProcessScanAttemptAt = now
             scannedProcesses = processScanner.sampleProcesses()
         }
 
-        let processDetected = isXPlaneProcessRunning(processes: scannedProcesses)
+        if let scannedProcesses {
+            if scannedProcesses.isEmpty {
+                if latestTopCPUProcesses.isEmpty && latestTopMemoryProcesses.isEmpty {
+                    processSamplingStatusMessageState = "Process sampler returned no rows. CruiseControl may not have permission to inspect other processes."
+                }
+            } else {
+                latestTopCPUProcesses = Array(
+                    scannedProcesses
+                        .sorted { $0.cpuPercent > $1.cpuPercent }
+                        .prefix(5)
+                )
+                latestTopMemoryProcesses = Array(
+                    scannedProcesses
+                        .sorted { $0.memoryBytes > $1.memoryBytes }
+                        .prefix(5)
+                )
+                lastProcessSampleAtState = now
+                processSamplingStatusMessageState = nil
+            }
+        }
+
+        let effectiveTopCPUProcesses = latestTopCPUProcesses
+        let effectiveTopMemoryProcesses = latestTopMemoryProcesses
+
+        let processSampleFreshForDetection = {
+            guard let lastProcessSampleAtState else { return false }
+            return now.timeIntervalSince(lastProcessSampleAtState) <= max(processSamplingIntervalSeconds() * 1.5, 5.0)
+        }()
+        let processDetected = isXPlaneProcessRunning(
+            processes: scannedProcesses ?? (processSampleFreshForDetection ? effectiveTopCPUProcesses : nil)
+        )
         let simActive = processDetected || udpStatus.state == .active
         let liveState = telemetryState(for: udpStatus, simActive: simActive, now: now)
 
@@ -922,7 +955,12 @@ final class PerformanceSampler: ObservableObject {
         )
         historyBuffer.append(historyPoint)
 
-        let sourceProcesses = scannedProcesses ?? topCPUProcesses
+        let sourceProcesses = {
+            if let scannedProcesses, !scannedProcesses.isEmpty {
+                return scannedProcesses
+            }
+            return effectiveTopCPUProcesses
+        }()
         let impactLimit = cpuBudgetModeEnabledInternal ? 3 : 5
         let processImpacts = Array(
             sourceProcesses
@@ -973,7 +1011,7 @@ final class PerformanceSampler: ObservableObject {
             swapRapidIncrease: swapRapidIncrease,
             ioPressureLikely: ioPressureLikely,
             freeDiskBytes: freeDiskBytes,
-            topCPUProcesses: scannedProcesses ?? topCPUProcesses,
+            topCPUProcesses: effectiveTopCPUProcesses,
             simActive: simActive,
             udpStatus: udpStatus
         )
@@ -988,7 +1026,7 @@ final class PerformanceSampler: ObservableObject {
             swapRapidIncrease: swapRapidIncrease,
             ioPressureLikely: ioPressureLikely,
             freeDiskBytes: freeDiskBytes,
-            topCPUProcesses: scannedProcesses ?? topCPUProcesses,
+            topCPUProcesses: effectiveTopCPUProcesses,
             simTelemetry: telemetry
         )
 
@@ -1006,8 +1044,8 @@ final class PerformanceSampler: ObservableObject {
                 telemetry: telemetry,
                 udpStatus: udpStatus,
                 rankedCulprits: culpritItems,
-                topCPU: Array((scannedProcesses ?? topCPUProcesses).prefix(5)),
-                topMemory: Array((scannedProcesses ?? topMemoryProcesses).prefix(5))
+                topCPU: Array(effectiveTopCPUProcesses.prefix(5)),
+                topMemory: Array(effectiveTopMemoryProcesses.prefix(5))
             ) {
                 emittedStutterEvent = recordStutterDetection(stutterEvent, at: now)
             }
@@ -1067,20 +1105,10 @@ final class PerformanceSampler: ObservableObject {
                     governorStatusLine: governorResult.statusLine
                 )
 
-                if let scannedProcesses {
-                    topCPUProcesses = Array(
-                        scannedProcesses
-                            .filter { $0.cpuPercent > 0.1 }
-                            .sorted { $0.cpuPercent > $1.cpuPercent }
-                            .prefix(5)
-                    )
-
-                    topMemoryProcesses = Array(
-                        scannedProcesses
-                            .sorted { $0.memoryBytes > $1.memoryBytes }
-                            .prefix(5)
-                    )
-                }
+                topCPUProcesses = latestTopCPUProcesses
+                topMemoryProcesses = latestTopMemoryProcesses
+                lastProcessSampleAt = lastProcessSampleAtState
+                processSamplingStatusMessage = processSamplingStatusMessageState
 
                 isSimActive = simActive || demoMockModeEnabled
                 warnings = warningItems
@@ -1120,6 +1148,20 @@ final class PerformanceSampler: ObservableObject {
         }
 
         previousSwapUsedBytes = swapUsedBytes
+    }
+
+    private func shouldRunProcessScan(at now: Date) -> Bool {
+        guard let lastProcessScanAttemptAt else {
+            return true
+        }
+        return now.timeIntervalSince(lastProcessScanAttemptAt) >= processSamplingIntervalSeconds()
+    }
+
+    private func processSamplingIntervalSeconds() -> TimeInterval {
+        if cpuBudgetModeEnabledInternal {
+            return processSamplingIntervalBudgetSeconds
+        }
+        return processSamplingIntervalNormalSeconds
     }
 
     private func telemetryState(for udpStatus: XPlaneUDPStatus, simActive: Bool, now: Date) -> TelemetryLiveState {

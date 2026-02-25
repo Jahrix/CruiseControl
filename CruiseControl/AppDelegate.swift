@@ -176,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             alert.messageText = "CruiseControl Update Check"
             alert.alertStyle = .informational
             alert.informativeText = "Current \(AppMaintenanceService.currentVersionString())\n\(outcome.message)"
-            if outcome.releaseURL != nil {
+            if outcome.isUpdateAvailable, outcome.releaseURL != nil {
                 alert.addButton(withTitle: "Open latest release")
                 alert.addButton(withTitle: "OK")
             } else {
