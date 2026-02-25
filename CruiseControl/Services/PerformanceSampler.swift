@@ -2,11 +2,93 @@ import Foundation
 import AppKit
 import Combine
 import UniformTypeIdentifiers
+import Darwin
 
 struct DiagnosticsExportOutcome {
     let success: Bool
     let fileURL: URL?
     let message: String
+}
+
+struct SupportPackOutcome {
+    let success: Bool
+    let destinationURL: URL?
+    let summary: String
+    let message: String
+}
+
+private struct DiagnosticsExportReport: Codable {
+    let generatedAt: Date
+    let profile: String
+    let simActive: Bool
+    let snapshot: SnapshotBody
+    let proof: ProofBody
+    let liveState: LiveStateBody
+    let lastSessionSnapshot: SessionSnapshot?
+    let warnings: [String]
+    let culprits: [String]
+    let topCPUProcesses: [ProcessSample]
+    let topMemoryProcesses: [ProcessSample]
+    let recentHistory: [MetricHistoryPoint]
+    let recentSamples: [MetricSample]
+    let stutterEvents: [StutterEvent]
+    let stutterEpisodes: [StutterEpisode]
+    let stutterCauseSummaries: [StutterCauseSummary]
+    let actionReceipts: [ActionReceipt]
+    let governorDecision: GovernorDecision?
+    let settingsSnapshot: [String: String]
+
+    struct SnapshotBody: Codable {
+        let cpuUserPercent: Double
+        let cpuSystemPercent: Double
+        let memoryPressure: String
+        let memoryPressureTrend: String
+        let compressedMemoryBytes: UInt64
+        let swapUsedBytes: UInt64
+        let swapDelta5MinBytes: Int64
+        let diskReadMBps: Double
+        let diskWriteMBps: Double
+        let freeDiskBytes: UInt64
+        let ioPressureLikely: Bool
+        let thermalState: String
+        let lastUpdated: Date?
+        let xPlaneTelemetrySource: String?
+        let xPlaneFPS: Double?
+        let xPlaneFrameTimeMS: Double?
+        let altitudeAGLFeet: Double?
+        let altitudeMSLFeet: Double?
+        let udpState: String
+        let udpListenAddress: String
+        let udpPacketsPerSecond: Double
+        let udpTotalPackets: UInt64
+        let udpInvalidPackets: UInt64
+        let udpDetail: String?
+        let governorStatusLine: String
+        let governorAckState: String
+        let governorLastCommand: String?
+        let governorLastACK: String?
+    }
+
+    struct ProofBody: Codable {
+        let bridgeModeLabel: String
+        let lodApplied: Bool
+        let recentActivity: Bool
+        let onTarget: Bool
+        let targetLOD: Double?
+        let appliedLOD: Double?
+        let deltaToTarget: Double?
+        let lastSentAt: Date?
+        let lastEvidenceAt: Date?
+        let evidenceLine: String?
+        let reasons: [String]
+    }
+
+    struct LiveStateBody: Codable {
+        let telemetryState: String
+        let telemetryFreshnessSeconds: Double?
+        let hasSimData: Bool
+        let proof: ProofBody
+    }
 }
 
 final class PerformanceSampler: ObservableObject {
@@ -299,83 +381,149 @@ final class PerformanceSampler: ObservableObject {
 
     @MainActor
     func exportDiagnostics(settingsSnapshot: [String: String] = [:]) -> DiagnosticsExportOutcome {
-        struct ExportReport: Codable {
-            let generatedAt: Date
-            let profile: String
-            let simActive: Bool
-            let snapshot: SnapshotBody
-            let proof: ProofBody
-            let liveState: LiveStateBody
-            let lastSessionSnapshot: SessionSnapshot?
-            let warnings: [String]
-            let culprits: [String]
-            let topCPUProcesses: [ProcessSample]
-            let topMemoryProcesses: [ProcessSample]
-            let recentHistory: [MetricHistoryPoint]
-            let recentSamples: [MetricSample]
-            let stutterEvents: [StutterEvent]
-            let stutterEpisodes: [StutterEpisode]
-            let stutterCauseSummaries: [StutterCauseSummary]
-            let actionReceipts: [ActionReceipt]
-            let governorDecision: GovernorDecision?
-            let settingsSnapshot: [String: String]
+        do {
+            let data = try diagnosticsExportData(settingsSnapshot: settingsSnapshot)
 
-            struct SnapshotBody: Codable {
-                let cpuUserPercent: Double
-                let cpuSystemPercent: Double
-                let memoryPressure: String
-                let memoryPressureTrend: String
-                let compressedMemoryBytes: UInt64
-                let swapUsedBytes: UInt64
-                let swapDelta5MinBytes: Int64
-                let diskReadMBps: Double
-                let diskWriteMBps: Double
-                let freeDiskBytes: UInt64
-                let ioPressureLikely: Bool
-                let thermalState: String
-                let lastUpdated: Date?
-                let xPlaneTelemetrySource: String?
-                let xPlaneFPS: Double?
-                let xPlaneFrameTimeMS: Double?
-                let altitudeAGLFeet: Double?
-                let altitudeMSLFeet: Double?
-                let udpState: String
-                let udpListenAddress: String
-                let udpPacketsPerSecond: Double
-                let udpTotalPackets: UInt64
-                let udpInvalidPackets: UInt64
-                let udpDetail: String?
-                let governorStatusLine: String
-                let governorAckState: String
-                let governorLastCommand: String?
-                let governorLastACK: String?
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd-HHmmss"
+            let suggestedName = "CruiseControl-diagnostics-v2-\(formatter.string(from: Date())).json"
+
+            let panel = NSSavePanel()
+            panel.title = "Export Diagnostics"
+            panel.message = "Choose where to save your diagnostics report."
+            panel.nameFieldStringValue = suggestedName
+            panel.canCreateDirectories = true
+            panel.showsTagField = false
+            panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+
+            if #available(macOS 11.0, *) {
+                panel.allowedContentTypes = [UTType.json]
+            } else {
+                panel.allowedFileTypes = ["json"]
             }
 
-            struct ProofBody: Codable {
-                let bridgeModeLabel: String
-                let lodApplied: Bool
-                let recentActivity: Bool
-                let onTarget: Bool
-                let targetLOD: Double?
-                let appliedLOD: Double?
-                let deltaToTarget: Double?
-                let lastSentAt: Date?
-                let lastEvidenceAt: Date?
-                let evidenceLine: String?
-                let reasons: [String]
+            guard panel.runModal() == .OK, let fileURL = panel.url else {
+                return DiagnosticsExportOutcome(success: false, fileURL: nil, message: "Diagnostics export cancelled.")
             }
 
-            struct LiveStateBody: Codable {
-                let telemetryState: String
-                let telemetryFreshnessSeconds: Double?
-                let hasSimData: Bool
-                let proof: ProofBody
+            let directoryURL = fileURL.deletingLastPathComponent()
+            let access = directoryURL.startAccessingSecurityScopedResource()
+            defer {
+                if access { directoryURL.stopAccessingSecurityScopedResource() }
             }
+
+            try data.write(to: fileURL, options: .atomic)
+            return DiagnosticsExportOutcome(success: true, fileURL: fileURL, message: "Diagnostics exported to \(fileURL.path).")
+        } catch {
+            return DiagnosticsExportOutcome(success: false, fileURL: nil, message: "Failed to export diagnostics: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    func createSupportPack(settingsSnapshot: [String: String] = [:]) -> SupportPackOutcome {
+        let summary = supportSummaryText()
+
+        do {
+            let diagnosticsData = try diagnosticsExportData(settingsSnapshot: settingsSnapshot)
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd-HHmmss"
+            let stamp = formatter.string(from: Date())
+            let baseName = "CruiseControl-support-pack-\(stamp)"
+
+            let panel = NSSavePanel()
+            panel.title = "Create Support Pack"
+            panel.message = "Save as .zip for a compressed pack, or omit extension to create a folder."
+            panel.nameFieldStringValue = "\(baseName).zip"
+            panel.canCreateDirectories = true
+            panel.showsTagField = false
+            panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+
+            guard panel.runModal() == .OK, let destinationURL = panel.url else {
+                return SupportPackOutcome(success: false, destinationURL: nil, summary: summary, message: "Support Pack creation cancelled.")
+            }
+
+            let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: workspaceFolder) }
+
+            let packFolder = workspaceFolder.appendingPathComponent(baseName, isDirectory: true)
+            try FileManager.default.createDirectory(at: packFolder, withIntermediateDirectories: true)
+
+            let diagnosticsFile = packFolder.appendingPathComponent("diagnostics-v2.json")
+            let summaryFile = packFolder.appendingPathComponent("support-summary.txt")
+            try diagnosticsData.write(to: diagnosticsFile, options: .atomic)
+            try Data(summary.utf8).write(to: summaryFile, options: .atomic)
+
+            let extensionLowercased = destinationURL.pathExtension.lowercased()
+            if extensionLowercased == "zip" {
+                try zipSupportPack(folderURL: packFolder, destinationZipURL: destinationURL)
+                return SupportPackOutcome(
+                    success: true,
+                    destinationURL: destinationURL,
+                    summary: summary,
+                    message: "Support Pack saved to \(destinationURL.path)."
+                )
+            }
+
+            let folderDestination = destinationURL.pathExtension.isEmpty
+                ? destinationURL
+                : destinationURL.deletingPathExtension()
+            if FileManager.default.fileExists(atPath: folderDestination.path) {
+                try FileManager.default.removeItem(at: folderDestination)
+            }
+            try FileManager.default.copyItem(at: packFolder, to: folderDestination)
+            return SupportPackOutcome(
+                success: true,
+                destinationURL: folderDestination,
+                summary: summary,
+                message: "Support Pack folder saved to \(folderDestination.path)."
+            )
+        } catch {
+            return SupportPackOutcome(success: false, destinationURL: nil, summary: summary, message: "Failed to create Support Pack: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    func supportSummaryText() -> String {
+        let now = Date()
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        let model = macModelIdentifier()
+        let freeDisk = ByteCountFormatter.string(fromByteCount: Int64(snapshot.freeDiskBytes), countStyle: .file)
+        let swap = ByteCountFormatter.string(fromByteCount: Int64(snapshot.swapUsedBytes), countStyle: .memory)
+        let stutterEventsRecent = rawStutterEventsInWindow(lastMinutes: 10).count
+        let stutterEpisodesRecent = stutterEpisodesInWindow(lastMinutes: 10).count
+        let topCause = recentStutterCauseRanking(lastMinutes: 10).first?.cause.displayName ?? "None"
+        let pressure = "\(snapshot.memoryPressure.displayName) (\(snapshot.memoryPressureTrend.rawValue))"
+        let snapshotLine: String
+        if let session = lastSessionSnapshot {
+            let packets = session.telemetrySummary.totalPackets
+            let ackOK = session.governorAckOkCount ?? 0
+            let ackTimeout = session.ackTimeoutCount ?? 0
+            snapshotLine = "Last session: \(timeSummary(for: session)) | packets \(packets) | ACK ok \(ackOK), timeouts \(ackTimeout)."
+        } else {
+            snapshotLine = "Last session: none captured yet."
         }
 
+        return [
+            "CruiseControl Support Summary",
+            "Generated: \(now.formatted(date: .abbreviated, time: .standard))",
+            "Version: \(version) (build \(build))",
+            "Mac model: \(model)",
+            "Free disk: \(freeDisk)",
+            "Swap used: \(swap)",
+            "Memory pressure: \(pressure)",
+            "Stutters (10m): \(stutterEpisodesRecent) episode(s), \(stutterEventsRecent) raw event(s)",
+            "Top stutter cause: \(topCause)",
+            snapshotLine
+        ].joined(separator: "\n")
+    }
+
+    @MainActor
+    private func diagnosticsExportData(settingsSnapshot: [String: String]) throws -> Data {
         let now = Date()
         let proof = computeProofState(now: now)
-        let proofBody = ExportReport.ProofBody(
+        let proofBody = DiagnosticsExportReport.ProofBody(
             bridgeModeLabel: proof.bridgeModeLabel,
             lodApplied: proof.lodApplied,
             recentActivity: proof.recentActivity,
@@ -391,7 +539,7 @@ final class PerformanceSampler: ObservableObject {
         let freshness = snapshot.udpStatus.lastValidPacketDate.map {
             max(now.timeIntervalSince($0), 0)
         }
-        let report = ExportReport(
+        let report = DiagnosticsExportReport(
             generatedAt: now,
             profile: workloadProfile.rawValue,
             simActive: isSimActive,
@@ -450,43 +598,52 @@ final class PerformanceSampler: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(report)
+    }
 
-        do {
-            let data = try encoder.encode(report)
-
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let suggestedName = "CruiseControl-diagnostics-v2-\(formatter.string(from: Date())).json"
-
-            let panel = NSSavePanel()
-            panel.title = "Export Diagnostics"
-            panel.message = "Choose where to save your diagnostics report."
-            panel.nameFieldStringValue = suggestedName
-            panel.canCreateDirectories = true
-            panel.showsTagField = false
-            panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-
-            if #available(macOS 11.0, *) {
-                panel.allowedContentTypes = [UTType.json]
-            } else {
-                panel.allowedFileTypes = ["json"]
-            }
-
-            guard panel.runModal() == .OK, let fileURL = panel.url else {
-                return DiagnosticsExportOutcome(success: false, fileURL: nil, message: "Diagnostics export cancelled.")
-            }
-
-            let directoryURL = fileURL.deletingLastPathComponent()
-            let access = directoryURL.startAccessingSecurityScopedResource()
-            defer {
-                if access { directoryURL.stopAccessingSecurityScopedResource() }
-            }
-
-            try data.write(to: fileURL, options: .atomic)
-            return DiagnosticsExportOutcome(success: true, fileURL: fileURL, message: "Diagnostics exported to \(fileURL.path).")
-        } catch {
-            return DiagnosticsExportOutcome(success: false, fileURL: nil, message: "Failed to export diagnostics: \(error.localizedDescription)")
+    private func zipSupportPack(folderURL: URL, destinationZipURL: URL) throws {
+        if FileManager.default.fileExists(atPath: destinationZipURL.path) {
+            try FileManager.default.removeItem(at: destinationZipURL)
         }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", folderURL.path, destinationZipURL.path]
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw NSError(
+                domain: "CruiseControl.SupportPack",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "zip packaging failed (\(process.terminationStatus))."]
+            )
+        }
+    }
+
+    private func macModelIdentifier() -> String {
+        var size: size_t = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else {
+            return "Unknown"
+        }
+
+        var modelBuffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &modelBuffer, &size, nil, 0) == 0 else {
+            return "Unknown"
+        }
+        return String(cString: modelBuffer)
+    }
+
+    private func timeSummary(for session: SessionSnapshot) -> String {
+        guard let start = session.sessionStartAt else {
+            return "unknown duration"
+        }
+        let end = session.sessionEndAt ?? session.capturedAt
+        let seconds = Int(max(end.timeIntervalSince(start), 0))
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        return "\(minutes)m \(remainder)s"
     }
 
     private func restartTimer() {
