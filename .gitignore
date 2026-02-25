@@ -35,3 +35,6 @@ Scripts/CruiseControl_Governor.lua
 
 # DMG packaging artifacts
 dist/
+
+# Local agent notes (do not commit)
+agents.md
