@@ -203,7 +203,6 @@ struct RecentActionsFeedView: View {
 }
 
 enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
-    case fiveMinutes = "5m"
     case tenMinutes = "10m"
     case thirtyMinutes = "30m"
 
@@ -211,14 +210,40 @@ enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
 
     var minutes: Int {
         switch self {
-        case .fiveMinutes:
-            return 5
         case .tenMinutes:
             return 10
         case .thirtyMinutes:
             return 30
         }
     }
+}
+
+enum FrameTimeLabViewMode: String, CaseIterable, Identifiable {
+    case heatmap = "Show heatmap"
+    case markers = "Show markers"
+
+    var id: String { rawValue }
+}
+
+enum DiagnosticsSubpage: String, CaseIterable, Identifiable {
+    case tools = "Tools"
+    case betaQA = "Beta QA"
+
+    var id: String { rawValue }
+}
+
+private struct FrameTimeHeatmapBin: Identifiable {
+    let id: Int
+    let start: Date
+    let end: Date
+    let intensity: Double
+    let stutterCount: Int
+    let episodeCount: Int
+}
+
+private struct FrameTimeHeatmapSelection: Equatable {
+    let start: Date
+    let end: Date
 }
 
 struct MenuContentView: View {
@@ -294,11 +319,23 @@ struct MenuContentView: View {
     @State private var selectedQuarantineBatchID: String = ""
 
     @State private var updateCheckStatus: String?
+    @State private var updateCheckOutcome: UpdateCheckOutcome?
+    @State private var isCheckingForUpdates: Bool = false
+    @AppStorage("ccPreferredStartSection") private var preferredStartSectionRaw: String = DashboardSection.overview.rawValue
+    @AppStorage("ccOpenXPlaneWizardOnLaunch") private var openXPlaneWizardOnLaunch: Bool = false
     @State private var frameTimeRange: FrameTimeRangeOption = .tenMinutes
+    @State private var frameTimeLabViewMode: FrameTimeLabViewMode = .heatmap
+    @State private var selectedHeatmapWindow: FrameTimeHeatmapSelection?
     @State private var showRawStutterEvents: Bool = false
     @State private var showLastSessionSnapshot: Bool = false
     @State private var selectedStutterEpisodeID: UUID?
     @State private var selectedStutterEventID: UUID?
+    @State private var diagnosticsSubpage: DiagnosticsSubpage = .tools
+    @State private var betaQAObservedWizardLive: Bool = false
+    @State private var betaQAObservedWizardOffline: Bool = false
+    @State private var betaQAExportManuallyVerified: Bool = false
+    @State private var betaQASelfCheckResult: String?
+    @State private var betaQASelfCheckPassed: Bool?
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -402,6 +439,14 @@ struct MenuContentView: View {
             airportImportJSONText = ""
             applyDefaultLargeFileScopesIfNeeded()
             refreshQuarantineBatches()
+            if let preferredSection = DashboardSection(rawValue: preferredStartSectionRaw) {
+                selectedSection = preferredSection
+            }
+            if openXPlaneWizardOnLaunch {
+                selectedSection = .simMode
+                showSimModeChecklist = true
+                openXPlaneWizardOnLaunch = false
+            }
         }
         .onReceive(clockTimer) { newDate in
             now = newDate
@@ -411,6 +456,23 @@ struct MenuContentView: View {
         }
         .onChange(of: selectedAirportProfileICAO) {
             loadAirportProfileEditor()
+        }
+        .onChange(of: frameTimeRange) {
+            selectedHeatmapWindow = nil
+            selectedStutterEpisodeID = nil
+            selectedStutterEventID = nil
+        }
+        .onChange(of: preferredStartSectionRaw) {
+            if let preferredSection = DashboardSection(rawValue: preferredStartSectionRaw) {
+                selectedSection = preferredSection
+            }
+        }
+        .onChange(of: openXPlaneWizardOnLaunch) {
+            if openXPlaneWizardOnLaunch {
+                selectedSection = .simMode
+                showSimModeChecklist = true
+                openXPlaneWizardOnLaunch = false
+            }
         }
         .onChange(of: featureStore.airportProfiles) {
             syncAirportProfileEditorSelection()
@@ -799,13 +861,13 @@ struct MenuContentView: View {
                 let visualTestValue = sampler.proposedRegulatorTestLOD(increase: false, step: regulatorTestStepDown)
                 let testDuration = max(Int(regulatorTestDurationSeconds.rounded()), 1)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("LIVE STATE: \(liveState.displayName.uppercased())")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(telemetryLiveStateColor(liveState))
-                        Spacer()
-                        if let age = telemetryLastPacketAgeSeconds {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Live: \(liveState.displayName)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(telemetryLiveStateColor(liveState))
+                            Spacer()
+                            if let age = telemetryLastPacketAgeSeconds {
                             Text("Telemetry age \(String(format: "%.1fs", age))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -860,7 +922,7 @@ struct MenuContentView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    DisclosureGroup("Last Session", isExpanded: $showLastSessionSnapshot) {
+                        DisclosureGroup("Last Session Snapshot (Historical)", isExpanded: $showLastSessionSnapshot) {
                         VStack(alignment: .leading, spacing: 6) {
                             if let lastSession = sampler.lastSessionSnapshot {
                                 let summary = lastSession.regulatorSummary
@@ -1129,6 +1191,12 @@ struct MenuContentView: View {
         let samples = sampler.metricSamplesInWindow(lastMinutes: frameTimeRange.minutes)
         let episodes = sampler.stutterEpisodesInWindow(lastMinutes: frameTimeRange.minutes)
         let stutters = sampler.rawStutterEventsInWindow(lastMinutes: frameTimeRange.minutes)
+        let heatmapBins = buildFrameTimeHeatmapBins(range: frameTimeRange, episodes: episodes, stutters: stutters)
+        let filteredEpisodes = episodesForSelectedHeatmapWindow(episodes)
+        let filteredStutters = stuttersForSelectedHeatmapWindow(stutters)
+        let freshness = frameTimeFreshnessLabel
+        let episodesMetricValue = selectedHeatmapWindow == nil ? String(episodes.count) : "\(filteredEpisodes.count)/\(episodes.count)"
+        let rawMetricValue = selectedHeatmapWindow == nil ? String(stutters.count) : "\(filteredStutters.count)/\(stutters.count)"
 
         return VStack(alignment: .leading, spacing: 16) {
             dashboardCard(title: "Frame-Time Lab") {
@@ -1139,6 +1207,21 @@ struct MenuContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+
+                    Picker("Overlay", selection: $frameTimeLabViewMode) {
+                        ForEach(FrameTimeLabViewMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: isStale ? "clock.badge.exclamationmark.fill" : "dot.radiowaves.left.and.right")
+                            .foregroundStyle(freshness.color)
+                        Text(freshness.text)
+                            .font(.caption)
+                            .foregroundStyle(freshness.color)
+                    }
 
                     if samples.isEmpty {
                         Text("No timeline samples yet.")
@@ -1161,19 +1244,82 @@ struct MenuContentView: View {
                                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                             }
 
-                            ForEach(stutters) { event in
-                                RuleMark(x: .value("Stutter", event.timestamp))
-                                    .foregroundStyle(Color.red.opacity(0.5))
+                            if frameTimeLabViewMode == .markers {
+                                ForEach(stutters) { event in
+                                    RuleMark(x: .value("Stutter", event.timestamp))
+                                        .foregroundStyle(Color.red.opacity(0.5))
+                                }
                             }
                         }
                         .chartYScale(domain: 0...1)
                         .frame(height: 220)
                     }
 
+                    if frameTimeLabViewMode == .heatmap {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Stutter heatmap (\(frameTimeRange.rawValue))")
+                                .font(.subheadline.weight(.semibold))
+
+                            HStack(spacing: 2) {
+                                ForEach(heatmapBins) { bin in
+                                    Button {
+                                        if selectedHeatmapWindow?.start == bin.start && selectedHeatmapWindow?.end == bin.end {
+                                            selectedHeatmapWindow = nil
+                                            selectedStutterEpisodeID = nil
+                                        } else {
+                                            selectedHeatmapWindow = .init(start: bin.start, end: bin.end)
+                                            selectedStutterEpisodeID = episodes.last(where: {
+                                                $0.endAt >= bin.start && $0.startAt <= bin.end
+                                            })?.id
+                                        }
+                                        selectedStutterEventID = nil
+                                    } label: {
+                                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                            .fill(heatmapColor(for: bin.intensity))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                                    .stroke(
+                                                        selectedHeatmapWindow?.start == bin.start && selectedHeatmapWindow?.end == bin.end
+                                                        ? Color.white.opacity(0.95)
+                                                        : Color.clear,
+                                                        lineWidth: 1.5
+                                                    )
+                                            )
+                                            .frame(maxWidth: .infinity, minHeight: 24)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("\(timeOnly(bin.start)) - \(timeOnly(bin.end)) • \(bin.stutterCount) stutters • \(bin.episodeCount) episodes")
+                                }
+                            }
+
+                            if heatmapBins.allSatisfy({ $0.stutterCount == 0 && $0.episodeCount == 0 }) {
+                                Text("No stutter activity detected in this range.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if let selectedHeatmapWindow {
+                                HStack {
+                                    Text("Filtered to \(timeOnly(selectedHeatmapWindow.start)) - \(timeOnly(selectedHeatmapWindow.end))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Clear filter") {
+                                        self.selectedHeatmapWindow = nil
+                                        selectedStutterEpisodeID = nil
+                                        selectedStutterEventID = nil
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption)
+                                }
+                            }
+                        }
+                    }
+
                     HStack(spacing: 12) {
                         metricPill(label: "Samples", value: String(samples.count))
-                        metricPill(label: "Episodes", value: String(episodes.count))
-                        metricPill(label: "Raw", value: String(stutters.count))
+                        metricPill(label: "Episodes", value: episodesMetricValue)
+                        metricPill(label: "Raw", value: rawMetricValue)
                         metricPill(label: "Pressure", value: String(format: "%.2f", samples.last?.pressureIndex ?? 0))
                     }
 
@@ -1191,13 +1337,80 @@ struct MenuContentView: View {
                 }
             }
 
+            dashboardCard(title: "Session Report") {
+                if let report = sampler.sessionReport {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Top cause: \(report.topCauses.first?.cause ?? "No dominant cause")")
+                            .font(.headline)
+
+                        HStack(spacing: 12) {
+                            metricPill(label: "Duration", value: durationText(seconds: report.durationSeconds))
+                            metricPill(label: "Episodes", value: String(report.stutterEpisodesCount))
+                            metricPill(label: "Avg PI", value: String(format: "%.2f", report.avgPressureIndex))
+                            metricPill(label: "Max PI", value: String(format: "%.2f", report.maxPressureIndex))
+                            metricPill(label: "Actions", value: String(report.actionsTakenSummary.count))
+                        }
+
+                        Text("Session: \(timeOnly(report.sessionStartAt)) - \(timeOnly(report.sessionEndAt))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        if !report.topCauses.isEmpty {
+                            Text("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: " • "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if let worst = report.worstWindow {
+                            Text("Worst window: \(timeOnly(worst.startAt)) - \(timeOnly(worst.endAt)) • \(worst.reason)")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+
+                        if let advisor = report.advisorTriggersSummary, !advisor.topTriggers.isEmpty {
+                            Text("Advisor triggers: \(advisor.topTriggers.joined(separator: " • "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if !report.keyRecommendations.isEmpty {
+                            VStack(alignment: .leading, spacing: 3) {
+                                ForEach(Array(report.keyRecommendations.prefix(3).enumerated()), id: \.offset) { index, item in
+                                    Text("\(index + 1). \(item)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        HStack(spacing: 10) {
+                            Button("Export Report (JSON)") {
+                                let outcome = sampler.exportSessionReport()
+                                diagnosticsExportResult = outcome.message
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button("Copy Summary") {
+                                copyToClipboard(sessionReportSummaryText(report))
+                                processActionResult = "Session report summary copied."
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                } else {
+                    Text("No session report yet. Start a sim session to generate a report.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             dashboardCard(title: "Stutter Episodes") {
-                if episodes.isEmpty {
-                    Text("No stutter episodes detected in this range.")
+                if filteredEpisodes.isEmpty {
+                    Text(selectedHeatmapWindow == nil ? "No stutter episodes detected in this range." : "No stutter episodes in the selected heatmap window.")
                         .foregroundStyle(.secondary)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(episodes.suffix(12).reversed())) { episode in
+                        ForEach(Array(filteredEpisodes.suffix(12).reversed())) { episode in
                             Button {
                                 selectedStutterEpisodeID = episode.id
                             } label: {
@@ -1229,13 +1442,13 @@ struct MenuContentView: View {
                     .padding(.top, 8)
 
                 if showRawStutterEvents {
-                    if stutters.isEmpty {
-                        Text("No raw stutter events detected in this range.")
+                    if filteredStutters.isEmpty {
+                        Text(selectedHeatmapWindow == nil ? "No raw stutter events detected in this range." : "No raw events in the selected heatmap window.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(stutters.suffix(12).reversed())) { event in
+                            ForEach(Array(filteredStutters.suffix(12).reversed())) { event in
                                 Button {
                                     selectedStutterEventID = event.id
                                 } label: {
@@ -1243,7 +1456,7 @@ struct MenuContentView: View {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text("\(timeOnly(event.timestamp)) • \(event.classification.displayName)")
                                                 .font(.subheadline.weight(.semibold))
-                                            Text("Severity \(String(format: "%.2f", event.severity)) • Confidence \(String(format: "%.2f", event.confidence))")
+                                            Text("Severity \(String(format: "%.2f", event.severity)) • Confidence \(stutterConfidenceText(event))")
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                         }
@@ -1254,6 +1467,9 @@ struct MenuContentView: View {
                                 .buttonStyle(.plain)
 
                                 if selectedStutterEventID == event.id {
+                                    Text("Severity \(String(format: "%.2f", event.severity)) • Confidence \(stutterConfidenceText(event)) • Metrics \(event.metricAvailability.displayName)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                     Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
@@ -1457,6 +1673,7 @@ struct MenuContentView: View {
             } else {
                 ForEach(processes) { process in
                     let termination = terminationAvailability(for: process)
+                    let helperParent = helperParentProcessCandidate(for: process, sampledAt: now)
 
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -1473,7 +1690,7 @@ struct MenuContentView: View {
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 10) {
-                            Button("Show in Activity Monitor") {
+                            Button("Open Activity Monitor") {
                                 let outcome = settings.openInActivityMonitor(process: process)
                                 processActionResult = outcome.message
                             }
@@ -1492,6 +1709,13 @@ struct MenuContentView: View {
                                 .buttonStyle(.bordered)
                                 .tint(.red)
                                 .disabled(!termination.allowed)
+                            }
+
+                            if let helperParent {
+                                Button("Quit \(helperParent.name)") {
+                                    runProcessAction(process: helperParent, force: false)
+                                }
+                                .buttonStyle(.bordered)
                             }
 
                             Button("Allowlist") {
@@ -1812,8 +2036,20 @@ struct MenuContentView: View {
                     Text("CruiseControl provides recommendations only. It does not modify X-Plane graphics settings automatically in v1.2.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("GPU: \(telemetryCapabilities.hasSimGpuFrameTime ? "Available" : "Unavailable")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     let advisor = xPlaneAdvisorItems()
+                    if !advisor.isEmpty {
+                        Button("Copy recommended settings") {
+                            copyToClipboard(advisorRecommendedSettingsText(from: advisor))
+                            processActionResult = "Copied Advisor recommended settings."
+                            supportLog("Advisor recommendations copied to clipboard.")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
                     if advisor.isEmpty {
                         Text("No high-risk symptoms right now. Keep monitoring frame-time and pressure trends.")
                             .font(.subheadline)
@@ -1821,8 +2057,14 @@ struct MenuContentView: View {
                     } else {
                         ForEach(Array(advisor.enumerated()), id: \.offset) { _, item in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(item.symptom)
-                                    .font(.subheadline.weight(.semibold))
+                                HStack {
+                                    Text(item.symptom)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text(item.confidence.rawValue)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(advisorConfidenceColor(item.confidence))
+                                }
                                 Text("Likely cause: \(item.cause)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -1832,6 +2074,16 @@ struct MenuContentView: View {
                                 Text("Why: \(item.why)")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                if !item.evidence.isEmpty {
+                                    Text("Evidence:")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    ForEach(item.evidence, id: \.self) { evidence in
+                                        Text("• \(evidence)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                             }
                             .padding(.vertical, 3)
                         }
@@ -1841,19 +2093,60 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Per-Airport Regulator Profiles") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Active ICAO source: \(resolvedActiveICAO)")
+                    let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
+
+                    Toggle("Enable airport auto-switch", isOn: $featureStore.airportAutoSwitchEnabled)
+
+                    Text("Current airport ICAO: \(resolvedActiveICAO)")
                         .font(.subheadline)
+                    if let activeProfile = activeAirport.profile {
+                        Text("Active profile: \(activeProfile.icao) - \(activeProfile.name) (\(activeAirport.source.label))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Active profile: None (no matching airport profile)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     HStack {
-                        Text("Manual ICAO")
+                        Text("Current Airport ICAO")
                         TextField("e.g. KATL", text: $featureStore.manualAirportICAO)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 120)
+                        Button("Use Current ICAO") {
+                            let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
+                            guard !normalized.isEmpty else {
+                                processActionResult = "Select or enter an ICAO first."
+                                return
+                            }
+                            featureStore.manualAirportICAO = normalized
+                            processActionResult = "Manual current airport set to \(normalized)."
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     if !featureStore.airportProfiles.isEmpty {
-                        Picker("Profile", selection: $selectedAirportProfileICAO) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Profiles")
+                                .font(.headline)
                             ForEach(featureStore.airportProfiles) { profile in
-                                Text("\(profile.icao) - \(profile.name)").tag(profile.icao)
+                                HStack {
+                                    Button {
+                                        selectedAirportProfileICAO = profile.icao
+                                        loadAirportProfileEditor()
+                                    } label: {
+                                        Text("\(profile.icao) -> \(profile.name)")
+                                            .font(.subheadline)
+                                    }
+                                    .buttonStyle(.plain)
+                                    Spacer()
+                                    if activeAirport.profile?.icao == profile.icao {
+                                        Text("ACTIVE")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.green)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1865,6 +2158,12 @@ struct MenuContentView: View {
                         TextField("Profile name", text: $airportProfileName)
                             .textFieldStyle(.roundedBorder)
                             .frame(minWidth: 180)
+                    }
+                    HStack {
+                        Button("New Profile") {
+                            resetAirportProfileEditor()
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     sliderRow(label: "GROUND upper (ft)", value: $airportGroundMax, range: 500...5000, step: 100)
@@ -1885,8 +2184,10 @@ struct MenuContentView: View {
                             let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
                             featureStore.deleteAirportProfile(icao: normalized)
                             processActionResult = "Deleted airport profile \(normalized)."
+                            resetAirportProfileEditor()
                         }
                         .buttonStyle(.bordered)
+                        .disabled(AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO).isEmpty)
                     }
 
                     HStack {
@@ -2116,228 +2417,335 @@ struct MenuContentView: View {
 
     private var diagnosticsSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            dashboardCard(title: "Troubleshooting Center") {
-                let cards = activeTroubleshootingCards()
-
-                if cards.isEmpty {
-                    Text("No active blockers detected. Telemetry and bridge signals look healthy.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                } else {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(cards) { card in
-                            troubleshootingCard(card)
-                        }
-                    }
+            Picker("Diagnostics Page", selection: $diagnosticsSubpage) {
+                ForEach(DiagnosticsSubpage.allCases) { page in
+                    Text(page.rawValue).tag(page)
                 }
             }
+            .pickerStyle(.segmented)
 
-            dashboardCard(title: "Support Pack") {
-                VStack(alignment: .leading, spacing: 10) {
+            if diagnosticsSubpage == .tools {
+                diagnosticsToolsSection
+            } else {
+                betaQAChecklistSection
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var diagnosticsToolsSection: some View {
+        dashboardCard(title: "Support Mode") {
+            VStack(alignment: .leading, spacing: 10) {
+                if featureStore.supportModeEnabled {
+                    Text("Support Mode is enabled. Use these one-click actions for ticket handoff and diagnostics.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
                     HStack {
-                        Button("Create Support Pack") {
-                            runVerifiedAction(kind: .createSupportPack, params: [:]) {
-                                let outcome = sampler.createSupportPack(settingsSnapshot: diagnosticsSettingsSnapshot())
-                                supportPackSummary = outcome.summary
-                                diagnosticsExportResult = outcome.message
-                                return ActionOutcome(success: outcome.success, message: outcome.message)
-                            }
+                        Button("Copy Support Summary") {
+                            let summary = supportSummaryText()
+                            copyToClipboard(summary)
+                            processActionResult = "Copied support summary."
+                            supportLog("Support summary copied.")
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Button("Copy Summary") {
-                            let summary = sampler.supportSummaryText()
-                            supportPackSummary = summary
-                            copyToClipboard(summary)
-                            processActionResult = "Copied support summary to clipboard."
+                        Button("Export diagnostics now") {
+                            let outcome = sampler.exportDiagnostics(settingsSnapshot: diagnosticsSettingsSnapshot())
+                            diagnosticsExportResult = outcome.message
+                            processActionResult = outcome.message
+                            supportLog("Diagnostics export triggered from Support Mode.")
                         }
                         .buttonStyle(.bordered)
                     }
-
-                    Text("Includes diagnostics JSON v2 and a short machine/session summary for support.")
+                } else {
+                    Text("Enable Support Mode in Preferences to show one-click support actions.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-
-                    ScrollView {
-                        Text(supportPackSummary.isEmpty ? sampler.supportSummaryText() : supportPackSummary)
-                            .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                    }
-                    .frame(minHeight: 120, maxHeight: 180)
-                    .padding(8)
-                    .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
+        }
 
-            dashboardCard(title: "Diagnostics Export") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button("Export Diagnostics") {
-                        runVerifiedAction(kind: .exportDiagnostics, params: [:]) {
-                            let outcome = sampler.exportDiagnostics(settingsSnapshot: diagnosticsSettingsSnapshot())
+        dashboardCard(title: "Troubleshooting Center") {
+            let cards = activeTroubleshootingCards()
+
+            if cards.isEmpty {
+                Text("No active blockers detected. Telemetry and bridge signals look healthy.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(cards) { card in
+                        troubleshootingCard(card)
+                    }
+                }
+            }
+        }
+
+        dashboardCard(title: "Support Pack") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Button("Create Support Pack") {
+                        runVerifiedAction(kind: .createSupportPack, params: [:]) {
+                            let outcome = sampler.createSupportPack(settingsSnapshot: diagnosticsSettingsSnapshot())
+                            supportPackSummary = outcome.summary
                             diagnosticsExportResult = outcome.message
                             return ActionOutcome(success: outcome.success, message: outcome.message)
                         }
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and regulator control status.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Button("Copy Summary") {
+                        let summary = sampler.supportSummaryText()
+                        supportPackSummary = summary
+                        copyToClipboard(summary)
+                        processActionResult = "Copied support summary to clipboard."
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Text("Includes diagnostics JSON v2 and a short machine/session summary for support.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                ScrollView {
+                    Text(supportPackSummary.isEmpty ? sampler.supportSummaryText() : supportPackSummary)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(minHeight: 120, maxHeight: 180)
+                .padding(8)
+                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+
+        dashboardCard(title: "Retention + Reset") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Retention Window", selection: $featureStore.historyDuration) {
+                    ForEach(HistoryDurationOption.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Toggle("CPU budget mode (cap sampler overhead)", isOn: $featureStore.cpuBudgetModeEnabled)
+
+                Text("Current cadence: \(String(format: "%.2fs", sampler.configuredIntervalSeconds)) • Retention: \(Int(sampler.configuredRetentionSeconds / 60))m")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Clear Current Session") {
+                        sampler.clearCurrentSession()
+                        processActionResult = "Cleared current session snapshot."
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Clear History") {
+                        sampler.clearHistory()
+                        selectedHeatmapWindow = nil
+                        selectedStutterEpisodeID = nil
+                        selectedStutterEventID = nil
+                        processActionResult = "Cleared metric history, stutter events, and episodes."
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             }
+        }
 
-            dashboardCard(title: "Action Receipts") {
-                if sampler.actionReceipts.isEmpty {
-                    Text("No action receipts recorded yet.")
+        dashboardCard(title: "Diagnostics Export") {
+            VStack(alignment: .leading, spacing: 10) {
+                Button("Export Diagnostics") {
+                    runVerifiedAction(kind: .exportDiagnostics, params: [:]) {
+                        let outcome = sampler.exportDiagnostics(settingsSnapshot: diagnosticsSettingsSnapshot())
+                        diagnosticsExportResult = outcome.message
+                        return ActionOutcome(success: outcome.success, message: outcome.message)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+
+                Text("Snapshot includes metrics, warnings, top processes, recent history, stutter events, UDP state, and regulator control status.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        dashboardCard(title: "Action Receipts") {
+            if sampler.actionReceipts.isEmpty {
+                Text("No action receipts recorded yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(sampler.actionReceipts.suffix(12).reversed())) { receipt in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(timeOnly(receipt.timestamp))  -  \(receipt.kind.rawValue)  -  \(receipt.outcome ? "OK" : "Failed")")
+                                .font(.subheadline)
+                            if let before = receipt.before, let after = receipt.after {
+                                Text(String(format: "Before/After pressure index: %.2f -> %.2f", before.pressureIndex, after.pressureIndex))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(receipt.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+
+        dashboardCard(title: "Sim Test Checklist") {
+            VStack(alignment: .leading, spacing: 8) {
+                checklistRow(title: "Sampler running", passed: !isStale, detail: isStale ? "No fresh sample" : "Fresh sample stream")
+                checklistRow(
+                    title: "Stutter detector",
+                    passed: !sampler.stutterEvents.isEmpty,
+                    detail: sampler.stutterEvents.isEmpty ? "Inject mock event to verify UI" : "\(sampler.stutterEvents.count) events recorded"
+                )
+                checklistRow(
+                    title: "Advisor availability",
+                    passed: !xPlaneAdvisorItems().isEmpty,
+                    detail: xPlaneAdvisorItems().isEmpty ? "No current triggers" : "Advisor card conditions triggered"
+                )
+                let proof = sampler.computeProofState(now: now)
+                checklistRow(
+                    title: "Regulator proof semantics",
+                    passed: proof.lodApplied || !proof.recentActivity,
+                    detail: "Applied and activity are tracked independently"
+                )
+
+                HStack {
+                    Toggle("Demo/Mock Mode", isOn: $featureStore.demoMockModeEnabled)
+                    Button("Inject Mock Stutter") {
+                        sampler.injectMockStutterEvent()
+                        processActionResult = "Injected mock stutter event for diagnostics validation."
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+
+        dashboardCard(title: "Stutter Detective") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Heuristics")
+                    .font(.headline)
+                sliderRow(label: "Frame-time spike (ms)", value: Binding(
+                    get: { featureStore.stutterHeuristics.frameTimeSpikeMS },
+                    set: { featureStore.stutterHeuristics.frameTimeSpikeMS = $0 }
+                ), range: 20...100, step: 1)
+                sliderRow(label: "FPS drop threshold", value: Binding(
+                    get: { featureStore.stutterHeuristics.fpsDropThreshold },
+                    set: { featureStore.stutterHeuristics.fpsDropThreshold = $0 }
+                ), range: 5...40, step: 1)
+                sliderRow(label: "CPU spike %", value: Binding(
+                    get: { featureStore.stutterHeuristics.cpuSpikePercent },
+                    set: { featureStore.stutterHeuristics.cpuSpikePercent = $0 }
+                ), range: 5...60, step: 1)
+                sliderRow(label: "Disk spike MB/s", value: Binding(
+                    get: { featureStore.stutterHeuristics.diskSpikeMBps },
+                    set: { featureStore.stutterHeuristics.diskSpikeMBps = $0 }
+                ), range: 40...400, step: 5)
+
+                if sampler.stutterEvents.isEmpty {
+                    Text("No stutter events detected yet.")
                         .foregroundStyle(.secondary)
                 } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(sampler.actionReceipts.suffix(12).reversed())) { receipt in
-                            let presentation = receiptPresentation(receipt)
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Image(systemName: receipt.outcome ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                        .foregroundStyle(receipt.outcome ? neonMint : neonOrange)
-                                    Text(presentation.title)
-                                        .font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    Text(relativeAgeText(from: receipt.timestamp))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let before = receipt.before, let after = receipt.after {
-                                    Text(String(format: "Before/After pressure index: %.2f -> %.2f", before.pressureIndex, after.pressureIndex))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(presentation.detail)
+                    if !sampler.stutterCauseSummaries.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Cause ranking (last 10 minutes)")
+                                .font(.headline)
+                            ForEach(sampler.stutterCauseSummaries.prefix(3)) { summary in
+                                Text("- \(summary.cause.displayName): \(summary.count)x (avg conf \(String(format: "%.2f", summary.averageConfidence)))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-
-                                if !receipt.outcome, !presentation.trySteps.isEmpty {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Try this:")
-                                            .font(.caption.weight(.semibold))
-                                        ForEach(presentation.trySteps, id: \.self) { step in
-                                            Text("• \(step)")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-
-                                    HStack {
-                                        if receipt.kind == .quitApp || receipt.kind == .forceQuitApp {
-                                            Button("Open Activity Monitor") {
-                                                if openActivityMonitorApp() {
-                                                    processActionResult = "Opened Activity Monitor."
-                                                } else {
-                                                    processActionResult = "Couldn't open Activity Monitor automatically."
-                                                }
-                                            }
-                                            .buttonStyle(.bordered)
-                                        }
-
-                                        Button("Open Privacy Settings") {
-                                            if openPrivacySecuritySettings() {
-                                                processActionResult = "Opened Privacy & Security settings."
-                                            } else {
-                                                processActionResult = "Open System Settings > Privacy & Security."
-                                            }
-                                        }
-                                        .buttonStyle(.bordered)
-                                    }
-                                }
                             }
-                            .padding(.vertical, 4)
                         }
+                    }
+
+                    ForEach(Array(sampler.stutterEvents.suffix(8).reversed())) { event in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(timeOnly(event.timestamp))  -  \(event.classification.displayName) • conf \(stutterConfidenceText(event))")
+                                .font(.subheadline)
+                            Text("Metrics: \(event.metricAvailability.displayName)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Top culprits: \(event.rankedCulprits.joined(separator: " > "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
                     }
                 }
             }
+        }
+    }
 
-            dashboardCard(title: "Sim Test Checklist") {
-                VStack(alignment: .leading, spacing: 8) {
-                    checklistRow(title: "Sampler running", passed: !isStale, detail: isStale ? "No fresh sample" : "Fresh sample stream")
-                    checklistRow(
-                        title: "Stutter detector",
-                        passed: !sampler.stutterEvents.isEmpty,
-                        detail: sampler.stutterEvents.isEmpty ? "Inject mock event to verify UI" : "\(sampler.stutterEvents.count) events recorded"
-                    )
-                    checklistRow(
-                        title: "Advisor availability",
-                        passed: !xPlaneAdvisorItems().isEmpty,
-                        detail: xPlaneAdvisorItems().isEmpty ? "No current triggers" : "Advisor card conditions triggered"
-                    )
-                    let proof = sampler.computeProofState(now: now)
-                    checklistRow(
-                        title: "Regulator proof semantics",
-                        passed: proof.lodApplied || !proof.recentActivity,
-                        detail: "Applied and activity are tracked independently"
-                    )
+    private var betaQAChecklistSection: some View {
+        let samplerRunning = !isStale
+        let freshnessCheck = betaQAFreshnessGatePasses
+        let stutterCheck = !sampler.stutterEpisodes.isEmpty
+        let exportCheck = betaQAHasExportEvidence
+        let wizardLiveObserved = betaQAObservedWizardLive || sampler.telemetryLiveState == .live
+        let wizardOfflineObserved = betaQAObservedWizardOffline || sampler.telemetryLiveState == .offline
+        let wizardStatesCheck = wizardLiveObserved && wizardOfflineObserved
 
-                    HStack {
-                        Toggle("Demo/Mock Mode", isOn: $featureStore.demoMockModeEnabled)
-                            .disabled(featureStore.safeModeEnabled)
-                        Button("Inject Mock Stutter") {
-                            sampler.injectMockStutterEvent()
-                            processActionResult = "Injected mock stutter event for diagnostics validation."
-                        }
-                        .buttonStyle(.bordered)
+        return dashboardCard(title: "Beta QA") {
+            VStack(alignment: .leading, spacing: 10) {
+                checklistRow(
+                    title: "Sampler running",
+                    passed: samplerRunning,
+                    detail: samplerRunning ? "Fresh samples are flowing." : "Sampler appears stale."
+                )
+                checklistRow(
+                    title: "Freshness gating works",
+                    passed: freshnessCheck,
+                    detail: freshnessCheck ? "Current sample is fresh and future check goes stale." : "Fresh/stale threshold behavior not confirmed."
+                )
+                checklistRow(
+                    title: "Stutter episodes appear",
+                    passed: stutterCheck,
+                    detail: stutterCheck ? "\(sampler.stutterEpisodes.count) episodes available." : "Inject a mock stutter to validate."
+                )
+                checklistRow(
+                    title: "Export works",
+                    passed: exportCheck,
+                    detail: exportCheck ? "Export evidence recorded." : "Run export or mark manually after verification."
+                )
+                checklistRow(
+                    title: "X-Plane wizard states",
+                    passed: wizardStatesCheck,
+                    detail: wizardStatesCheck ? "Live and offline wizard states observed." : "Observe both live and offline states."
+                )
+
+                Toggle("Observed wizard while sim live", isOn: $betaQAObservedWizardLive)
+                Toggle("Observed wizard while sim offline", isOn: $betaQAObservedWizardOffline)
+                Toggle("Mark export verified manually", isOn: $betaQAExportManuallyVerified)
+
+                HStack {
+                    Toggle("Demo/Mock Mode", isOn: $featureStore.demoMockModeEnabled)
+                        .disabled(featureStore.safeModeEnabled)
+                    Button("Inject Mock Stutter") {
+                        sampler.injectMockStutterEvent()
+                        processActionResult = "Injected mock stutter event for diagnostics validation."
                     }
+                    .buttonStyle(.bordered)
+
+                    Button("Run self-check") {
+                        runBetaQASelfCheck()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-            }
 
-            dashboardCard(title: "Stutter Detective") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Heuristics")
-                        .font(.headline)
-                    sliderRow(label: "Frame-time spike (ms)", value: Binding(
-                        get: { featureStore.stutterHeuristics.frameTimeSpikeMS },
-                        set: { featureStore.stutterHeuristics.frameTimeSpikeMS = $0 }
-                    ), range: 20...100, step: 1)
-                    sliderRow(label: "FPS drop threshold", value: Binding(
-                        get: { featureStore.stutterHeuristics.fpsDropThreshold },
-                        set: { featureStore.stutterHeuristics.fpsDropThreshold = $0 }
-                    ), range: 5...40, step: 1)
-                    sliderRow(label: "CPU spike %", value: Binding(
-                        get: { featureStore.stutterHeuristics.cpuSpikePercent },
-                        set: { featureStore.stutterHeuristics.cpuSpikePercent = $0 }
-                    ), range: 5...60, step: 1)
-                    sliderRow(label: "Disk spike MB/s", value: Binding(
-                        get: { featureStore.stutterHeuristics.diskSpikeMBps },
-                        set: { featureStore.stutterHeuristics.diskSpikeMBps = $0 }
-                    ), range: 40...400, step: 5)
-
-                    if sampler.stutterEvents.isEmpty {
-                        Text("No stutter events detected yet.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        if !sampler.stutterCauseSummaries.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Cause ranking (last 10 minutes)")
-                                    .font(.headline)
-                                ForEach(sampler.stutterCauseSummaries.prefix(3)) { summary in
-                                    Text("- \(summary.cause.displayName): \(summary.count)x (avg conf \(String(format: "%.2f", summary.averageConfidence)))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-
-                        ForEach(Array(sampler.stutterEvents.suffix(8).reversed())) { event in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("\(timeOnly(event.timestamp))  -  \(event.classification.displayName) • conf \(String(format: "%.2f", event.confidence))")
-                                    .font(.subheadline)
-                                Text("Evidence: \(event.evidencePoints.joined(separator: " | "))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text("Top culprits: \(event.rankedCulprits.joined(separator: " > "))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
+                if let betaQASelfCheckResult {
+                    Text(betaQASelfCheckResult)
+                        .font(.caption)
+                        .foregroundStyle(betaQASelfCheckPassed == true ? neonMint : neonOrange)
+                        .padding(.top, 4)
                 }
             }
         }
@@ -2630,6 +3038,7 @@ struct MenuContentView: View {
                     } else {
                         ForEach(impact) { process in
                             let termination = terminationAvailability(for: process)
+                            let helperParent = helperParentProcessCandidate(for: process, sampledAt: now)
 
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("\(process.name) (PID \(process.pid))")
@@ -2639,7 +3048,7 @@ struct MenuContentView: View {
                                     .foregroundStyle(.secondary)
 
                                 HStack {
-                                    Button("Show in Activity Monitor") {
+                                    Button("Open Activity Monitor") {
                                         let outcome = settings.openInActivityMonitor(process: process)
                                         processActionResult = outcome.message
                                     }
@@ -2658,6 +3067,13 @@ struct MenuContentView: View {
                                         .buttonStyle(.bordered)
                                         .tint(.red)
                                         .disabled(!termination.allowed)
+                                    }
+
+                                    if let helperParent {
+                                        Button("Quit \(helperParent.name)") {
+                                            runProcessAction(process: helperParent, force: false)
+                                        }
+                                        .buttonStyle(.bordered)
                                     }
 
                                     Button("Allowlist") {
@@ -2795,6 +3211,9 @@ struct MenuContentView: View {
 
                 Toggle("Listen for X-Plane UDP", isOn: $settings.xPlaneUDPListeningEnabled)
                 Toggle("Send warning notifications", isOn: $settings.sendWarningNotifications)
+                Toggle("Support Mode", isOn: $featureStore.supportModeEnabled)
+                Toggle("Enable overlay", isOn: $featureStore.overlayEnabled)
+                Toggle("CPU budget mode (cap sampler overhead)", isOn: $featureStore.cpuBudgetModeEnabled)
                 Toggle("Enable Demo/Mock mode", isOn: $featureStore.demoMockModeEnabled)
                     .disabled(featureStore.safeModeEnabled)
                 Toggle("Enable optional limited purge attempt UI", isOn: $featureStore.purgeAttemptEnabled)
@@ -2845,21 +3264,30 @@ struct MenuContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button("Check for Updates...") {
+                    Button(isCheckingForUpdates ? "Checking..." : "Check for Updates...") {
                         Task {
                             let current = AppMaintenanceService.currentVersionString()
-                            let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(currentVersion: current)
                             await MainActor.run {
-                                updateCheckStatus = outcome.message
+                                isCheckingForUpdates = true
+                            }
+                            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: false)
+                            await MainActor.run {
+                                updateCheckOutcome = outcome
+                                updateCheckStatus = "Current \(AppMaintenanceService.currentVersionString()) • \(outcome.message)"
+                                isCheckingForUpdates = false
                             }
                         }
                     }
                     .buttonStyle(.bordered)
+                    .disabled(isCheckingForUpdates)
 
-                    Button("Open Releases") {
-                        AppMaintenanceService.openReleasesPage()
+                    if let outcome = updateCheckOutcome,
+                       let releaseURL = outcome.releaseURL {
+                        Button("Open latest release") {
+                            NSWorkspace.shared.open(releaseURL)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
                 }
 
                 Text("UDP state: \(sampler.snapshot.udpStatus.state.displayName)")
@@ -3362,32 +3790,51 @@ struct MenuContentView: View {
             simTint = .secondary
         }
 
-        let pressureIndexText: String
-        if let index = sampler.metricSamples.last?.pressureIndex {
-            pressureIndexText = String(format: "%.2f", index)
-        } else {
-            pressureIndexText = "—"
-        }
-        let pressureValue = "\(sampler.snapshot.memoryPressure.displayName) \(pressureIndexText)"
-        let pressureTint = color(for: sampler.snapshot.memoryPressure)
-
         let bottleneckValue: String
         let bottleneckTint: Color
-        if sampler.metricSamples.isEmpty {
-            bottleneckValue = "Unknown"
-            bottleneckTint = .secondary
-        } else if sampler.snapshot.memoryPressure != .green || sampler.alertFlags.swapRisingFast {
-            bottleneckValue = "Memory"
-            bottleneckTint = .orange
-        } else if sampler.snapshot.thermalState == .serious || sampler.snapshot.thermalState == .critical {
-            bottleneckValue = "Thermal"
-            bottleneckTint = .red
-        } else if sampler.snapshot.cpuTotalPercent >= 90 {
-            bottleneckValue = "CPU"
-            bottleneckTint = .orange
+        let pressureValue: String
+        let pressureTint: Color
+        let stutterValue: String
+        let stutterTint: Color
+        if statusStripUsesLiveData {
+            let pressureIndexText: String
+            if let index = sampler.metricSamples.last?.pressureIndex {
+                pressureIndexText = String(format: "%.2f", index)
+            } else {
+                pressureIndexText = "—"
+            }
+            pressureValue = "\(sampler.snapshot.memoryPressure.displayName) \(pressureIndexText)"
+            pressureTint = color(for: sampler.snapshot.memoryPressure)
+
+            if sampler.metricSamples.isEmpty {
+                bottleneckValue = "Unknown"
+                bottleneckTint = .secondary
+            } else if sampler.snapshot.memoryPressure != .green || sampler.alertFlags.swapRisingFast {
+                bottleneckValue = "Memory"
+                bottleneckTint = .orange
+            } else if sampler.snapshot.thermalState == .serious || sampler.snapshot.thermalState == .critical {
+                bottleneckValue = "Thermal"
+                bottleneckTint = .red
+            } else if sampler.snapshot.cpuTotalPercent >= 90 {
+                bottleneckValue = "CPU"
+                bottleneckTint = .orange
+            } else {
+                bottleneckValue = "OK"
+                bottleneckTint = .green
+            }
+
+            let episodeCount = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
+            let rawStutterCount = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
+            let topCause = sampler.recentStutterCauseRanking(lastMinutes: 10).first?.cause.displayName ?? "None"
+            stutterValue = "\(episodeCount) episodes (\(rawStutterCount) raw) • \(topCause)"
+            stutterTint = episodeCount > 0 ? .orange : .green
         } else {
-            bottleneckValue = "OK"
-            bottleneckTint = .green
+            pressureValue = "—"
+            pressureTint = .secondary
+            bottleneckValue = "Idle"
+            bottleneckTint = .secondary
+            stutterValue = "Idle"
+            stutterTint = .secondary
         }
 
         let proof = sampler.computeProofState(now: now)
@@ -3403,12 +3850,6 @@ struct MenuContentView: View {
             regulatorValue = "Armed"
             regulatorTint = .orange
         }
-
-        let episodeCount = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
-        let rawStutterCount = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
-        let topCause = sampler.stutterCauseSummaries.first?.cause.displayName ?? "None"
-        let stutterValue = "\(episodeCount) episodes (\(rawStutterCount) raw) • \(topCause)"
-        let stutterTint: Color = episodeCount > 0 ? .orange : .green
 
         let profileValue = profileDisplayName(for: settings.selectedProfile)
 
@@ -3455,6 +3896,24 @@ struct MenuContentView: View {
         case .offline:
             return false
         }
+    }
+
+    private var lastSampleAt: Date? {
+        sampler.snapshot.lastUpdated
+    }
+
+    private var lastTelemetryAt: Date? {
+        sampler.snapshot.udpStatus.lastValidPacketDate ?? sampler.snapshot.udpStatus.lastPacketDate
+    }
+
+    private var statusStripUsesLiveData: Bool {
+        guard let lastSampleAt, now.timeIntervalSince(lastSampleAt) <= 10 else {
+            return false
+        }
+        guard let lastTelemetryAt, now.timeIntervalSince(lastTelemetryAt) <= 10 else {
+            return false
+        }
+        return sampler.telemetryLiveState == .live
     }
 
     private struct ProfileTemplate: Identifiable {
@@ -3743,8 +4202,230 @@ struct MenuContentView: View {
         return "\(hours)h \(minutesRemainder)m"
     }
 
+    private var frameTimeFreshnessLabel: (text: String, color: Color) {
+        if isStale || sampler.telemetryLiveState == .stale {
+            return ("Last session / historical (telemetry stale).", .orange)
+        }
+
+        switch sampler.telemetryLiveState {
+        case .live:
+            return ("Live telemetry stream.", .green)
+        case .listening:
+            return ("Last session / historical (listening for fresh telemetry).", .orange)
+        case .offline:
+            return ("Last session / historical (sim offline).", .secondary)
+        case .stale:
+            return ("Last session / historical (telemetry stale).", .orange)
+        }
+    }
+
+    private func buildFrameTimeHeatmapBins(
+        range: FrameTimeRangeOption,
+        episodes: [StutterEpisode],
+        stutters: [StutterEvent]
+    ) -> [FrameTimeHeatmapBin] {
+        let bucketCount = range == .tenMinutes ? 30 : 36
+        let windowSeconds = Double(range.minutes * 60)
+        let windowEnd = now
+        let windowStart = windowEnd.addingTimeInterval(-windowSeconds)
+        let bucketSeconds = windowSeconds / Double(bucketCount)
+        guard bucketSeconds > 0 else { return [] }
+
+        var severitySums = Array(repeating: 0.0, count: bucketCount)
+        var stutterCounts = Array(repeating: 0, count: bucketCount)
+        var episodeCounts = Array(repeating: 0, count: bucketCount)
+
+        func bucketIndex(for date: Date) -> Int? {
+            let offset = date.timeIntervalSince(windowStart)
+            guard offset >= 0, offset <= windowSeconds else { return nil }
+            let rawIndex = Int(offset / bucketSeconds)
+            return min(max(rawIndex, 0), bucketCount - 1)
+        }
+
+        for stutter in stutters {
+            guard let index = bucketIndex(for: stutter.timestamp) else { continue }
+            severitySums[index] += stutter.severity
+            stutterCounts[index] += 1
+        }
+
+        for episode in episodes {
+            let clampedStart = max(episode.startAt, windowStart)
+            let clampedEnd = min(episode.endAt, windowEnd)
+            guard clampedEnd >= clampedStart,
+                  let startIndex = bucketIndex(for: clampedStart),
+                  let endIndex = bucketIndex(for: clampedEnd) else {
+                continue
+            }
+            for index in startIndex...endIndex {
+                episodeCounts[index] += 1
+                severitySums[index] += episode.peakSeverity * 0.4
+            }
+        }
+
+        var rawIntensity = Array(repeating: 0.0, count: bucketCount)
+        for index in 0..<bucketCount {
+            let severityScore = stutterCounts[index] > 0 ? severitySums[index] / Double(stutterCounts[index]) : min(severitySums[index], 1.0)
+            let densityScore = min(Double(stutterCounts[index]) / 3.0, 1.0)
+            let episodeScore = min(Double(episodeCounts[index]) / 2.0, 1.0)
+            rawIntensity[index] = (severityScore * 0.6) + (densityScore * 0.25) + (episodeScore * 0.15)
+        }
+
+        let maxRaw = rawIntensity.max() ?? 0
+        let normalizedIntensity = rawIntensity.map { value in
+            guard maxRaw > 0 else { return 0.0 }
+            return min(max(value / maxRaw, 0), 1)
+        }
+
+        return (0..<bucketCount).map { index in
+            let start = windowStart.addingTimeInterval(Double(index) * bucketSeconds)
+            let end = start.addingTimeInterval(bucketSeconds)
+            return FrameTimeHeatmapBin(
+                id: index,
+                start: start,
+                end: end,
+                intensity: normalizedIntensity[index],
+                stutterCount: stutterCounts[index],
+                episodeCount: episodeCounts[index]
+            )
+        }
+    }
+
+    private func episodesForSelectedHeatmapWindow(_ episodes: [StutterEpisode]) -> [StutterEpisode] {
+        guard let selectedHeatmapWindow else { return episodes }
+        return episodes.filter {
+            $0.endAt >= selectedHeatmapWindow.start && $0.startAt <= selectedHeatmapWindow.end
+        }
+    }
+
+    private func stuttersForSelectedHeatmapWindow(_ stutters: [StutterEvent]) -> [StutterEvent] {
+        guard let selectedHeatmapWindow else { return stutters }
+        return stutters.filter {
+            $0.timestamp >= selectedHeatmapWindow.start && $0.timestamp <= selectedHeatmapWindow.end
+        }
+    }
+
+    private func heatmapColor(for intensity: Double) -> Color {
+        let clamped = min(max(intensity, 0), 1)
+        switch clamped {
+        case 0..<0.15:
+            return Color(red: 0.13, green: 0.20, blue: 0.32).opacity(0.45)
+        case 0.15..<0.35:
+            return Color(red: 0.19, green: 0.39, blue: 0.55)
+        case 0.35..<0.60:
+            return Color(red: 0.76, green: 0.57, blue: 0.17)
+        case 0.60..<0.85:
+            return Color(red: 0.92, green: 0.40, blue: 0.12)
+        default:
+            return Color(red: 0.94, green: 0.18, blue: 0.16)
+        }
+    }
+
+    private func sessionReportSummaryText(_ report: SessionReport) -> String {
+        var lines: [String] = [
+            "Session Report",
+            "Window: \(timeOnly(report.sessionStartAt)) - \(timeOnly(report.sessionEndAt))",
+            "Duration: \(durationText(seconds: report.durationSeconds))",
+            "Top cause: \(report.topCauses.first?.cause ?? "None")",
+            "Episodes: \(report.stutterEpisodesCount)",
+            String(format: "Pressure index avg/max: %.2f / %.2f", report.avgPressureIndex, report.maxPressureIndex)
+        ]
+
+        if !report.topCauses.isEmpty {
+            lines.append("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: ", "))")
+        }
+
+        if let worst = report.worstWindow {
+            lines.append("Worst window: \(timeOnly(worst.startAt)) - \(timeOnly(worst.endAt)) • \(worst.reason)")
+        }
+
+        if report.actionsTakenSummary.count > 0 {
+            let topActions = report.actionsTakenSummary.topActions
+                .map { "\($0.action) (\($0.count))" }
+                .joined(separator: ", ")
+            lines.append(topActions.isEmpty ? "Actions logged: \(report.actionsTakenSummary.count)" : "Actions logged: \(report.actionsTakenSummary.count) • \(topActions)")
+        } else {
+            lines.append("Actions logged: none")
+        }
+
+        if let advisor = report.advisorTriggersSummary, !advisor.topTriggers.isEmpty {
+            lines.append("Advisor triggers: \(advisor.topTriggers.joined(separator: ", "))")
+        }
+
+        if !report.keyRecommendations.isEmpty {
+            lines.append("Recommendations:")
+            for recommendation in report.keyRecommendations.prefix(3) {
+                lines.append("- \(recommendation)")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     private var isStale: Bool {
         sampler.isSamplingStale(at: now)
+    }
+
+    private var betaQAFreshnessGatePasses: Bool {
+        let futureProbe = now.addingTimeInterval(max(sampler.configuredIntervalSeconds * 3.2, 4.0))
+        return !sampler.isSamplingStale(at: now) && sampler.isSamplingStale(at: futureProbe)
+    }
+
+    private var betaQAHasExportEvidence: Bool {
+        betaQAExportManuallyVerified || sampler.actionReceipts.contains { receipt in
+            switch receipt.kind {
+            case .exportDiagnostics:
+                return receipt.outcome
+            default:
+                return false
+            }
+        }
+    }
+
+    private func stutterConfidenceText(_ event: StutterEvent) -> String {
+        if event.metricAvailability == .unavailable {
+            return "Unavailable"
+        }
+        return String(format: "%.2f", event.confidence)
+    }
+
+    private func runBetaQASelfCheck() {
+        let checks: [(title: String, passed: Bool, detail: String)] = [
+            (
+                "Sampler running",
+                !isStale,
+                !isStale ? "Fresh sample stream detected." : "Sampler is stale."
+            ),
+            (
+                "Freshness gating",
+                betaQAFreshnessGatePasses,
+                betaQAFreshnessGatePasses ? "Current sample is fresh and future probe is stale." : "Fresh/stale gate behavior not confirmed."
+            ),
+            (
+                "Stutter episodes",
+                !sampler.stutterEpisodes.isEmpty,
+                !sampler.stutterEpisodes.isEmpty ? "Episodes available (\(sampler.stutterEpisodes.count))." : "No stutter episodes yet."
+            ),
+            (
+                "Export",
+                betaQAHasExportEvidence,
+                betaQAHasExportEvidence ? "Diagnostics export evidence found." : "No export verification recorded."
+            ),
+            (
+                "Wizard states",
+                (betaQAObservedWizardLive || sampler.telemetryLiveState == .live) &&
+                (betaQAObservedWizardOffline || sampler.telemetryLiveState == .offline),
+                "Need both live and offline wizard observations."
+            )
+        ]
+
+        let failed = checks.filter { !$0.passed }
+        if failed.isEmpty {
+            betaQASelfCheckPassed = true
+            betaQASelfCheckResult = "PASS\n" + checks.map { "• \($0.title): \($0.detail)" }.joined(separator: "\n")
+        } else {
+            betaQASelfCheckPassed = false
+            betaQASelfCheckResult = "FAIL\n" + failed.map { "• \($0.title): \($0.detail)" }.joined(separator: "\n")
+        }
     }
 
     private var lastUpdatedText: String {
@@ -3778,13 +4459,11 @@ struct MenuContentView: View {
     }
 
     private var resolvedActiveICAO: String {
-        if let telemetryICAO = sampler.snapshot.xplaneTelemetry?.nearestAirportICAO,
-           !telemetryICAO.isEmpty {
-            return telemetryICAO
+        let resolved = featureStore.resolvedAirportICAO(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
+        guard let icao = resolved.icao else {
+            return "N/A"
         }
-
-        let manual = AirportGovernorProfile.normalizeICAO(featureStore.manualAirportICAO)
-        return manual.isEmpty ? "N/A" : "\(manual) (manual)"
+        return "\(icao) (\(resolved.source.label))"
     }
 
     private var selectedSmartScanItems: [SmartScanItem] {
@@ -3819,23 +4498,21 @@ struct MenuContentView: View {
     }
 
     private func terminationAvailability(for process: ProcessSample) -> (allowed: Bool, showTerminationControls: Bool, reason: String?, helperNote: String?) {
+        let notTerminableMessage = "Not terminable programmatically — use Activity Monitor."
         let helperNote = process.name.localizedCaseInsensitiveContains("helper")
-            ? "Helper may relaunch. Quit the parent app for best results."
+            ? "Helper may relaunch; quit the parent app."
             : nil
 
         let selfPID = Int32(ProcessInfo.processInfo.processIdentifier)
         if process.pid == selfPID {
-            return (false, false, "Not allowed (CruiseControl).", helperNote)
+            return (false, false, "Not allowed (CruiseControl)", helperNote)
         }
 
         guard let app = NSRunningApplication(processIdentifier: pid_t(process.pid)) else {
-            return (false, false, "This process cannot be terminated programmatically. Open Activity Monitor.", helperNote)
+            return (false, false, notTerminableMessage, helperNote)
         }
         if app.isTerminated {
-            return (false, true, "Already quitting...", helperNote)
-        }
-        if !app.isFinishedLaunching {
-            return (false, true, "App is still launching.", helperNote)
+            return (false, false, "Already quitting…", helperNote)
         }
         return (true, true, nil, helperNote)
     }
@@ -3865,7 +4542,7 @@ struct MenuContentView: View {
     private func runProcessAction(process: ProcessSample, force: Bool) {
         let availability = terminationAvailability(for: process)
         guard availability.allowed else {
-            let message = availability.reason ?? "This process cannot be terminated programmatically. Open Activity Monitor."
+            let message = availability.reason ?? "Not terminable programmatically — use Activity Monitor."
             processActionResult = message
             terminationFallback = TerminationFallback(process: process, message: message)
             return
@@ -3970,45 +4647,131 @@ struct MenuContentView: View {
         return formatter.string(from: date)
     }
 
+    private func advisorConfidenceColor(_ confidence: AdvisorConfidence) -> Color {
+        switch confidence {
+        case .high:
+            return .red
+        case .medium:
+            return .orange
+        case .low:
+            return .secondary
+        }
+    }
+
+    private func advisorRecommendedSettingsText(from items: [AdvisorItem]) -> String {
+        guard !items.isEmpty else { return "No recommendations currently." }
+
+        var lines: [String] = []
+        lines.append("CruiseControl Recommended Settings")
+        lines.append("Generated: \(Date().formatted(date: .abbreviated, time: .shortened))")
+        lines.append("")
+
+        for item in items {
+            lines.append("- [\(item.confidence.rawValue)] \(item.recommendation)")
+            if !item.evidence.isEmpty {
+                lines.append("  Evidence: \(item.evidence.joined(separator: " | "))")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func supportSummaryText() -> String {
+        let version = AppMaintenanceService.currentVersionString()
+        let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "Unknown"
+        let liveTopCause = sampler.stutterCauseSummaries.first?.cause.displayName ?? "None"
+        let lastSessionTopCause = sampler.sessionReport?.topCauses.first?.cause ?? "None"
+        let episodes10m = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
+        let raw10m = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
+        let profile = settings.selectedProfile.displayName
+        let workload = featureStore.workloadProfile.title
+        let pressure = sampler.snapshot.memoryPressure.displayName
+        let swapDelta = deltaByteString(sampler.snapshot.swapDelta5MinBytes)
+        let thermal = PerformanceSampler.thermalStateDescription(sampler.snapshot.thermalState)
+        let telemetry = sampler.telemetryLiveState.displayName
+
+        var lines: [String] = [
+            "CruiseControl Support Summary",
+            "Version \(version) (build \(build))",
+            "Profile \(profile) | Workload \(workload)",
+            "Telemetry \(telemetry) | Pressure \(pressure) | Swap \(swapDelta) | Thermal \(thermal)",
+            "Stutters 10m: \(episodes10m) episodes / \(raw10m) raw | Live top cause: \(liveTopCause)",
+            "Last session top cause: \(lastSessionTopCause)"
+        ]
+
+        if let session = sampler.lastSessionSnapshot {
+            let target = session.regulatorSummary.lastTarget.map { String(format: "%.2f", $0) } ?? "-"
+            let applied = session.regulatorSummary.lastApplied.map { String(format: "%.2f", $0) } ?? "-"
+            let packets = session.telemetrySummary.totalPackets
+            lines.append("Last session: target \(target), applied \(applied), packets \(packets)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func supportLog(_ message: String) {
+        guard featureStore.supportModeEnabled else { return }
+        NSLog("CruiseControl Support Mode: \(message)")
+    }
+
+    private enum AdvisorConfidence: String {
+        case high = "High"
+        case medium = "Medium"
+        case low = "Low"
+    }
+
     private struct AdvisorItem {
         let symptom: String
         let cause: String
         let recommendation: String
         let why: String
+        let confidence: AdvisorConfidence
+        let evidence: [String]
     }
 
     private func xPlaneAdvisorItems() -> [AdvisorItem] {
         var items: [AdvisorItem] = []
         let telemetry = sampler.snapshot.xplaneTelemetry
+        let capabilities = telemetryCapabilities
+        let swapDelta5m = sampler.snapshot.swapDelta5MinBytes
+        let swapRisingFast = swapDelta5m > Int64(200 * 1_024 * 1_024)
+        let pressureRed = sampler.snapshot.memoryPressure == .red
 
-        if sampler.snapshot.memoryPressure == .red || sampler.snapshot.swapDelta5MinBytes > Int64(200 * 1_024 * 1_024) {
+        if pressureRed || swapRisingFast {
+            var evidence: [String] = []
+            if pressureRed {
+                evidence.append("Pressure red")
+            }
+            if swapRisingFast {
+                evidence.append("Swap rising fast (\(deltaByteString(swapDelta5m)))")
+            }
             items.append(
                 AdvisorItem(
                     symptom: "Memory pressure high or swap rising",
                     cause: "Texture residency exceeds available memory bandwidth",
                     recommendation: "Set Texture Resolution to Medium",
-                    why: "Lower texture residency reduces swap churn and paging stalls."
+                    why: "Lower texture residency reduces swap churn and paging stalls.",
+                    confidence: pressureRed && swapRisingFast ? .high : .medium,
+                    evidence: evidence
                 )
             )
         }
-        let capabilities = telemetryCapabilities
+
         if let fps = telemetry?.fps, fps < 32, sampler.snapshot.cpuTotalPercent < 75 {
-            if capabilities.hasSimGpuFrameTime {
+            // Suppress GPU-bound recommendations when GPU frame-time is unavailable.
+            if capabilities.hasSimGpuFrameTime, let gpuFrame = telemetry?.gpuFrameTimeMS {
                 items.append(
                     AdvisorItem(
                         symptom: "Low FPS with moderate CPU load",
                         cause: "Likely GPU/graphics bound scenario",
                         recommendation: "Reduce cloud quality and enable FSR if available",
-                        why: "Sim GPU frame time is elevated relative to CPU time."
-                    )
-                )
-            } else {
-                items.append(
-                    AdvisorItem(
-                        symptom: "Low FPS with moderate CPU load",
-                        cause: "GPU telemetry unavailable",
-                        recommendation: "If visuals look heavy, consider reducing clouds or AA (low confidence)",
-                        why: "No GPU frame time is available; this is a low-confidence heuristic."
+                        why: "Sim GPU frame time is elevated relative to CPU time.",
+                        confidence: .medium,
+                        evidence: [
+                            "FPS \(String(format: "%.1f", fps))",
+                            "CPU total \(String(format: "%.1f%%", sampler.snapshot.cpuTotalPercent))",
+                            "GPU frame \(String(format: "%.2f ms", gpuFrame))"
+                        ]
                     )
                 )
             }
@@ -4022,7 +4785,12 @@ struct MenuContentView: View {
                     symptom: "High CPU load near airports",
                     cause: "World objects and CPU draw-call pressure",
                     recommendation: "Lower world objects and keep ground regulator target higher",
-                    why: "Airport scenes are CPU-heavy; reducing object complexity smooths frame pacing."
+                    why: "Airport scenes are CPU-heavy; reducing object complexity smooths frame pacing.",
+                    confidence: .high,
+                    evidence: [
+                        "CPU total \(String(format: "%.1f%%", sampler.snapshot.cpuTotalPercent))",
+                        "AGL \(String(format: "%.0f ft", agl))"
+                    ]
                 )
             )
         }
@@ -4033,7 +4801,11 @@ struct MenuContentView: View {
                     symptom: "Thermal state elevated",
                     cause: "Sustained package heat and probable throttling",
                     recommendation: "Reduce frame cap or graphics complexity for 5-10 minutes",
-                    why: "Thermal recovery can restore consistent clocks and frame-time stability."
+                    why: "Thermal recovery can restore consistent clocks and frame-time stability.",
+                    confidence: .high,
+                    evidence: [
+                        "Thermal \(PerformanceSampler.thermalStateDescription(sampler.snapshot.thermalState))"
+                    ]
                 )
             )
         }
@@ -4170,7 +4942,7 @@ struct MenuContentView: View {
         for target in targets {
             let availability = terminationAvailability(for: target)
             guard availability.allowed else {
-                let reason = availability.reason ?? "This process cannot be terminated programmatically. Open Activity Monitor."
+                let reason = availability.reason ?? "Not terminable programmatically — use Activity Monitor."
                 lines.append("\(target.name): \(reason)")
                 continue
             }
@@ -4181,6 +4953,74 @@ struct MenuContentView: View {
         selectedReliefPIDs.removeAll()
         refreshRunningApps()
         processActionResult = lines.joined(separator: "\n")
+    }
+
+    private func helperParentProcess(for process: ProcessSample) -> ProcessSample? {
+        guard process.name.localizedCaseInsensitiveContains("helper") else {
+            return nil
+        }
+
+        let helperPID = pid_t(process.pid)
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let runningApps = NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated &&
+                $0.processIdentifier != helperPID &&
+                $0.processIdentifier != ownPID
+        }
+
+        if let helperApp = NSRunningApplication(processIdentifier: helperPID) {
+            if let helperPath = helperApp.bundleURL?.path,
+               let markerRange = helperPath.range(of: ".app/Contents/", options: .caseInsensitive) {
+                let parentPath = String(helperPath[..<markerRange.lowerBound]) + ".app"
+                if let parentApp = runningApps.first(where: { $0.bundleURL?.path == parentPath }) {
+                    return ProcessSample(
+                        pid: Int32(parentApp.processIdentifier),
+                        name: parentApp.localizedName ?? parentApp.bundleIdentifier ?? "pid \(parentApp.processIdentifier)",
+                        bundleIdentifier: parentApp.bundleIdentifier,
+                        cpuPercent: 0,
+                        memoryBytes: 0,
+                        sampledAt: now
+                    )
+                }
+            }
+
+            if let helperBundleID = helperApp.bundleIdentifier,
+               helperBundleID.lowercased().hasSuffix(".helper") {
+                let parentBundleID = String(helperBundleID.dropLast(".helper".count))
+                if let parentApp = runningApps.first(where: { $0.bundleIdentifier == parentBundleID }) {
+                    return ProcessSample(
+                        pid: Int32(parentApp.processIdentifier),
+                        name: parentApp.localizedName ?? parentApp.bundleIdentifier ?? "pid \(parentApp.processIdentifier)",
+                        bundleIdentifier: parentApp.bundleIdentifier,
+                        cpuPercent: 0,
+                        memoryBytes: 0,
+                        sampledAt: now
+                    )
+                }
+            }
+        }
+
+        let baseName = process.name
+            .replacingOccurrences(of: "\\s+helper.*$", with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !baseName.isEmpty else {
+            return nil
+        }
+
+        guard let parentApp = runningApps.first(where: {
+            ($0.localizedName ?? "").localizedCaseInsensitiveCompare(baseName) == .orderedSame
+        }) else {
+            return nil
+        }
+
+        return ProcessSample(
+            pid: Int32(parentApp.processIdentifier),
+            name: parentApp.localizedName ?? parentApp.bundleIdentifier ?? "pid \(parentApp.processIdentifier)",
+            bundleIdentifier: parentApp.bundleIdentifier,
+            cpuPercent: 0,
+            memoryBytes: 0,
+            sampledAt: now
+        )
     }
 
     private func runLimitedPurgeAttempt() {
@@ -4219,6 +5059,18 @@ struct MenuContentView: View {
         }
 
         loadAirportProfileEditor()
+    }
+
+    private func resetAirportProfileEditor() {
+        selectedAirportProfileICAO = ""
+        airportProfileName = ""
+        airportGroundMax = 1_500
+        airportCruiseMin = 10_000
+        airportTargetGround = 1.4
+        airportTargetTransition = 1.1
+        airportTargetCruise = 0.95
+        airportClampMin = 0.20
+        airportClampMax = 3.00
     }
 
     private func loadAirportProfileEditor() {
@@ -4602,7 +5454,12 @@ struct MenuContentView: View {
             "udpEnabled": settings.xPlaneUDPListeningEnabled ? "true" : "false",
             "udpPort": String(settings.xPlaneUDPPort),
             "workloadProfile": featureStore.workloadProfile.rawValue,
+            "cpuBudgetModeEnabled": featureStore.cpuBudgetModeEnabled ? "true" : "false",
+            "retentionWindow": featureStore.historyDuration.rawValue,
             "demoMockMode": featureStore.demoMockModeEnabled ? "true" : "false",
+            "airportAutoSwitchEnabled": featureStore.airportAutoSwitchEnabled ? "true" : "false",
+            "overlayEnabled": featureStore.overlayEnabled ? "true" : "false",
+            "supportModeEnabled": featureStore.supportModeEnabled ? "true" : "false",
             "safeModeEnabled": featureStore.safeModeEnabled ? "true" : "false",
             "governorEnabled": settings.governorModeEnabled ? "true" : "false",
             "governorHost": settings.governorCommandHost,
@@ -4669,6 +5526,74 @@ private struct CruiseBackgroundView: View {
             .ignoresSafeArea()
         }
     }
+}
+
+private func helperParentProcessCandidate(for process: ProcessSample, sampledAt: Date) -> ProcessSample? {
+    guard process.name.localizedCaseInsensitiveContains("helper") else {
+        return nil
+    }
+
+    let helperPID = pid_t(process.pid)
+    let ownPID = ProcessInfo.processInfo.processIdentifier
+    let runningApps = NSWorkspace.shared.runningApplications.filter {
+        !$0.isTerminated &&
+            $0.processIdentifier != helperPID &&
+            $0.processIdentifier != ownPID
+    }
+
+    if let helperApp = NSRunningApplication(processIdentifier: helperPID) {
+        if let helperPath = helperApp.bundleURL?.path,
+           let markerRange = helperPath.range(of: ".app/Contents/", options: .caseInsensitive) {
+            let parentPath = String(helperPath[..<markerRange.lowerBound]) + ".app"
+            if let parentApp = runningApps.first(where: { $0.bundleURL?.path == parentPath }) {
+                return ProcessSample(
+                    pid: Int32(parentApp.processIdentifier),
+                    name: parentApp.localizedName ?? parentApp.bundleIdentifier ?? "pid \(parentApp.processIdentifier)",
+                    bundleIdentifier: parentApp.bundleIdentifier,
+                    cpuPercent: 0,
+                    memoryBytes: 0,
+                    sampledAt: sampledAt
+                )
+            }
+        }
+
+        if let helperBundleID = helperApp.bundleIdentifier,
+           helperBundleID.lowercased().hasSuffix(".helper") {
+            let parentBundleID = String(helperBundleID.dropLast(".helper".count))
+            if let parentApp = runningApps.first(where: { $0.bundleIdentifier == parentBundleID }) {
+                return ProcessSample(
+                    pid: Int32(parentApp.processIdentifier),
+                    name: parentApp.localizedName ?? parentApp.bundleIdentifier ?? "pid \(parentApp.processIdentifier)",
+                    bundleIdentifier: parentApp.bundleIdentifier,
+                    cpuPercent: 0,
+                    memoryBytes: 0,
+                    sampledAt: sampledAt
+                )
+            }
+        }
+    }
+
+    let baseName = process.name
+        .replacingOccurrences(of: "\\s+helper.*$", with: "", options: [.regularExpression, .caseInsensitive])
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !baseName.isEmpty else {
+        return nil
+    }
+
+    guard let parentApp = runningApps.first(where: {
+        ($0.localizedName ?? "").localizedCaseInsensitiveCompare(baseName) == .orderedSame
+    }) else {
+        return nil
+    }
+
+    return ProcessSample(
+        pid: Int32(parentApp.processIdentifier),
+        name: parentApp.localizedName ?? parentApp.bundleIdentifier ?? "pid \(parentApp.processIdentifier)",
+        bundleIdentifier: parentApp.bundleIdentifier,
+        cpuPercent: 0,
+        memoryBytes: 0,
+        sampledAt: sampledAt
+    )
 }
 
 private struct SparklineView: View {

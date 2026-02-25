@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import SwiftUI
 import UserNotifications
 #if canImport(Sparkle)
 import Sparkle
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var previousAlertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
     private var pendingRuntimeConfigApplyTask: Task<Void, Never>?
     private var didSuggestSimProfile = false
+    private var overlayPanel: NSPanel?
 
     private let warningCategoryIdentifier = "PROJECT_SPEED_WARNING"
     private let defaults = UserDefaults.standard
@@ -73,6 +75,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.scheduleRuntimeConfigApply()
+            }
+            .store(in: &cancellables)
+
+        featureStore.$overlayEnabled
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.updateOverlayVisibility(enabled: enabled)
+            }
+            .store(in: &cancellables)
+
+        featureStore.$supportModeEnabled
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { enabled in
+                NSLog("CruiseControl Support Mode \(enabled ? "enabled" : "disabled").")
             }
             .store(in: &cancellables)
 
@@ -147,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func checkForUpdatesFromMenu() {
         Task {
             let current = AppMaintenanceService.currentVersionString()
-            let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(currentVersion: current, preferSparkle: true)
+            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: false)
 
             // Sparkle presents its own update UI once triggered.
             if outcome.message.contains("Sparkle update check triggered") {
@@ -156,9 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
             let alert = NSAlert()
             alert.messageText = "CruiseControl Update Check"
-            alert.informativeText = outcome.message
+            alert.alertStyle = .informational
+            alert.informativeText = "Current \(AppMaintenanceService.currentVersionString())\n\(outcome.message)"
             if outcome.releaseURL != nil {
-                alert.addButton(withTitle: "Open Releases")
+                alert.addButton(withTitle: "Open latest release")
                 alert.addButton(withTitle: "OK")
             } else {
                 alert.addButton(withTitle: "OK")
@@ -181,7 +200,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         sampler.configureGovernor(config: effectiveConfig)
         sampler.configureStutterHeuristics(featureStore.stutterHeuristics)
         sampler.configureWorkloadProfile(effectiveProfile)
+        sampler.configureRetention(window: featureStore.historyDuration)
+        sampler.configureCPUBudgetMode(enabled: featureStore.cpuBudgetModeEnabled)
         sampler.configureDemoMockMode(enabled: demoMockModeEnabled)
+    }
+
+    private func updateOverlayVisibility(enabled: Bool) {
+        if enabled {
+            if overlayPanel == nil {
+                let overlayView = XPlaneMiniOverlayView(sampler: sampler)
+                let hosting = NSHostingController(rootView: overlayView)
+                let panel = NSPanel(
+                    contentRect: NSRect(x: 40, y: 40, width: 270, height: 145),
+                    styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+                    backing: .buffered,
+                    defer: false
+                )
+                panel.level = .floating
+                panel.titleVisibility = .hidden
+                panel.titlebarAppearsTransparent = true
+                panel.isMovableByWindowBackground = true
+                panel.isFloatingPanel = true
+                panel.hidesOnDeactivate = false
+                panel.becomesKeyOnlyIfNeeded = true
+                panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                panel.standardWindowButton(.closeButton)?.isHidden = true
+                panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+                panel.standardWindowButton(.zoomButton)?.isHidden = true
+                panel.isReleasedWhenClosed = false
+                panel.contentViewController = hosting
+                overlayPanel = panel
+            }
+
+            overlayPanel?.orderFront(nil)
+        } else {
+            overlayPanel?.orderOut(nil)
+        }
     }
 
     private func scheduleRuntimeConfigApply(delayMilliseconds: UInt64 = 500) {
@@ -305,5 +359,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } catch {
             NSLog("CruiseControl failed to open Activity Monitor: \(error.localizedDescription)")
         }
+    }
+}
+
+private struct XPlaneMiniOverlayView: View {
+    @ObservedObject var sampler: PerformanceSampler
+
+    private var pressureTint: Color {
+        switch sampler.snapshot.memoryPressure {
+        case .green:
+            return .green
+        case .yellow:
+            return .orange
+        case .red:
+            return .red
+        }
+    }
+
+    private var swapTrendText: String {
+        let delta = sampler.snapshot.swapDelta5MinBytes
+        let sign = delta >= 0 ? "+" : "-"
+        let bytes = UInt64(abs(delta))
+        let value = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+        return "\(sign)\(value) / 5m"
+    }
+
+    private var stutterEpisodes10m: Int {
+        let cutoff = Date().addingTimeInterval(-600)
+        return sampler.stutterEpisodes.filter { $0.endAt >= cutoff }.count
+    }
+
+    private var regulatorLine: String {
+        let proof = sampler.computeProofState()
+        let applied = proof.appliedLOD.map { String(format: "%.2f", $0) } ?? "—"
+        let tier = sampler.governorCurrentTier?.rawValue ?? "Paused"
+        return "Applied \(applied) • \(tier)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("CruiseControl Overlay")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            HStack {
+                Text("Pressure")
+                Spacer()
+                Text(sampler.snapshot.memoryPressure.displayName)
+                    .foregroundStyle(pressureTint)
+            }
+            HStack {
+                Text("Swap trend")
+                Spacer()
+                Text(swapTrendText)
+            }
+            HStack {
+                Text("Stutter episodes (10m)")
+                Spacer()
+                Text("\(stutterEpisodes10m)")
+            }
+            HStack {
+                Text("Regulator")
+                Spacer()
+                Text(regulatorLine)
+            }
+        }
+        .font(.system(size: 11, weight: .medium, design: .rounded))
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.black.opacity(0.78))
     }
 }
