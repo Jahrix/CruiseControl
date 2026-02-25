@@ -1,6 +1,23 @@
 import Foundation
 import Combine
 
+enum AirportResolutionSource: String {
+    case telemetry
+    case manual
+    case none
+
+    var label: String {
+        switch self {
+        case .telemetry:
+            return "Telemetry"
+        case .manual:
+            return "Manual"
+        case .none:
+            return "None"
+        }
+    }
+}
+
 @MainActor
 final class V112FeatureStore: ObservableObject {
     @Published var historyDuration: HistoryDurationOption {
@@ -8,6 +25,10 @@ final class V112FeatureStore: ObservableObject {
     }
 
     @Published var workloadProfile: ProfileKind {
+        didSet { save() }
+    }
+
+    @Published var cpuBudgetModeEnabled: Bool {
         didSet { save() }
     }
 
@@ -20,6 +41,18 @@ final class V112FeatureStore: ObservableObject {
     }
 
     @Published var airportProfiles: [AirportGovernorProfile] {
+        didSet { save() }
+    }
+
+    @Published var airportAutoSwitchEnabled: Bool {
+        didSet { save() }
+    }
+
+    @Published var overlayEnabled: Bool {
+        didSet { save() }
+    }
+
+    @Published var supportModeEnabled: Bool {
         didSet { save() }
     }
 
@@ -63,9 +96,13 @@ final class V112FeatureStore: ObservableObject {
     private enum Keys {
         static let historyDuration = "v112.history.duration"
         static let workloadProfile = "v120.profile.kind"
+        static let cpuBudgetModeEnabled = "v120.profile.cpuBudgetModeEnabled"
         static let demoMockModeEnabled = "v120.profile.demoMockMode"
         static let manualAirportICAO = "v112.airport.manualICAO"
         static let airportProfiles = "v112.airport.profiles"
+        static let airportAutoSwitchEnabled = "v1214.airport.autoSwitchEnabled"
+        static let overlayEnabled = "v1212.overlay.enabled"
+        static let supportModeEnabled = "v1213.supportMode.enabled"
         static let advancedModeEnabled = "v112.cleaner.advancedMode"
         static let advancedModeExtraConfirmation = "v114.cleaner.advancedModeExtraConfirmation"
         static let purgeAttemptEnabled = "v112.cleaner.purgeAttempt"
@@ -93,6 +130,7 @@ final class V112FeatureStore: ObservableObject {
             self.workloadProfile = .generalPerformance
         }
 
+        self.cpuBudgetModeEnabled = defaults.object(forKey: Keys.cpuBudgetModeEnabled) as? Bool ?? false
         self.demoMockModeEnabled = defaults.object(forKey: Keys.demoMockModeEnabled) as? Bool ?? false
         self.manualAirportICAO = defaults.string(forKey: Keys.manualAirportICAO) ?? ""
 
@@ -103,6 +141,9 @@ final class V112FeatureStore: ObservableObject {
         } else {
             self.airportProfiles = AirportGovernorProfile.examples
         }
+        self.airportAutoSwitchEnabled = defaults.object(forKey: Keys.airportAutoSwitchEnabled) as? Bool ?? true
+        self.overlayEnabled = defaults.object(forKey: Keys.overlayEnabled) as? Bool ?? false
+        self.supportModeEnabled = defaults.object(forKey: Keys.supportModeEnabled) as? Bool ?? false
 
         self.advancedModeEnabled = defaults.object(forKey: Keys.advancedModeEnabled) as? Bool ?? false
         self.advancedModeExtraConfirmation = defaults.object(forKey: Keys.advancedModeExtraConfirmation) as? Bool ?? true
@@ -143,9 +184,37 @@ final class V112FeatureStore: ObservableObject {
     }
 
     func profile(forICAO icao: String?) -> AirportGovernorProfile? {
-        let normalized = AirportGovernorProfile.normalizeICAO(icao ?? manualAirportICAO)
+        let normalized = AirportGovernorProfile.normalizeICAO(icao ?? "")
         guard !normalized.isEmpty else { return nil }
         return airportProfiles.first { AirportGovernorProfile.normalizeICAO($0.icao) == normalized }
+    }
+
+    func resolvedAirportICAO(telemetryICAO: String?) -> (icao: String?, source: AirportResolutionSource) {
+        let telemetryNormalized = AirportGovernorProfile.normalizeICAO(telemetryICAO ?? "")
+        let manualNormalized = AirportGovernorProfile.normalizeICAO(manualAirportICAO)
+
+        if airportAutoSwitchEnabled {
+            if !telemetryNormalized.isEmpty {
+                return (telemetryNormalized, .telemetry)
+            }
+            if !manualNormalized.isEmpty {
+                return (manualNormalized, .manual)
+            }
+            return (nil, .none)
+        }
+
+        if !manualNormalized.isEmpty {
+            return (manualNormalized, .manual)
+        }
+        return (nil, .none)
+    }
+
+    func activeAirportProfile(telemetryICAO: String?) -> (profile: AirportGovernorProfile?, icao: String?, source: AirportResolutionSource) {
+        let resolved = resolvedAirportICAO(telemetryICAO: telemetryICAO)
+        guard let icao = resolved.icao else {
+            return (nil, nil, .none)
+        }
+        return (profile(forICAO: icao), icao, resolved.source)
     }
 
     func exportAirportProfiles() -> ActionOutcome {
@@ -183,7 +252,8 @@ final class V112FeatureStore: ObservableObject {
     }
 
     func effectiveGovernorConfig(base: GovernorPolicyConfig, telemetryICAO: String?) -> GovernorPolicyConfig {
-        guard let profile = profile(forICAO: telemetryICAO) else {
+        let active = activeAirportProfile(telemetryICAO: telemetryICAO)
+        guard let profile = active.profile else {
             return base
         }
 
@@ -215,8 +285,12 @@ final class V112FeatureStore: ObservableObject {
     private func save() {
         defaults.set(historyDuration.rawValue, forKey: Keys.historyDuration)
         defaults.set(workloadProfile.rawValue, forKey: Keys.workloadProfile)
+        defaults.set(cpuBudgetModeEnabled, forKey: Keys.cpuBudgetModeEnabled)
         defaults.set(demoMockModeEnabled, forKey: Keys.demoMockModeEnabled)
         defaults.set(manualAirportICAO, forKey: Keys.manualAirportICAO)
+        defaults.set(airportAutoSwitchEnabled, forKey: Keys.airportAutoSwitchEnabled)
+        defaults.set(overlayEnabled, forKey: Keys.overlayEnabled)
+        defaults.set(supportModeEnabled, forKey: Keys.supportModeEnabled)
         defaults.set(advancedModeEnabled, forKey: Keys.advancedModeEnabled)
         defaults.set(advancedModeExtraConfirmation, forKey: Keys.advancedModeExtraConfirmation)
         defaults.set(purgeAttemptEnabled, forKey: Keys.purgeAttemptEnabled)
