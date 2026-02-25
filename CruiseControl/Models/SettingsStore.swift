@@ -412,24 +412,25 @@ final class SettingsStore: ObservableObject {
     }
 
     func terminateProcess(pid: Int32, force: Bool) -> ActionOutcome {
+        let notTerminableMessage = "Not terminable programmatically — use Activity Monitor."
         let selfPID = Int32(ProcessInfo.processInfo.processIdentifier)
         if pid == selfPID {
-            return ActionOutcome(success: false, message: "Not allowed (CruiseControl).")
+            return ActionOutcome(success: false, message: "Not allowed (CruiseControl)")
         }
 
         guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
-            return ActionOutcome(success: false, message: "This process cannot be terminated programmatically. Open Activity Monitor.")
+            return ActionOutcome(success: false, message: notTerminableMessage)
         }
 
         if app.isTerminated {
-            return ActionOutcome(success: false, message: "Already quitting...")
+            return ActionOutcome(success: false, message: "Already quitting…")
         }
 
         let now = Date()
         if !force,
            let previousAttempt = recentTerminationAttempts[pid],
            now.timeIntervalSince(previousAttempt) < 2.0 {
-            return ActionOutcome(success: false, message: "Already quitting...")
+            return ActionOutcome(success: false, message: "Already quitting…")
         }
         recentTerminationAttempts[pid] = now
 
@@ -445,19 +446,19 @@ final class SettingsStore: ObservableObject {
 
         if !success {
             if force {
-                return ActionOutcome(success: false, message: "This process cannot be terminated programmatically. Open Activity Monitor.")
+                return ActionOutcome(success: false, message: "Termination denied by macOS")
             }
-            return ActionOutcome(success: false, message: "App did not respond to Quit.")
+            return ActionOutcome(success: false, message: "App did not respond to Quit")
         }
 
-        if waitForProcessExit(pid: pid, timeout: force ? 1.0 : 1.5) {
-            return ActionOutcome(success: true, message: force ? "Force quit completed for \(appName)." : "Quit completed for \(appName).")
+        if waitForProcessExit(pid: pid, timeout: force ? 0.8 : 1.5) {
+            return ActionOutcome(success: true, message: "App terminated: \(appName).")
         }
 
         if force {
-            return ActionOutcome(success: false, message: "This process cannot be terminated programmatically. Open Activity Monitor.")
+            return ActionOutcome(success: false, message: "Termination denied by macOS")
         }
-        return ActionOutcome(success: false, message: "App did not respond to Quit.")
+        return ActionOutcome(success: false, message: "App did not respond to Quit")
     }
 
     private func waitForProcessExit(pid: Int32, timeout: TimeInterval) -> Bool {
