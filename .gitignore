@@ -37,4 +37,4 @@ Scripts/CruiseControl_Governor.lua
 dist/
 
 # Local agent notes (do not commit)
-agents.md
+AGENTS.md
