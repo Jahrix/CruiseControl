@@ -150,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
 
             let response = alert.runModal()
-            if response == .alertFirstButtonReturn, let url = outcome.releaseURL {
+            if outcome.isUpdateAvailable, response == .alertFirstButtonReturn, let url = outcome.releaseURL {
                 NSWorkspace.shared.open(url)
             }
         }

@@ -15,13 +15,13 @@ From repo root:
 The script will:
 - Build `CruiseControl.app` in Release mode using Xcode (`CODE_SIGNING_ALLOWED=NO`)
 - Stage files into `dist/stage/`
-- Create `dist/dmg/CruiseControl.dmg`
+- Create a versioned DMG: `dist/dmg/CruiseControl-<version>.dmg`
 
 Output app path used by script:
 - `build/Build/Products/Release/CruiseControl.app`
 
 Output DMG path:
-- `dist/dmg/CruiseControl.dmg`
+- `dist/dmg/CruiseControl-<version>.dmg`
 
 ## Optional DMG window cosmetics
 
@@ -35,7 +35,7 @@ This is optional and non-blocking. If Finder scripting fails, DMG creation conti
 
 ## Install flow
 
-1. Open `dist/dmg/CruiseControl.dmg`
+1. Open `dist/dmg/CruiseControl-<version>.dmg`
 2. Drag `CruiseControl.app` to `Applications`
 3. Launch from `Applications`
 

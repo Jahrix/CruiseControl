@@ -52,6 +52,13 @@ if [[ ! -d "${APP_PATH}" ]]; then
   exit 1
 fi
 
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP_PATH}/Contents/Info.plist" 2>/dev/null || true)"
+if [[ -z "${APP_VERSION}" ]]; then
+  APP_VERSION="unknown"
+fi
+DMG_PATH="${DMG_DIR}/CruiseControl-${APP_VERSION}.dmg"
+TEMP_RW_DMG="${DMG_DIR}/CruiseControl-${APP_VERSION}-temp.dmg"
+
 log_info "Preparing DMG staging folder"
 cp -R "${APP_PATH}" "${STAGE_DIR}/CruiseControl.app"
 ln -s /Applications "${STAGE_DIR}/Applications"

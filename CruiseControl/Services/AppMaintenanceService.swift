@@ -6,6 +6,21 @@ struct UpdateCheckOutcome {
     let message: String
     let latestVersion: String?
     let releaseURL: URL?
+    let isUpdateAvailable: Bool
+
+    init(
+        success: Bool,
+        message: String,
+        latestVersion: String?,
+        releaseURL: URL?,
+        isUpdateAvailable: Bool = false
+    ) {
+        self.success = success
+        self.message = message
+        self.latestVersion = latestVersion
+        self.releaseURL = releaseURL
+        self.isUpdateAvailable = isUpdateAvailable
+    }
 }
 
 private struct GitHubReleaseInfo {

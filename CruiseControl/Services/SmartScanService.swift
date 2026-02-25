@@ -397,43 +397,33 @@ final class SmartScanService {
         Self.scanModule(module: module, options: options, topCPUProcesses: topCPUProcesses)
     }
 
-    private static func scanModule(module: SmartScanModule, options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanModuleResult {
+    private nonisolated static func scanModule(module: SmartScanModule, options: ScanOptions, topCPUProcesses: [ProcessSample]) -> SmartScanModuleResult {
         let start = Date()
 
-        do {
-            let items: [SmartScanItem]
-            switch module {
-            case .systemJunk:
-                items = scanSystemJunk(options: options)
-            case .trashBins:
-                items = scanTrashBins()
-            case .largeFiles:
-                items = scanLargeFiles(roots: options.selectedLargeFileRoots, topCount: options.topLargeFilesCount)
-            case .optimization:
-                items = scanOptimization(topCPUProcesses: topCPUProcesses)
-            case .privacy:
-                items = scanPrivacyCaches()
-            }
-
-            return SmartScanModuleResult(
-                module: module,
-                items: items,
-                bytes: items.reduce(0) { $0 + $1.sizeBytes },
-                duration: Date().timeIntervalSince(start),
-                error: nil
-            )
-        } catch {
-            return SmartScanModuleResult(
-                module: module,
-                items: [],
-                bytes: 0,
-                duration: Date().timeIntervalSince(start),
-                error: error.localizedDescription
-            )
+        let items: [SmartScanItem]
+        switch module {
+        case .systemJunk:
+            items = scanSystemJunk(options: options)
+        case .trashBins:
+            items = scanTrashBins()
+        case .largeFiles:
+            items = scanLargeFiles(roots: options.selectedLargeFileRoots, topCount: options.topLargeFilesCount)
+        case .optimization:
+            items = scanOptimization(topCPUProcesses: topCPUProcesses)
+        case .privacy:
+            items = scanPrivacyCaches()
         }
+
+        return SmartScanModuleResult(
+            module: module,
+            items: items,
+            bytes: items.reduce(0) { $0 + $1.sizeBytes },
+            duration: Date().timeIntervalSince(start),
+            error: nil
+        )
     }
 
-    private static func scanSystemJunk(options: ScanOptions) -> [SmartScanItem] {
+    private nonisolated static func scanSystemJunk(options: ScanOptions) -> [SmartScanItem] {
         let fm = FileManager.default
         let home = URL(fileURLWithPath: NSHomeDirectory())
 
@@ -479,7 +469,7 @@ final class SmartScanService {
         return items.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private static func scanTrashBins() -> [SmartScanItem] {
+    private nonisolated static func scanTrashBins() -> [SmartScanItem] {
         let fm = FileManager.default
         var items: [SmartScanItem] = []
 
@@ -510,7 +500,7 @@ final class SmartScanService {
         return items.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 
-    private static func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
+    private nonisolated static func scanLargeFiles(roots: [URL], topCount: Int) -> [SmartScanItem] {
         let fm = FileManager.default
         guard !roots.isEmpty else { return [] }
 
@@ -555,7 +545,7 @@ final class SmartScanService {
             .map { $0 }
     }
 
-    private static func scanOptimization(topCPUProcesses: [ProcessSample]) -> [SmartScanItem] {
+    private nonisolated static func scanOptimization(topCPUProcesses: [ProcessSample]) -> [SmartScanItem] {
         topCPUProcesses
             .filter { $0.cpuPercent > 12 && !$0.name.localizedCaseInsensitiveContains("X-Plane") }
             .map { process in
@@ -569,7 +559,7 @@ final class SmartScanService {
             }
     }
 
-    private static func scanPrivacyCaches() -> [SmartScanItem] {
+    private nonisolated static func scanPrivacyCaches() -> [SmartScanItem] {
         let fm = FileManager.default
         let home = URL(fileURLWithPath: NSHomeDirectory())
         let candidates = [
@@ -610,7 +600,7 @@ final class SmartScanService {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func topLevelGroupName(root: URL, child: URL) -> String {
+    private nonisolated static func topLevelGroupName(root: URL, child: URL) -> String {
         let relative = child.path.replacingOccurrences(of: root.path, with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let first = relative.split(separator: "/").first
         return first.map(String.init) ?? root.lastPathComponent
@@ -625,7 +615,8 @@ final class SmartScanService {
         }
 
         if let code = firstError?[NSAppleScript.errorNumber] as? Int, code == -600 {
-            _ = NSWorkspace.shared.launchApplication("Finder")
+            let finderURL = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
+            _ = NSWorkspace.shared.open(finderURL)
             Thread.sleep(forTimeInterval: 0.35)
             let retryError = executeAppleScript(script)
             if retryError == nil {
@@ -690,7 +681,7 @@ final class SmartScanService {
         return (deleted, failed)
     }
 
-    private static func discoveredTrashDirectories(fileManager: FileManager = .default) -> [URL] {
+    private nonisolated static func discoveredTrashDirectories(fileManager: FileManager = .default) -> [URL] {
         var candidates: [URL] = [
             URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash", isDirectory: true)
         ]
@@ -718,7 +709,7 @@ final class SmartScanService {
         return unique
     }
 
-    private static func appSupportCruiseControlRoot() -> URL {
+    private nonisolated static func appSupportCruiseControlRoot() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("CruiseControl", isDirectory: true)
@@ -737,7 +728,7 @@ final class SmartScanService {
         return fileManager.fileExists(atPath: folder.path) ? folder : nil
     }
 
-    private static func defaultAllowlistedRoots() -> [URL] {
+    private nonisolated static func defaultAllowlistedRoots() -> [URL] {
         let home = URL(fileURLWithPath: NSHomeDirectory())
         return [
             home.appendingPathComponent("Library/Caches"),
@@ -752,7 +743,7 @@ final class SmartScanService {
         Self.defaultAllowlistedRoots()
     }
 
-    private static func isPathWithinAllowlist(_ path: String, allowlistedRoots: [URL]) -> Bool {
+    private nonisolated static func isPathWithinAllowlist(_ path: String, allowlistedRoots: [URL]) -> Bool {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         for root in allowlistedRoots {
             let rootPath = root.standardizedFileURL.path
@@ -767,7 +758,7 @@ final class SmartScanService {
         Self.isPathWithinAllowlist(path, allowlistedRoots: allowlistedRoots)
     }
 
-    private static func isProtectedSystemPath(_ path: String) -> Bool {
+    private nonisolated static func isProtectedSystemPath(_ path: String) -> Bool {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         let blockedPrefixes = ["/System", "/Library", "/private/var/vm"]
         return blockedPrefixes.contains { prefix in
@@ -779,7 +770,7 @@ final class SmartScanService {
         Self.isProtectedSystemPath(path)
     }
 
-    private static func directoryOrFileSize(url: URL) -> UInt64 {
+    private nonisolated static func directoryOrFileSize(url: URL) -> UInt64 {
         let fm = FileManager.default
 
         if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
