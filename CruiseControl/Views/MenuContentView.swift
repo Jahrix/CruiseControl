@@ -336,6 +336,9 @@ struct MenuContentView: View {
     @State private var betaQAExportManuallyVerified: Bool = false
     @State private var betaQASelfCheckResult: String?
     @State private var betaQASelfCheckPassed: Bool?
+    @AppStorage("ccHelpCardDismissed") private var ccHelpCardDismissed: Bool = false
+    @AppStorage("ccShowHelpOnLaunch") private var ccShowHelpOnLaunch: Bool = true
+    @State private var showHelpSheet: Bool = false
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -427,6 +430,9 @@ struct MenuContentView: View {
             .sheet(isPresented: $showXPlaneHelpSheet) {
                 xPlaneHelpSheet
             }
+            .sheet(isPresented: $showHelpSheet) {
+                helpCardSheet
+            }
         }
         .onAppear {
             sampler.start()
@@ -446,6 +452,9 @@ struct MenuContentView: View {
                 selectedSection = .simMode
                 showSimModeChecklist = true
                 openXPlaneWizardOnLaunch = false
+            }
+            if !ccHelpCardDismissed && ccShowHelpOnLaunch {
+                showHelpSheet = true
             }
         }
         .onReceive(clockTimer) { newDate in
@@ -795,6 +804,12 @@ struct MenuContentView: View {
 
     private var overviewSection: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if shouldShowSwapThrashPanel {
+                swapThrashFirstAidPanel
+            } else if shouldShowSwapThrashStalePanel {
+                swapThrashStalePanel
+            }
+
             dashboardCard(title: "Session Overview") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -1869,6 +1884,10 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             connectionWizardCard
 
+            if shouldShowSwapThrashChipInSim {
+                swapThrashChip
+            }
+
             dashboardCard(title: "LOD Regulator") {
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle("Enable LOD Regulator", isOn: $settings.governorModeEnabled)
@@ -2472,6 +2491,10 @@ struct MenuContentView: View {
                     }
                 }
             }
+        }
+
+        dashboardCard(title: "What CruiseControl does (and doesn't do)") {
+            helpCardContent
         }
 
         dashboardCard(title: "Support Pack") {
@@ -3370,6 +3393,256 @@ struct MenuContentView: View {
             Text(text)
                 .font(.subheadline)
         }
+    }
+
+    private var helpCardContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("What CruiseControl does (and doesn't do)")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• GPU: GPU timing is shown only when X-Plane telemetry provides it. Otherwise GPU is \"Unavailable\" (we don't guess).")
+                Text("• Processes: Some apps can't be closed programmatically. If an action fails, we'll explain why and offer Activity Monitor.")
+                Text("• X-Plane setup: X-Plane features require UDP + FlyWithLua bridge. Use the Connection Wizard + self-test checklist.")
+                Text("• Cleaner: Maintenance can help stability when pressure/swap/low disk suggests it. It's not a guaranteed FPS booster.")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Open Troubleshooting Center") {
+                    diagnosticsSubpage = .tools
+                    selectedSection = .diagnostics
+                }
+                .buttonStyle(.bordered)
+
+                Button("Open X-Plane Wizard") {
+                    selectedSection = .simMode
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("Close") {
+                    ccHelpCardDismissed = true
+                    showHelpSheet = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var helpCardSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            helpCardContent
+            HStack {
+                Button("Don't show again") {
+                    ccHelpCardDismissed = true
+                    showHelpSheet = false
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("Close") {
+                    showHelpSheet = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private var shouldShowSwapThrashPanel: Bool {
+        isSwapThrashLikely && isFreshSample
+    }
+
+    private var shouldShowSwapThrashStalePanel: Bool {
+        isSwapThrashLikely && !isFreshSample
+    }
+
+    private var shouldShowSwapThrashChipInSim: Bool {
+        sampler.isSimActive && shouldShowSwapThrashPanel
+    }
+
+    private var isFreshSample: Bool {
+        guard let lastUpdated = sampler.snapshot.lastUpdated else { return false }
+        return now.timeIntervalSince(lastUpdated) <= 10
+    }
+
+    private var recentSwapThrashEvents: [StutterEvent] {
+        let cutoff = now.addingTimeInterval(-600)
+        return sampler.stutterEvents.filter {
+            $0.timestamp >= cutoff && $0.classification == .swapThrash
+        }
+    }
+
+    private var isSwapThrashLikely: Bool {
+        let swapDelta5m = sampler.snapshot.swapDelta5MinBytes
+        let swapDeltaThreshold = Int64(200 * 1_024 * 1_024)
+        let swapUsedThreshold = UInt64(2 * 1_024 * 1_024 * 1_024)
+        let pressureRed = sampler.snapshot.memoryPressure == .red
+        let swapRisingFast = swapDelta5m >= swapDeltaThreshold
+        let swapUsedHigh = sampler.snapshot.swapUsedBytes >= swapUsedThreshold
+        return (pressureRed && swapRisingFast)
+            || (pressureRed && swapUsedHigh)
+            || !recentSwapThrashEvents.isEmpty
+    }
+
+    private var swapThrashSummaryText: String {
+        if sampler.snapshot.memoryPressure == .red {
+            return "Memory pressure is high and swapping is active."
+        }
+        if !recentSwapThrashEvents.isEmpty {
+            return "Recent stutter events indicate swap thrash."
+        }
+        return "Swap thrash likely from recent session."
+    }
+
+    private var swapThrashFirstAidPanel: some View {
+        dashboardCard(title: "Swap Thrash detected (memory pressure is high)") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("LOD changes won't fix swapping. Reduce memory pressure first.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(swapThrashSummaryText)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("1) Lower texture load")
+                            .font(.headline)
+                        Spacer()
+                        Button("Copy tip") {
+                            let tip = "XP12: Texture Quality -> Medium. XP11: Texture Resolution -> Medium."
+                            copyToClipboard(tip)
+                            processActionResult = "Copied texture load tip."
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Text("XP12: Texture Quality -> Medium. XP11: Texture Resolution -> Medium.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("2) Close top memory apps")
+                        .font(.headline)
+                    let topMemory = Array(sampler.topMemoryProcesses.prefix(3))
+                    if topMemory.isEmpty {
+                        Text("No top memory processes available yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(topMemory) { process in
+                            let termination = terminationAvailability(for: process)
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(process.name) • \(byteCountString(process.memoryBytes))")
+                                        .font(.subheadline)
+                                    if let note = termination.helperNote {
+                                        Text(note)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if termination.showTerminationControls {
+                                    Button("Quit") {
+                                        runProcessAction(process: process, force: false)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(!termination.allowed)
+                                } else {
+                                    Button("Open Activity Monitor") {
+                                        let outcome = settings.openInActivityMonitor(process: process)
+                                        processActionResult = outcome.message
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("3) Free disk space")
+                            .font(.headline)
+                        Spacer()
+                        Button("Open Storage Settings") {
+                            let outcome = openStorageSettings()
+                            processActionResult = outcome.message
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Text("Aim for 30–50 GB free. Low free space makes swap slower and stutters worse.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                DisclosureGroup("Learn why") {
+                    Text("When RAM is full, macOS swaps memory to disk. Swap is much slower than RAM, which causes stutters. Lowering texture memory and closing heavy apps reduces swap pressure.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var swapThrashStalePanel: some View {
+        dashboardCard(title: "Last session indicated swap thrash") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Live telemetry is stale. When you return to the sim, reduce memory pressure first.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Open Diagnostics") {
+                        selectedSection = .diagnostics
+                        diagnosticsSubpage = .tools
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    Button("Open X-Plane Wizard") {
+                        selectedSection = .simMode
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private var swapThrashChip: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("Swap thrash detected - open Overview for First Aid.")
+                .font(.subheadline)
+            Spacer()
+            Button("Open Overview") {
+                selectedSection = .overview
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.orange.opacity(0.5), lineWidth: 1)
+        )
+    }
+
+    private func openStorageSettings() -> ActionOutcome {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Storage-Settings.extension"),
+           NSWorkspace.shared.open(url) {
+            return ActionOutcome(success: true, message: "Opened Storage settings.")
+        }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.settings"),
+           NSWorkspace.shared.open(url) {
+            return ActionOutcome(success: true, message: "Opened System Settings.")
+        }
+        return ActionOutcome(success: false, message: "Unable to open System Settings.")
     }
 
     private struct TroubleshootingGuideCard: Identifiable {
