@@ -74,6 +74,38 @@ When you are ready to sign/notarize, use:
 - [NOTARIZATION.md](./NOTARIZATION.md)
 - `./Scripts/notarize_dmg.sh`
 
+## CI build + release tags
+
+GitHub Actions now covers two paths:
+
+- Every pull request to `main` and every push to `main` runs an unsigned macOS build.
+- Every tag push matching `v*` builds a versioned DMG from `Scripts/build_dmg.sh`.
+- If notarization secrets are configured, the release workflow runs `Scripts/notarize_dmg.sh`.
+- The release workflow uploads the DMG as both a workflow artifact and a GitHub Release asset.
+
+To publish a release:
+
+```bash
+git tag vX.Y.Z
+git push --tags
+```
+
+Expected output from the release workflow:
+
+- `dist/dmg/CruiseControl-<version>-<build>.dmg`
+- A workflow artifact containing that DMG
+- A GitHub Release for the tag with the DMG attached
+
+Secrets supported by the release workflow:
+
+- `DEVELOPER_ID_APP_CERT`
+- `NOTARY_KEYCHAIN_PROFILE`
+- `APPLE_ID`
+- `TEAM_ID`
+- `APP_PASSWORD`
+
+If those secrets are missing, DMG packaging still completes and notarization is skipped cleanly.
+
 ## Troubleshooting
 
 ### DMG not generated
