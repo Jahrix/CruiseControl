@@ -41,6 +41,8 @@ fi
 mkdir -p "${DIST_DIR}" "${DMG_DIR}"
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
+rm -f "${DMG_DIR}"/CruiseControl-*.dmg
+rm -f "${DMG_DIR}"/CruiseControl-*-temp.dmg
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   log_info "Building Release app (${SCHEME})"
@@ -129,6 +131,14 @@ else
     -srcfolder "${STAGE_DIR}" \
     -ov -format UDZO \
     "${DMG_PATH}" >/dev/null
+fi
+
+log_info "Verifying DMG"
+if hdiutil verify "${DMG_PATH}" >/dev/null; then
+  log_info "DMG verification passed"
+else
+  echo "[build_dmg][error] DMG verification failed for ${DMG_PATH}"
+  exit 1
 fi
 
 log_info "DMG created: ${DMG_PATH}"
