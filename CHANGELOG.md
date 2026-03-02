@@ -1,14 +1,19 @@
 # Changelog
 
-## v1.2.1 - DMG release + GitHub Actions
+## v1.2.2 - Closed-beta updater + DMG install flow
 
 ### Added
-- GitHub Actions CI workflow for unsigned macOS builds on pushes and pull requests to `main`.
-- GitHub Actions release workflow for `v*` tags to build a DMG artifact, optionally notarize it, and publish a GitHub Release asset.
+- Closed-beta updater flow that downloads the latest GitHub Release DMG, installs to `/Applications` when permitted, and relaunches.
+- Manual recovery actions in Preferences > Updates:
+  - open downloaded DMG in Finder
+  - open `/Applications`
+  - copy Gatekeeper quarantine fix command
 
 ### Changed
-- Version bumped to `1.2.1` (build `121`).
-- DMG release docs now include the CI/tag-driven release path.
+- Version bumped to `1.2.2` (build `122`).
+- Update messaging now always shows the current installed version/build and clearer GitHub Release status.
+- DMG build script now removes stale artifacts first and verifies the finished DMG with `hdiutil verify`.
+- Release docs now include closed-beta Gatekeeper guidance and direct-DMG distribution notes.
 
 ## v1.2.0-rc3 - Capability-aware telemetry + safer actions
 

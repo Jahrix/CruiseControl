@@ -1,4 +1,4 @@
-# CruiseControl v1.2.1
+# CruiseControl v1.2.2
 
 CruiseControl is a macOS SwiftUI performance copilot for X-Plane sessions.
 
@@ -95,8 +95,8 @@ xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj
 
 ## Versioning
 
-- Version: `1.2.1`
-- Build: `121`
+- Version: `1.2.2`
+- Build: `122`
 - Bundle ID: `jahrix.CruiseControl`
 
 ## Limitations
