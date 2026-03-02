@@ -1,37 +1,96 @@
 import Foundation
 import AppKit
 
+private func bundleVersionString() -> String {
+    if let marketing = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+       !marketing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return marketing
+    }
+    return "Unknown"
+}
+
+private func bundleBuildString() -> String {
+    if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+       !build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return build
+    }
+    return "Unknown"
+}
+
 struct UpdateCheckOutcome {
     let success: Bool
     let message: String
+    let currentVersion: String
+    let currentBuild: String
     let latestVersion: String?
+    let latestBuild: String?
     let releaseURL: URL?
+    let downloadedAssetURL: URL?
+    let latestAssetName: String?
     let isUpdateAvailable: Bool
     let isOffline: Bool
+    let canInstallAutomatically: Bool
+    let shouldOfferOpenDownloadedAsset: Bool
+    let shouldOfferApplicationsFolder: Bool
+    let gatekeeperCommand: String?
 
     init(
         success: Bool,
         message: String,
+        currentVersion: String? = nil,
+        currentBuild: String? = nil,
         latestVersion: String?,
+        latestBuild: String? = nil,
         releaseURL: URL?,
+        downloadedAssetURL: URL? = nil,
+        latestAssetName: String? = nil,
         isUpdateAvailable: Bool = false,
-        isOffline: Bool = false
+        isOffline: Bool = false,
+        canInstallAutomatically: Bool = false,
+        shouldOfferOpenDownloadedAsset: Bool = false,
+        shouldOfferApplicationsFolder: Bool = false,
+        gatekeeperCommand: String? = nil
     ) {
         self.success = success
         self.message = message
+        self.currentVersion = currentVersion ?? bundleVersionString()
+        self.currentBuild = currentBuild ?? bundleBuildString()
         self.latestVersion = latestVersion
+        self.latestBuild = latestBuild
         self.releaseURL = releaseURL
+        self.downloadedAssetURL = downloadedAssetURL
+        self.latestAssetName = latestAssetName
         self.isUpdateAvailable = isUpdateAvailable
         self.isOffline = isOffline
+        self.canInstallAutomatically = canInstallAutomatically
+        self.shouldOfferOpenDownloadedAsset = shouldOfferOpenDownloadedAsset
+        self.shouldOfferApplicationsFolder = shouldOfferApplicationsFolder
+        self.gatekeeperCommand = gatekeeperCommand
+    }
+
+    var currentVersionBuildString: String {
+        "\(currentVersion) (\(currentBuild))"
+    }
+
+    var latestVersionBuildString: String? {
+        guard let latestVersion else {
+            return nil
+        }
+        if let latestBuild, latestBuild.isEmpty == false {
+            return "\(latestVersion) (\(latestBuild))"
+        }
+        return latestVersion
     }
 }
 
 private struct GitHubReleaseInfo {
     let latestVersion: String
+    let latestBuild: String?
     let currentVersion: String
+    let currentBuild: String
     let releaseURL: URL?
-    let zipAssetURL: URL?
-    let zipAssetName: String?
+    let dmgAssetURL: URL?
+    let dmgAssetName: String?
     let isPrerelease: Bool
 }
 
@@ -130,6 +189,18 @@ enum AppMaintenanceService {
         NSWorkspace.shared.open(url)
     }
 
+    static func openDownloadedAssetInFinder(_ url: URL) -> ActionOutcome {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return ActionOutcome(success: false, message: "Downloaded DMG not found. Check for updates again.")
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return ActionOutcome(success: true, message: "Revealed downloaded DMG in Finder.")
+    }
+
+    static func gatekeeperFixCommand() -> String {
+        "xattr -dr com.apple.quarantine /Applications/CruiseControl.app"
+    }
+
     static func checkForUpdates(currentVersion: String, preferSparkle: Bool = true) async -> UpdateCheckOutcome {
         if preferSparkle {
             let sparkleOutcome = SparkleUpdateBridge.checkForUpdatesIfAvailable()
@@ -145,6 +216,14 @@ enum AppMaintenanceService {
     }
 
     static func checkForUpdatesAndInstall(currentVersion: String, preferSparkle: Bool = true) async -> UpdateCheckOutcome {
+        await checkForUpdatesAndInstall(currentVersion: currentVersion, preferSparkle: preferSparkle, progress: nil)
+    }
+
+    static func checkForUpdatesAndInstall(
+        currentVersion: String,
+        preferSparkle: Bool = true,
+        progress: (@MainActor @Sendable (String) -> Void)?
+    ) async -> UpdateCheckOutcome {
         if preferSparkle {
             let sparkleOutcome = SparkleUpdateBridge.checkForUpdatesIfAvailable()
             if sparkleOutcome.success {
@@ -157,86 +236,105 @@ enum AppMaintenanceService {
             return fetched.outcome ?? UpdateCheckOutcome(success: false, message: "Update check failed.", latestVersion: nil, releaseURL: nil)
         }
 
-        guard compareVersions(release.latestVersion, release.currentVersion) == .orderedDescending else {
-            return UpdateCheckOutcome(
-                success: true,
-                message: "You are up to date (\(release.currentVersion)).",
-                latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL,
-                isUpdateAvailable: false
-            )
+        guard compareReleaseVersion(
+            latestVersion: release.latestVersion,
+            latestBuild: release.latestBuild,
+            currentVersion: release.currentVersion,
+            currentBuild: release.currentBuild
+        ) == .orderedDescending else {
+            return upToDateOutcome(for: release)
         }
 
-        guard let zipAssetURL = release.zipAssetURL else {
+        guard let dmgAssetURL = release.dmgAssetURL else {
             return UpdateCheckOutcome(
                 success: false,
-                message: "Update \(release.latestVersion) found, but no .zip app asset was published. Open Releases and download manually.",
+                message: statusMessage(
+                    "Update \(release.latestVersion) is available, but no CruiseControl DMG asset was published. Open the release page and download manually."
+                ),
+                currentVersion: release.currentVersion,
+                currentBuild: release.currentBuild,
                 latestVersion: release.latestVersion,
+                latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
-                isUpdateAvailable: true
+                latestAssetName: release.dmgAssetName,
+                isUpdateAvailable: true,
+                shouldOfferApplicationsFolder: true,
+                gatekeeperCommand: gatekeeperFixCommand()
             )
         }
 
-        let action = promptForUpdateInstall(
-            latestVersion: release.latestVersion,
-            assetName: release.zipAssetName ?? zipAssetURL.lastPathComponent
-        )
+        do {
+            if let progress {
+                await MainActor.run {
+                    progress("Current: \(currentVersionBuildString())\nDownloading CruiseControl \(release.latestVersion)…")
+                }
+            }
+            let downloadedDMG = try await downloadDMGAsset(
+                from: dmgAssetURL,
+                tag: release.latestVersion,
+                assetName: release.dmgAssetName ?? dmgAssetURL.lastPathComponent
+            )
+            if let progress {
+                await MainActor.run {
+                    progress("Current: \(currentVersionBuildString())\nInstalling to /Applications…")
+                }
+            }
+            let installMessage = try await installDownloadedDMG(
+                at: downloadedDMG,
+                version: release.latestVersion
+            )
+            return UpdateCheckOutcome(
+                success: true,
+                message: statusMessage(installMessage),
+                currentVersion: release.currentVersion,
+                currentBuild: release.currentBuild,
+                latestVersion: release.latestVersion,
+                latestBuild: release.latestBuild,
+                releaseURL: release.releaseURL,
+                downloadedAssetURL: downloadedDMG,
+                latestAssetName: release.dmgAssetName,
+                isUpdateAvailable: true,
+                canInstallAutomatically: true,
+                shouldOfferOpenDownloadedAsset: true,
+                gatekeeperCommand: gatekeeperFixCommand()
+            )
+        } catch {
+            let downloadedDMG = lastDownloadedDMGURL(tag: release.latestVersion)
+            let message: String
+            let needsApplicationsHelp: Bool
+            if isApplicationsPermissionError(error) {
+                message = statusMessage("CruiseControl needs permission to write to /Applications. Drag and drop install may be required.")
+                needsApplicationsHelp = true
+            } else {
+                message = statusMessage("Update download/install failed: \(error.localizedDescription)")
+                needsApplicationsHelp = false
+            }
 
-        switch action {
-        case .later:
             return UpdateCheckOutcome(
-                success: true,
-                message: "Update \(release.latestVersion) is available.",
+                success: false,
+                message: message,
+                currentVersion: release.currentVersion,
+                currentBuild: release.currentBuild,
                 latestVersion: release.latestVersion,
+                latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
-                isUpdateAvailable: true
+                downloadedAssetURL: downloadedDMG,
+                latestAssetName: release.dmgAssetName,
+                isUpdateAvailable: true,
+                canInstallAutomatically: true,
+                shouldOfferOpenDownloadedAsset: downloadedDMG != nil,
+                shouldOfferApplicationsFolder: needsApplicationsHelp,
+                gatekeeperCommand: gatekeeperFixCommand()
             )
-        case .openReleases:
-            if let releaseURL = release.releaseURL {
-                NSWorkspace.shared.open(releaseURL)
-            }
-            return UpdateCheckOutcome(
-                success: true,
-                message: "Opened releases page for update \(release.latestVersion).",
-                latestVersion: release.latestVersion,
-                releaseURL: release.releaseURL,
-                isUpdateAvailable: true
-            )
-        case .installNow:
-            do {
-                let installMessage = try await downloadExtractAndInstall(zipAssetURL: zipAssetURL)
-                return UpdateCheckOutcome(
-                    success: true,
-                    message: installMessage,
-                    latestVersion: release.latestVersion,
-                    releaseURL: release.releaseURL,
-                    isUpdateAvailable: true
-                )
-            } catch {
-                return UpdateCheckOutcome(
-                    success: false,
-                    message: "Update download/install failed: \(error.localizedDescription)",
-                    latestVersion: release.latestVersion,
-                    releaseURL: release.releaseURL,
-                    isUpdateAvailable: true
-                )
-            }
         }
     }
 
     static func currentVersionString() -> String {
-        if let marketing = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
-            return marketing
-        }
-        return "Unknown"
+        bundleVersionString()
     }
 
     static func currentBuildString() -> String {
-        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-           !build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return build
-        }
-        return "Unknown"
+        bundleBuildString()
     }
 
     static func currentVersionBuildString() -> String {
@@ -246,30 +344,36 @@ enum AppMaintenanceService {
     private static func checkGitHubReleases(currentVersion: String) async -> UpdateCheckOutcome {
         let fetched = await fetchGitHubReleaseInfo(currentVersion: currentVersion)
         guard let release = fetched.info else {
-            return fetched.outcome ?? UpdateCheckOutcome(success: false, message: "Update check failed.", latestVersion: nil, releaseURL: nil)
+            return fetched.outcome ?? UpdateCheckOutcome(success: false, message: statusMessage("Update check failed."), latestVersion: nil, releaseURL: nil)
         }
 
-        if compareVersions(release.latestVersion, release.currentVersion) == .orderedDescending {
+        if compareReleaseVersion(
+            latestVersion: release.latestVersion,
+            latestBuild: release.latestBuild,
+            currentVersion: release.currentVersion,
+            currentBuild: release.currentBuild
+        ) == .orderedDescending {
             return UpdateCheckOutcome(
                 success: true,
-                message: "New version available: \(release.latestVersion) (current \(release.currentVersion)).",
+                message: statusMessage("Update available: \(formattedVersionBuild(version: release.latestVersion, build: release.latestBuild))."),
+                currentVersion: release.currentVersion,
+                currentBuild: release.currentBuild,
                 latestVersion: release.latestVersion,
+                latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
-                isUpdateAvailable: true
+                latestAssetName: release.dmgAssetName,
+                isUpdateAvailable: true,
+                canInstallAutomatically: release.dmgAssetURL != nil,
+                gatekeeperCommand: gatekeeperFixCommand()
             )
         }
-        return UpdateCheckOutcome(
-            success: true,
-            message: "You are up to date (\(release.currentVersion)).",
-            latestVersion: release.latestVersion,
-            releaseURL: release.releaseURL,
-            isUpdateAvailable: false
-        )
+
+        return upToDateOutcome(for: release)
     }
 
     private static func fetchGitHubReleaseInfo(currentVersion: String) async -> GitHubReleaseFetch {
         guard let url = githubLatestReleaseAPIURL else {
-            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Invalid releases URL configuration.", latestVersion: nil, releaseURL: githubReleasesPageURL))
+            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: statusMessage("Invalid releases URL configuration."), latestVersion: nil, releaseURL: githubReleasesPageURL))
         }
 
         var request = URLRequest(url: url)
@@ -279,7 +383,7 @@ enum AppMaintenanceService {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: invalid server response.", latestVersion: nil, releaseURL: githubReleasesPageURL))
+                return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: statusMessage("Update check failed: invalid server response."), latestVersion: nil, releaseURL: githubReleasesPageURL))
             }
 
             if !(200...299).contains(http.statusCode) {
@@ -295,7 +399,7 @@ enum AppMaintenanceService {
                         info: nil,
                         outcome: UpdateCheckOutcome(
                             success: false,
-                            message: "No GitHub release is published yet for \(githubOwner)/\(githubRepo). Publish your first release to enable in-app updates.",
+                            message: statusMessage("No GitHub Releases found yet. Create a Release for tag vX.Y.Z to enable updates."),
                             latestVersion: nil,
                             releaseURL: githubReleasesPageURL
                         )
@@ -309,7 +413,7 @@ enum AppMaintenanceService {
                         info: nil,
                         outcome: UpdateCheckOutcome(
                             success: false,
-                            message: "GitHub API rate limit reached. Try again later or configure Sparkle.",
+                            message: statusMessage("GitHub API rate limit reached. Try again later."),
                             latestVersion: nil,
                             releaseURL: githubReleasesPageURL
                         )
@@ -320,7 +424,7 @@ enum AppMaintenanceService {
                     info: nil,
                     outcome: UpdateCheckOutcome(
                         success: false,
-                        message: "Update check failed: HTTP \(statusCode).",
+                        message: statusMessage("Update check failed: HTTP \(statusCode)."),
                         latestVersion: nil,
                         releaseURL: githubReleasesPageURL
                     )
@@ -343,20 +447,22 @@ enum AppMaintenanceService {
             let current = normalizedVersion(currentVersion)
             let releaseURL = URL(string: payload.html_url) ?? githubReleasesPageURL
 
-            let preferredZip = payload.assets.first {
+            let preferredDMG = payload.assets.first {
                 let lower = $0.name.lowercased()
-                return lower.hasSuffix(".zip") && lower.contains("cruisecontrol")
+                return lower.hasSuffix(".dmg") && lower.contains("cruisecontrol")
             } ?? payload.assets.first {
-                $0.name.lowercased().hasSuffix(".zip")
+                $0.name.lowercased().hasSuffix(".dmg")
             }
 
             return GitHubReleaseFetch(
                 info: GitHubReleaseInfo(
                     latestVersion: latest,
+                    latestBuild: extractBuildNumber(fromAssetName: preferredDMG?.name),
                     currentVersion: current,
+                    currentBuild: currentBuildString(),
                     releaseURL: releaseURL,
-                    zipAssetURL: preferredZip.flatMap { URL(string: $0.browser_download_url) },
-                    zipAssetName: preferredZip?.name,
+                    dmgAssetURL: preferredDMG.flatMap { URL(string: $0.browser_download_url) },
+                    dmgAssetName: preferredDMG?.name,
                     isPrerelease: false
                 ),
                 outcome: nil
@@ -367,7 +473,7 @@ enum AppMaintenanceService {
                     info: nil,
                     outcome: UpdateCheckOutcome(
                         success: true,
-                        message: "You appear to be offline. Current version is \(currentVersionBuildString()). Connect to the internet and check again.",
+                        message: statusMessage("You appear to be offline. Connect to the internet and check again."),
                         latestVersion: nil,
                         releaseURL: githubReleasesPageURL,
                         isUpdateAvailable: false,
@@ -375,7 +481,7 @@ enum AppMaintenanceService {
                     )
                 )
             }
-            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: "Update check failed: \(error.localizedDescription)", latestVersion: nil, releaseURL: githubReleasesPageURL))
+            return GitHubReleaseFetch(info: nil, outcome: UpdateCheckOutcome(success: false, message: statusMessage("Update check failed: \(error.localizedDescription)"), latestVersion: nil, releaseURL: githubReleasesPageURL))
         }
     }
 
@@ -415,20 +521,22 @@ enum AppMaintenanceService {
             let current = normalizedVersion(currentVersion)
             let releaseURL = URL(string: payload.html_url) ?? githubReleasesPageURL
 
-            let preferredZip = payload.assets.first {
+            let preferredDMG = payload.assets.first {
                 let lower = $0.name.lowercased()
-                return lower.hasSuffix(".zip") && lower.contains("cruisecontrol")
+                return lower.hasSuffix(".dmg") && lower.contains("cruisecontrol")
             } ?? payload.assets.first {
-                $0.name.lowercased().hasSuffix(".zip")
+                $0.name.lowercased().hasSuffix(".dmg")
             }
 
             return GitHubReleaseFetch(
                 info: GitHubReleaseInfo(
                     latestVersion: latest,
+                    latestBuild: extractBuildNumber(fromAssetName: preferredDMG?.name),
                     currentVersion: current,
+                    currentBuild: currentBuildString(),
                     releaseURL: releaseURL,
-                    zipAssetURL: preferredZip.flatMap { URL(string: $0.browser_download_url) },
-                    zipAssetName: preferredZip?.name,
+                    dmgAssetURL: preferredDMG.flatMap { URL(string: $0.browser_download_url) },
+                    dmgAssetName: preferredDMG?.name,
                     isPrerelease: payload.prerelease
                 ),
                 outcome: nil
@@ -456,33 +564,8 @@ enum AppMaintenanceService {
         }
     }
 
-    private enum UpdateInstallAction {
-        case installNow
-        case openReleases
-        case later
-    }
-
-    @MainActor
-    private static func promptForUpdateInstall(latestVersion: String, assetName: String) -> UpdateInstallAction {
-        let alert = NSAlert()
-        alert.messageText = "CruiseControl \(latestVersion) Available"
-        alert.informativeText = "Download and install \(assetName) now?"
-        alert.addButton(withTitle: "Install Now")
-        alert.addButton(withTitle: "Open Releases")
-        alert.addButton(withTitle: "Later")
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            return .installNow
-        case .alertSecondButtonReturn:
-            return .openReleases
-        default:
-            return .later
-        }
-    }
-
-    private static func downloadExtractAndInstall(zipAssetURL: URL) async throws -> String {
-        var request = URLRequest(url: zipAssetURL)
+    private static func downloadDMGAsset(from assetURL: URL, tag: String, assetName: String) async throws -> URL {
+        var request = URLRequest(url: assetURL)
         request.timeoutInterval = 120
         request.setValue("CruiseControl-Updater", forHTTPHeaderField: "User-Agent")
 
@@ -492,65 +575,81 @@ enum AppMaintenanceService {
         }
 
         let fileManager = FileManager.default
-        let workDir = fileManager.temporaryDirectory
-            .appendingPathComponent("CruiseControl-Update-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: workDir, withIntermediateDirectories: true)
-
-        let archiveURL = workDir.appendingPathComponent("update.zip")
-        try fileManager.moveItem(at: downloadedTempURL, to: archiveURL)
-
-        let extractedDir = workDir.appendingPathComponent("extracted", isDirectory: true)
-        try fileManager.createDirectory(at: extractedDir, withIntermediateDirectories: true)
-
-        try runProcess("/usr/bin/ditto", arguments: ["-x", "-k", archiveURL.path, extractedDir.path])
-
-        guard let extractedAppURL = findAppBundle(in: extractedDir) else {
-            throw NSError(domain: "CruiseControlUpdater", code: 2, userInfo: [NSLocalizedDescriptionKey: "Downloaded archive did not contain a .app bundle."])
+        guard let cacheRoot = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("CruiseControl/Updates", isDirectory: true)
+            .appendingPathComponent(sanitizePathComponent(tag), isDirectory: true) else {
+            throw NSError(domain: "CruiseControlUpdater", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not access the CruiseControl update cache."])
         }
 
-        let destination = try resolveUpdateDestination(appName: extractedAppURL.lastPathComponent)
-        if destination.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path {
-            let staged = destination.deletingLastPathComponent().appendingPathComponent("CruiseControl-updated.app")
-            try replaceApp(at: staged, with: extractedAppURL)
-            try await relaunchInstalledApp(at: staged)
-            return "Update installed to \(staged.path). Relaunch complete."
-        } else {
-            try replaceApp(at: destination, with: extractedAppURL)
-            try await relaunchInstalledApp(at: destination)
-            return "Update installed to \(destination.path). Relaunch complete."
-        }
-    }
+        try fileManager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
 
-    private static func resolveUpdateDestination(appName: String) throws -> URL {
-        let fileManager = FileManager.default
-        let currentApp = Bundle.main.bundleURL.standardizedFileURL
-        let currentParent = currentApp.deletingLastPathComponent()
-
-        if fileManager.isWritableFile(atPath: currentParent.path) {
-            return currentApp
-        }
-
-        let userApplications = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent("Applications", isDirectory: true)
-        try fileManager.createDirectory(at: userApplications, withIntermediateDirectories: true)
-
-        if fileManager.isWritableFile(atPath: userApplications.path) {
-            return userApplications.appendingPathComponent(appName)
-        }
-
-        throw NSError(
-            domain: "CruiseControlUpdater",
-            code: 3,
-            userInfo: [NSLocalizedDescriptionKey: "No writable app install path found. Use Install to /Applications manually."]
-        )
-    }
-
-    private static func replaceApp(at destination: URL, with source: URL) throws {
-        let fileManager = FileManager.default
+        let destination = cacheRoot.appendingPathComponent("CruiseControl.dmg")
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
-        try fileManager.copyItem(at: source, to: destination)
+        try fileManager.moveItem(at: downloadedTempURL, to: destination)
+
+        let attributes = try fileManager.attributesOfItem(atPath: destination.path)
+        let fileSize = attributes[.size] as? NSNumber
+        if (fileSize?.int64Value ?? 0) <= 0 {
+            throw NSError(domain: "CruiseControlUpdater", code: 3, userInfo: [NSLocalizedDescriptionKey: "Downloaded DMG is empty."])
+        }
+
+        if assetName.lowercased().hasSuffix(".dmg") == false {
+            throw NSError(domain: "CruiseControlUpdater", code: 4, userInfo: [NSLocalizedDescriptionKey: "Downloaded update is not a DMG."])
+        }
+
+        return destination
+    }
+
+    private static func installDownloadedDMG(at dmgURL: URL, version: String) async throws -> String {
+        let fileManager = FileManager.default
+        let mountPoint = fileManager.temporaryDirectory
+            .appendingPathComponent("CruiseControl-DMG-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+        try runProcess(
+            "/usr/bin/hdiutil",
+            arguments: ["attach", "-nobrowse", "-readonly", dmgURL.path, "-mountpoint", mountPoint.path]
+        )
+        defer {
+            try? runProcess("/usr/bin/hdiutil", arguments: ["detach", mountPoint.path, "-force"])
+            try? fileManager.removeItem(at: mountPoint)
+        }
+
+        guard let mountedAppURL = findAppBundle(in: mountPoint) else {
+            throw NSError(domain: "CruiseControlUpdater", code: 5, userInfo: [NSLocalizedDescriptionKey: "Mounted DMG did not contain CruiseControl.app."])
+        }
+
+        let destination = URL(fileURLWithPath: "/Applications/CruiseControl.app", isDirectory: true)
+        try replaceAppInApplications(at: destination, with: mountedAppURL)
+        try await relaunchInstalledApp(at: destination)
+        return "Updated to \(formattedVersionBuild(version: version, build: extractBuildNumber(fromAssetName: dmgURL.lastPathComponent))) and relaunching."
+    }
+
+    private static func replaceAppInApplications(at destination: URL, with source: URL) throws {
+        let fileManager = FileManager.default
+        let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backup = destination.deletingLastPathComponent()
+            .appendingPathComponent("CruiseControl.app.backup-\(timestamp)")
+        var movedExistingApp = false
+
+        if fileManager.fileExists(atPath: destination.path) {
+            do {
+                try fileManager.moveItem(at: destination, to: backup)
+                movedExistingApp = true
+            } catch {
+                throw mapApplicationsError(error)
+            }
+        }
+
+        do {
+            try fileManager.copyItem(at: source, to: destination)
+        } catch {
+            if movedExistingApp, fileManager.fileExists(atPath: backup.path) {
+                try? fileManager.moveItem(at: backup, to: destination)
+            }
+            throw mapApplicationsError(error)
+        }
     }
 
     @MainActor
@@ -570,6 +669,33 @@ enum AppMaintenanceService {
         }
 
         NSApp.terminate(nil)
+    }
+
+    private static func mapApplicationsError(_ error: Error) -> Error {
+        if isApplicationsPermissionError(error) {
+            return NSError(
+                domain: "CruiseControlUpdater",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "CruiseControl needs permission to write to /Applications. Drag and drop install may be required."]
+            )
+        }
+        return error
+    }
+
+    private static func isApplicationsPermissionError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            return [
+                NSFileWriteNoPermissionError,
+                NSFileWriteUnknownError,
+                NSFileWriteVolumeReadOnlyError,
+                NSFileWriteFileExistsError
+            ].contains(nsError.code)
+        }
+        if nsError.domain == NSPOSIXErrorDomain {
+            return nsError.code == Int(EACCES) || nsError.code == Int(EPERM)
+        }
+        return false
     }
 
     private static func findAppBundle(in root: URL) -> URL? {
@@ -619,5 +745,74 @@ enum AppMaintenanceService {
             if left < right { return .orderedAscending }
         }
         return .orderedSame
+    }
+
+    private static func compareReleaseVersion(
+        latestVersion: String,
+        latestBuild: String?,
+        currentVersion: String,
+        currentBuild: String
+    ) -> ComparisonResult {
+        let versionResult = compareVersions(latestVersion, currentVersion)
+        if versionResult != .orderedSame {
+            return versionResult
+        }
+        guard let latestBuild else {
+            return .orderedSame
+        }
+        return compareVersions(latestBuild, currentBuild)
+    }
+
+    private static func formattedVersionBuild(version: String, build: String?) -> String {
+        if let build, build.isEmpty == false {
+            return "\(version) (\(build))"
+        }
+        return version
+    }
+
+    private static func extractBuildNumber(fromAssetName assetName: String?) -> String? {
+        guard let assetName else {
+            return nil
+        }
+        let base = URL(fileURLWithPath: assetName).deletingPathExtension().lastPathComponent
+        let components = base.split(separator: "-")
+        guard let candidate = components.last, candidate.allSatisfy(\.isNumber) else {
+            return nil
+        }
+        return String(candidate)
+    }
+
+    private static func sanitizePathComponent(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+    }
+
+    private static func lastDownloadedDMGURL(tag: String) -> URL? {
+        guard let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("CruiseControl/Updates", isDirectory: true)
+            .appendingPathComponent(sanitizePathComponent(tag), isDirectory: true) else {
+            return nil
+        }
+        let dmgURL = cacheRoot.appendingPathComponent("CruiseControl.dmg")
+        return FileManager.default.fileExists(atPath: dmgURL.path) ? dmgURL : nil
+    }
+
+    private static func statusMessage(_ base: String) -> String {
+        "\(base) Current: \(currentVersionBuildString())"
+    }
+
+    private static func upToDateOutcome(for release: GitHubReleaseInfo) -> UpdateCheckOutcome {
+        UpdateCheckOutcome(
+            success: true,
+            message: statusMessage("You are up to date."),
+            currentVersion: release.currentVersion,
+            currentBuild: release.currentBuild,
+            latestVersion: release.latestVersion,
+            latestBuild: release.latestBuild,
+            releaseURL: release.releaseURL,
+            latestAssetName: release.dmgAssetName,
+            isUpdateAvailable: false
+        )
     }
 }

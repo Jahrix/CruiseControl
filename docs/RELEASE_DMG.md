@@ -66,6 +66,21 @@ You should see:
 
 For unsigned local builds, macOS may warn on first run. Use right-click `Open` once.
 
+## Closed Beta Install Notes
+
+1. Download the DMG from GitHub Releases.
+2. Open the DMG and drag `CruiseControl.app` into `Applications`.
+3. Launch `/Applications/CruiseControl.app`.
+4. If macOS says the app is damaged:
+   - right-click `CruiseControl.app` and choose `Open`, or
+   - run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CruiseControl.app
+```
+
+For closed beta distribution, upload the DMG directly to GitHub Releases. Do not re-zip the `.app`.
+
 ## Optional signing + notarization
 
 Local DMG creation is intentionally non-blocking and does not require Apple signing credentials.

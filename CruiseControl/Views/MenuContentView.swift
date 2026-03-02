@@ -321,6 +321,7 @@ struct MenuContentView: View {
     @State private var updateCheckStatus: String?
     @State private var updateCheckOutcome: UpdateCheckOutcome?
     @State private var isCheckingForUpdates: Bool = false
+    @State private var isInstallingUpdate: Bool = false
     @AppStorage("ccPreferredStartSection") private var preferredStartSectionRaw: String = DashboardSection.overview.rawValue
     @AppStorage("ccOpenXPlaneWizardOnLaunch") private var openXPlaneWizardOnLaunch: Bool = false
     @State private var frameTimeRange: FrameTimeRangeOption = .tenMinutes
@@ -3292,37 +3293,119 @@ struct MenuContentView: View {
                         processActionResult = outcome.message
                     }
                     .buttonStyle(.borderedProminent)
+                }
 
-                    Button(isCheckingForUpdates ? "Checking..." : "Check for Updates...") {
-                        Task {
-                            let current = AppMaintenanceService.currentVersionString()
-                            await MainActor.run {
-                                isCheckingForUpdates = true
-                            }
-                            let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: false)
-                            await MainActor.run {
-                                updateCheckOutcome = outcome
-                                updateCheckStatus = "Current \(AppMaintenanceService.currentVersionString()) • \(outcome.message)"
-                                isCheckingForUpdates = false
-                            }
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 18) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Current version/build")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(AppMaintenanceService.currentVersionBuildString())
+                                .font(.subheadline.weight(.semibold))
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Latest available")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(updateCheckOutcome?.latestVersionBuildString ?? "—")
+                                .font(.subheadline.weight(.semibold))
                         }
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(isCheckingForUpdates)
 
-                    if let outcome = updateCheckOutcome,
-                       let releaseURL = outcome.releaseURL {
-                        Button("Open latest release") {
-                            NSWorkspace.shared.open(releaseURL)
+                    Text(updateCheckStatus ?? "No update check has been run yet. Current: \(AppMaintenanceService.currentVersionBuildString())")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button(isCheckingForUpdates ? "Checking..." : "Check for Updates") {
+                            Task {
+                                let current = AppMaintenanceService.currentVersionString()
+                                await MainActor.run {
+                                    isCheckingForUpdates = true
+                                    updateCheckStatus = "Current: \(AppMaintenanceService.currentVersionBuildString())\nChecking GitHub Releases…"
+                                }
+                                let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: false)
+                                await MainActor.run {
+                                    updateCheckOutcome = outcome
+                                    updateCheckStatus = outcome.message
+                                    isCheckingForUpdates = false
+                                }
+                            }
                         }
                         .buttonStyle(.bordered)
+                        .disabled(isCheckingForUpdates || isInstallingUpdate)
+
+                        if let outcome = updateCheckOutcome, outcome.isUpdateAvailable {
+                            Button(isInstallingUpdate ? "Updating..." : "Update Now") {
+                                Task {
+                                    let current = AppMaintenanceService.currentVersionString()
+                                    await MainActor.run {
+                                        isInstallingUpdate = true
+                                        updateCheckStatus = "Current: \(AppMaintenanceService.currentVersionBuildString())\nDownloading update…"
+                                    }
+                                    let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(
+                                        currentVersion: current,
+                                        preferSparkle: false
+                                    ) { status in
+                                        updateCheckStatus = status
+                                    }
+                                    await MainActor.run {
+                                        updateCheckOutcome = outcome
+                                        updateCheckStatus = outcome.message
+                                        isInstallingUpdate = false
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isCheckingForUpdates || isInstallingUpdate == true || outcome.canInstallAutomatically == false)
+
+                            if let releaseURL = outcome.releaseURL {
+                                Button("Open Release Page") {
+                                    NSWorkspace.shared.open(releaseURL)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
                     }
+
+                    HStack {
+                        if let downloadedAssetURL = updateCheckOutcome?.downloadedAssetURL,
+                           updateCheckOutcome?.shouldOfferOpenDownloadedAsset == true {
+                            Button("Open DMG in Finder") {
+                                let outcome = AppMaintenanceService.openDownloadedAssetInFinder(downloadedAssetURL)
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        if updateCheckOutcome?.shouldOfferApplicationsFolder == true {
+                            Button("Open Applications Folder") {
+                                let outcome = AppMaintenanceService.openApplicationsFolder()
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        if let gatekeeperCommand = updateCheckOutcome?.gatekeeperCommand {
+                            Button("Fix Gatekeeper") {
+                                copyToClipboard(gatekeeperCommand)
+                                processActionResult = "Copied Gatekeeper fix command."
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    Text("Closed beta note: if macOS says CruiseControl is damaged, right-click the app and choose Open once, or use the copied Gatekeeper command in Terminal.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Text("UDP state: \(sampler.snapshot.udpStatus.state.displayName)")
                 Text("Last updated: \(lastUpdatedText)")
                     .foregroundStyle(isStale ? .orange : .secondary)
-                Text("Version: \(AppMaintenanceService.currentVersionString())")
+                Text("Version: \(AppMaintenanceService.currentVersionBuildString())")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
