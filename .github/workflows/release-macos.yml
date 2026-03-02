@@ -11,6 +11,12 @@ permissions:
 jobs:
   release:
     runs-on: macos-latest
+    env:
+      DEVELOPER_ID_APP_CERT: ${{ secrets.DEVELOPER_ID_APP_CERT }}
+      NOTARY_KEYCHAIN_PROFILE: ${{ secrets.NOTARY_KEYCHAIN_PROFILE }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -58,21 +64,16 @@ jobs:
           echo "dmg_name=$(basename "${DMG_PATH}")" >> "${GITHUB_OUTPUT}"
 
       - name: Notarize DMG
-        if: ${{ secrets.DEVELOPER_ID_APP_CERT != '' && (secrets.NOTARY_KEYCHAIN_PROFILE != '' || (secrets.APPLE_ID != '' && secrets.TEAM_ID != '' && secrets.APP_PASSWORD != '')) }}
+        if: ${{ env.DEVELOPER_ID_APP_CERT != '' && (env.NOTARY_KEYCHAIN_PROFILE != '' || (env.APPLE_ID != '' && env.TEAM_ID != '' && env.APP_PASSWORD != '')) }}
         shell: bash
         env:
-          DEVELOPER_ID_APP_CERT: ${{ secrets.DEVELOPER_ID_APP_CERT }}
-          NOTARY_KEYCHAIN_PROFILE: ${{ secrets.NOTARY_KEYCHAIN_PROFILE }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          TEAM_ID: ${{ secrets.TEAM_ID }}
-          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
           DMG_PATH: ${{ steps.build_dmg.outputs.dmg_path }}
         run: |
           set -euo pipefail
           Scripts/notarize_dmg.sh 2>&1 | tee ci-logs/notarize_dmg.log
 
       - name: Skip notarization
-        if: ${{ !(secrets.DEVELOPER_ID_APP_CERT != '' && (secrets.NOTARY_KEYCHAIN_PROFILE != '' || (secrets.APPLE_ID != '' && secrets.TEAM_ID != '' && secrets.APP_PASSWORD != ''))) }}
+        if: ${{ !(env.DEVELOPER_ID_APP_CERT != '' && (env.NOTARY_KEYCHAIN_PROFILE != '' || (env.APPLE_ID != '' && env.TEAM_ID != '' && env.APP_PASSWORD != ''))) }}
         shell: bash
         run: |
           set -euo pipefail
