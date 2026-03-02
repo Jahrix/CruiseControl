@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.1 - DMG release + GitHub Actions
+
+### Added
+- GitHub Actions CI workflow for unsigned macOS builds on pushes and pull requests to `main`.
+- GitHub Actions release workflow for `v*` tags to build a DMG artifact, optionally notarize it, and publish a GitHub Release asset.
+
+### Changed
+- Version bumped to `1.2.1` (build `121`).
+- DMG release docs now include the CI/tag-driven release path.
+
 ## v1.2.0-rc3 - Capability-aware telemetry + safer actions
 
 ### Added
