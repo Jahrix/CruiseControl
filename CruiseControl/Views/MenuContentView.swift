@@ -5017,17 +5017,16 @@ struct MenuContentView: View {
             .prefix(5)
             .map { $0 }
     }
-
     private func applySituationPreset(_ preset: SituationPresetType, announce: Bool = true) {
         featureStore.applySituationPreset(preset, settings: settings)
         if announce {
             processActionResult = "Applied \(preset.displayName) situation."
         }
     }
+
     private func sessionReplayContextText() -> String? {
         let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
         var parts: [String] = []
-
         if let icao = activeAirport.icao, !icao.isEmpty {
             if let name = activeAirport.profile?.name, !name.isEmpty {
                 parts.append("\(icao) (\(name))")
