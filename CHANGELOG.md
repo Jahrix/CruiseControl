@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.3-rc3 - Build warning cleanup + app icon hygiene
+
+### Changed
+- Bumped the v1.1.3 release-candidate build number to `1133`.
+- Smart Scan concurrency helpers and support-pack/update constants were tightened for Swift default MainActor isolation so RC builds no longer carry those warning paths forward.
+- App icon assets were regenerated to the correct macOS slot sizes and normalized to the tracked lowercase filenames used by the asset catalog.
+
+### Fixed
+- Removed the deprecated Finder relaunch path used by the Trash automation retry flow.
+- Cleared the AppIcon asset-catalog size warnings from release builds.
+
 ## v1.2.3 - Premium shell UI pass
 
 ### Added
