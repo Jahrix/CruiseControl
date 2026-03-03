@@ -22,7 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var previousAlertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
     private var pendingRuntimeConfigApplyTask: Task<Void, Never>?
     private var didSuggestSimProfile = false
-    private var overlayPanel: NSPanel?
+    private var overlayPanel: OverlayPanel?
+    private var overlaySnapshotController: OverlaySnapshotController?
 
     private let warningCategoryIdentifier = "PROJECT_SPEED_WARNING"
     private let defaults = UserDefaults.standard
@@ -143,6 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         pendingRuntimeConfigApplyTask?.cancel()
+        overlaySnapshotController?.stop()
         defaults.set(true, forKey: LifecycleKeys.cleanShutdown)
         sampler.stop()
     }
@@ -208,15 +210,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func updateOverlayVisibility(enabled: Bool) {
         if enabled {
             if overlayPanel == nil {
-                let overlayView = XPlaneMiniOverlayView(sampler: sampler)
+                let snapshotController = OverlaySnapshotController(sampler: sampler)
+                let overlayView = XPlaneMiniOverlayView(snapshotController: snapshotController)
                 let hosting = NSHostingController(rootView: overlayView)
-                let panel = NSPanel(
+                let panel = OverlayPanel(
                     contentRect: NSRect(x: 40, y: 40, width: 270, height: 145),
                     styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
                     backing: .buffered,
                     defer: false
                 )
                 panel.level = .floating
+                panel.backgroundColor = .clear
+                panel.isOpaque = false
+                panel.hasShadow = true
                 panel.titleVisibility = .hidden
                 panel.titlebarAppearsTransparent = true
                 panel.isMovableByWindowBackground = true
@@ -230,10 +236,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 panel.isReleasedWhenClosed = false
                 panel.contentViewController = hosting
                 overlayPanel = panel
+                overlaySnapshotController = snapshotController
             }
 
-            overlayPanel?.orderFront(nil)
+            overlaySnapshotController?.start()
+            overlayPanel?.orderFrontRegardless()
         } else {
+            overlaySnapshotController?.stop()
             overlayPanel?.orderOut(nil)
         }
     }
@@ -362,11 +371,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+private final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private struct OverlaySnapshot {
+    var memoryPressure: MemoryPressureLevel
+    var swapTrendText: String
+    var stutterEpisodes10m: Int
+    var regulatorLine: String
+
+    static let empty = OverlaySnapshot(
+        memoryPressure: .green,
+        swapTrendText: "+0 bytes / 5m",
+        stutterEpisodes10m: 0,
+        regulatorLine: "Applied -"
+    )
+}
+
+@MainActor
+private final class OverlaySnapshotController: ObservableObject {
+    @Published private(set) var snapshot: OverlaySnapshot = .empty
+
+    private let sampler: PerformanceSampler
+    private var timer: Timer?
+
+    init(sampler: PerformanceSampler) {
+        self.sampler = sampler
+        refresh()
+    }
+
+    func start() {
+        refresh()
+        guard timer == nil else { return }
+
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refresh()
+            }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func refresh() {
+        let swapDelta = sampler.snapshot.swapDelta5MinBytes
+        let swapSign = swapDelta >= 0 ? "+" : "-"
+        let swapBytes = UInt64(abs(swapDelta))
+        let swapValue = ByteCountFormatter.string(fromByteCount: Int64(swapBytes), countStyle: .memory)
+        let cutoff = Date().addingTimeInterval(-600)
+        let proof = sampler.computeProofState(now: Date())
+        let applied = proof.appliedLOD.map { String(format: "%.2f", $0) } ?? "-"
+        let tier = sampler.governorCurrentTier?.rawValue ?? "Paused"
+
+        snapshot = OverlaySnapshot(
+            memoryPressure: sampler.snapshot.memoryPressure,
+            swapTrendText: "\(swapSign)\(swapValue) / 5m",
+            stutterEpisodes10m: sampler.stutterEpisodes.filter { $0.endAt >= cutoff }.count,
+            regulatorLine: "Applied \(applied) • \(tier)"
+        )
+    }
+}
+
 private struct XPlaneMiniOverlayView: View {
-    @ObservedObject var sampler: PerformanceSampler
+    @ObservedObject var snapshotController: OverlaySnapshotController
 
     private var pressureTint: Color {
-        switch sampler.snapshot.memoryPressure {
+        switch snapshotController.snapshot.memoryPressure {
         case .green:
             return .green
         case .yellow:
@@ -374,26 +451,6 @@ private struct XPlaneMiniOverlayView: View {
         case .red:
             return .red
         }
-    }
-
-    private var swapTrendText: String {
-        let delta = sampler.snapshot.swapDelta5MinBytes
-        let sign = delta >= 0 ? "+" : "-"
-        let bytes = UInt64(abs(delta))
-        let value = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
-        return "\(sign)\(value) / 5m"
-    }
-
-    private var stutterEpisodes10m: Int {
-        let cutoff = Date().addingTimeInterval(-600)
-        return sampler.stutterEpisodes.filter { $0.endAt >= cutoff }.count
-    }
-
-    private var regulatorLine: String {
-        let proof = sampler.computeProofState()
-        let applied = proof.appliedLOD.map { String(format: "%.2f", $0) } ?? "—"
-        let tier = sampler.governorCurrentTier?.rawValue ?? "Paused"
-        return "Applied \(applied) • \(tier)"
     }
 
     var body: some View {
@@ -404,23 +461,23 @@ private struct XPlaneMiniOverlayView: View {
             HStack {
                 Text("Pressure")
                 Spacer()
-                Text(sampler.snapshot.memoryPressure.displayName)
+                Text(snapshotController.snapshot.memoryPressure.displayName)
                     .foregroundStyle(pressureTint)
             }
             HStack {
                 Text("Swap trend")
                 Spacer()
-                Text(swapTrendText)
+                Text(snapshotController.snapshot.swapTrendText)
             }
             HStack {
                 Text("Stutter episodes (10m)")
                 Spacer()
-                Text("\(stutterEpisodes10m)")
+                Text("\(snapshotController.snapshot.stutterEpisodes10m)")
             }
             HStack {
                 Text("Regulator")
                 Spacer()
-                Text(regulatorLine)
+                Text(snapshotController.snapshot.regulatorLine)
             }
         }
         .font(.system(size: 11, weight: .medium, design: .rounded))
