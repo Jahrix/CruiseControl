@@ -2,8 +2,6 @@ name: CI macOS
 
 on:
   pull_request:
-    branches:
-      - main
   push:
     branches:
       - main
@@ -14,43 +12,14 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - name: Cache Xcode and SwiftPM artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Developer/Xcode/DerivedData
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/Developer/Xcode/DerivedData/SourcePackages
-          key: ${{ runner.os }}-xcode-${{ hashFiles('**/*.xcodeproj/**', '**/Package.resolved', '**/*.swift', 'Scripts/*.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode-
-
       - name: Build CruiseControl (Debug, unsigned)
-        shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p ci-logs
-          xcodebuild \
-            -project "CruiseControl.xcodeproj" \
+          xcodebuild -project "CruiseControl.xcodeproj" \
             -scheme "CruiseControl" \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee ci-logs/xcodebuild-debug.log
-
-      - name: Upload build logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-macos-build-logs
-          path: ci-logs/xcodebuild-debug.log
-          if-no-files-found: ignore
+            build

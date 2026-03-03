@@ -3771,13 +3771,13 @@ struct MenuContentView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("1) Build the DMG with Scripts/build_dmg.sh")
-                Text("2) Create a tag like v1.2.3 and push it")
-                Text("3) Publish a GitHub Release for that tag")
-                Text("4) Upload the DMG directly to the release")
+                Text("2) Create and push a tag like v1.1.3-rc1")
+                Text("3) GitHub Actions will publish the GitHub Release automatically")
+                Text("4) Verify the DMG asset was attached to the release")
             }
             .font(.subheadline)
 
-            Text("Tip: upload the DMG itself, not a re-zipped app bundle.")
+            Text("Tip: use a v-prefixed tag. Tags containing rc are published as prereleases.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

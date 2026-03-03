@@ -81,28 +81,20 @@ xattr -dr com.apple.quarantine /Applications/CruiseControl.app
 
 For closed beta distribution, upload the DMG directly to GitHub Releases. Do not re-zip the `.app`.
 
-## Optional signing + notarization
-
-Local DMG creation is intentionally non-blocking and does not require Apple signing credentials.
-
-When you are ready to sign/notarize, use:
-- [NOTARIZATION.md](./NOTARIZATION.md)
-- `./Scripts/notarize_dmg.sh`
-
 ## CI build + release tags
 
 GitHub Actions covers two release paths:
 
-- Every pull request to `main` and every push to `main` runs an unsigned macOS build.
+- Every pull request and every push to `main` runs an unsigned macOS Debug build.
 - Every tag push matching `v*` builds a versioned DMG via `Scripts/build_dmg.sh`.
-- If notarization secrets are configured, the release workflow runs `Scripts/notarize_dmg.sh`.
 - The release workflow uploads the DMG as both a workflow artifact and a GitHub Release asset.
+- Tags containing `rc` are published as GitHub prereleases.
 
 To publish a release:
 
 ```bash
 git tag vX.Y.Z
-git push origin main --tags
+git push origin vX.Y.Z
 ```
 
 Expected output from the release workflow:
@@ -111,15 +103,20 @@ Expected output from the release workflow:
 - A workflow artifact containing that DMG
 - A GitHub Release for the tag with the DMG attached
 
-Supported release secrets:
+## Publishing v1.1.3-rc1
 
-- `DEVELOPER_ID_APP_CERT`
-- `NOTARY_KEYCHAIN_PROFILE`
-- `APPLE_ID`
-- `TEAM_ID`
-- `APP_PASSWORD`
+1. Merge to `main`
+2. `git tag v1.1.3-rc1`
+3. `git push origin v1.1.3-rc1`
+4. GitHub Actions will build the DMG and publish the prerelease automatically
 
-If those secrets are missing, DMG packaging still completes and notarization is skipped cleanly.
+Closed beta Gatekeeper note:
+
+- Right-click `CruiseControl.app` and choose `Open` once, or run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CruiseControl.app
+```
 
 ## Troubleshooting
 

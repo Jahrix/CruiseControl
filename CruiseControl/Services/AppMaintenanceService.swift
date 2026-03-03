@@ -22,6 +22,7 @@ struct UpdateCheckOutcome {
     let message: String
     let currentVersion: String
     let currentBuild: String
+    let latestTag: String?
     let latestVersion: String?
     let latestBuild: String?
     let releaseURL: URL?
@@ -39,6 +40,7 @@ struct UpdateCheckOutcome {
         message: String,
         currentVersion: String? = nil,
         currentBuild: String? = nil,
+        latestTag: String? = nil,
         latestVersion: String?,
         latestBuild: String? = nil,
         releaseURL: URL?,
@@ -55,6 +57,7 @@ struct UpdateCheckOutcome {
         self.message = message
         self.currentVersion = currentVersion ?? bundleVersionString()
         self.currentBuild = currentBuild ?? bundleBuildString()
+        self.latestTag = latestTag
         self.latestVersion = latestVersion
         self.latestBuild = latestBuild
         self.releaseURL = releaseURL
@@ -73,6 +76,12 @@ struct UpdateCheckOutcome {
     }
 
     var latestVersionBuildString: String? {
+        if let latestTag, latestTag.isEmpty == false {
+            if let latestBuild, latestBuild.isEmpty == false {
+                return "\(latestTag) (Build \(latestBuild))"
+            }
+            return latestTag
+        }
         guard let latestVersion else {
             return nil
         }
@@ -84,6 +93,7 @@ struct UpdateCheckOutcome {
 }
 
 private struct GitHubReleaseInfo {
+    let latestTag: String
     let latestVersion: String
     let latestBuild: String?
     let currentVersion: String
@@ -249,10 +259,14 @@ enum AppMaintenanceService {
             return UpdateCheckOutcome(
                 success: false,
                 message: statusMessage(
-                    "Update \(release.latestVersion) is available, but no CruiseControl DMG asset was published. Open the release page and download manually."
+                    "Update \(release.latestVersion) is available, but no CruiseControl DMG asset was published. Open the release page and download manually.",
+                    currentVersion: release.currentVersion,
+                    currentBuild: release.currentBuild,
+                    latestTag: release.latestTag
                 ),
                 currentVersion: release.currentVersion,
                 currentBuild: release.currentBuild,
+                latestTag: release.latestTag,
                 latestVersion: release.latestVersion,
                 latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
@@ -288,6 +302,7 @@ enum AppMaintenanceService {
                 message: statusMessage(installMessage),
                 currentVersion: release.currentVersion,
                 currentBuild: release.currentBuild,
+                latestTag: release.latestTag,
                 latestVersion: release.latestVersion,
                 latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
@@ -306,7 +321,12 @@ enum AppMaintenanceService {
                 message = statusMessage("CruiseControl needs permission to write to /Applications. Drag and drop install may be required.")
                 needsApplicationsHelp = true
             } else {
-                message = statusMessage("Update download/install failed: \(error.localizedDescription)")
+                message = statusMessage(
+                    "Update download/install failed: \(error.localizedDescription)",
+                    currentVersion: release.currentVersion,
+                    currentBuild: release.currentBuild,
+                    latestTag: release.latestTag
+                )
                 needsApplicationsHelp = false
             }
 
@@ -315,6 +335,7 @@ enum AppMaintenanceService {
                 message: message,
                 currentVersion: release.currentVersion,
                 currentBuild: release.currentBuild,
+                latestTag: release.latestTag,
                 latestVersion: release.latestVersion,
                 latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
@@ -355,9 +376,15 @@ enum AppMaintenanceService {
         ) == .orderedDescending {
             return UpdateCheckOutcome(
                 success: true,
-                message: statusMessage("Update available: \(formattedVersionBuild(version: release.latestVersion, build: release.latestBuild))."),
+                message: statusMessage(
+                    "Update available.",
+                    currentVersion: release.currentVersion,
+                    currentBuild: release.currentBuild,
+                    latestTag: release.latestTag
+                ),
                 currentVersion: release.currentVersion,
                 currentBuild: release.currentBuild,
+                latestTag: release.latestTag,
                 latestVersion: release.latestVersion,
                 latestBuild: release.latestBuild,
                 releaseURL: release.releaseURL,
@@ -399,7 +426,13 @@ enum AppMaintenanceService {
                         info: nil,
                         outcome: UpdateCheckOutcome(
                             success: false,
-                            message: statusMessage("No releases are published yet. Updates will work after the first GitHub Release is created."),
+                            message: statusMessage(
+                                "No GitHub Releases found yet. Publish a GitHub Release for tag \(suggestedReleaseTag(for: currentVersion)) (for example v1.1.3-rc1) to enable updates.",
+                                currentVersion: currentVersion,
+                                currentBuild: currentBuildString()
+                            ),
+                            currentVersion: currentVersion,
+                            currentBuild: currentBuildString(),
                             latestVersion: nil,
                             releaseURL: githubReleasesPageURL
                         )
@@ -456,6 +489,7 @@ enum AppMaintenanceService {
 
             return GitHubReleaseFetch(
                 info: GitHubReleaseInfo(
+                    latestTag: payload.tag_name.trimmingCharacters(in: .whitespacesAndNewlines),
                     latestVersion: latest,
                     latestBuild: extractBuildNumber(fromAssetName: preferredDMG?.name),
                     currentVersion: current,
@@ -473,7 +507,7 @@ enum AppMaintenanceService {
                     info: nil,
                     outcome: UpdateCheckOutcome(
                         success: true,
-                            message: statusMessage("You appear offline. Connect and try again."),
+                        message: statusMessage("You appear offline. Connect and try again."),
                         latestVersion: nil,
                         releaseURL: githubReleasesPageURL,
                         isUpdateAvailable: false,
@@ -530,6 +564,7 @@ enum AppMaintenanceService {
 
             return GitHubReleaseFetch(
                 info: GitHubReleaseInfo(
+                    latestTag: payload.tag_name.trimmingCharacters(in: .whitespacesAndNewlines),
                     latestVersion: latest,
                     latestBuild: extractBuildNumber(fromAssetName: preferredDMG?.name),
                     currentVersion: current,
@@ -734,8 +769,12 @@ enum AppMaintenanceService {
     }
 
     private static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        let l = lhs.split(separator: ".").map { Int($0) ?? 0 }
-        let r = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        let l = lhs.split(separator: ".").map {
+            Int(String($0.prefix { $0.isNumber })) ?? 0
+        }
+        let r = rhs.split(separator: ".").map {
+            Int(String($0.prefix { $0.isNumber })) ?? 0
+        }
         let count = max(l.count, r.count)
 
         for index in 0..<count {
@@ -788,6 +827,10 @@ enum AppMaintenanceService {
             .replacingOccurrences(of: ":", with: "-")
     }
 
+    private static func suggestedReleaseTag(for currentVersion: String) -> String {
+        "v\(normalizedVersion(currentVersion))-rc1"
+    }
+
     private static func lastDownloadedDMGURL(tag: String) -> URL? {
         guard let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("CruiseControl/Updates", isDirectory: true)
@@ -798,16 +841,32 @@ enum AppMaintenanceService {
         return FileManager.default.fileExists(atPath: dmgURL.path) ? dmgURL : nil
     }
 
-    private static func statusMessage(_ base: String) -> String {
-        "\(base) Current: \(currentVersionBuildString())"
+    private static func statusMessage(
+        _ base: String,
+        currentVersion: String? = nil,
+        currentBuild: String? = nil,
+        latestTag: String? = nil
+    ) -> String {
+        var lines = ["Current: \((currentVersion ?? currentVersionString())) (Build \((currentBuild ?? currentBuildString())))"]
+        if let latestTag, latestTag.isEmpty == false {
+            lines.append("Latest release tag: \(latestTag)")
+        }
+        lines.append(base)
+        return lines.joined(separator: "\n")
     }
 
     private static func upToDateOutcome(for release: GitHubReleaseInfo) -> UpdateCheckOutcome {
         UpdateCheckOutcome(
             success: true,
-            message: statusMessage("You are up to date."),
+            message: statusMessage(
+                "You are up to date.",
+                currentVersion: release.currentVersion,
+                currentBuild: release.currentBuild,
+                latestTag: release.latestTag
+            ),
             currentVersion: release.currentVersion,
             currentBuild: release.currentBuild,
+            latestTag: release.latestTag,
             latestVersion: release.latestVersion,
             latestBuild: release.latestBuild,
             releaseURL: release.releaseURL,
