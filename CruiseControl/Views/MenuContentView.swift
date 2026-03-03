@@ -205,6 +205,7 @@ struct RecentActionsFeedView: View {
 enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
     case tenMinutes = "10m"
     case thirtyMinutes = "30m"
+    case sixtyMinutes = "60m"
 
     var id: String { rawValue }
 
@@ -214,6 +215,8 @@ enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
             return 10
         case .thirtyMinutes:
             return 30
+        case .sixtyMinutes:
+            return 60
         }
     }
 }
@@ -449,6 +452,7 @@ struct MenuContentView: View {
         }
         .onAppear {
             sampler.start()
+            featureStore.syncSituationPresetFromCurrentSettings(settings: settings)
             refreshRunningApps()
             refreshProfileLists()
             udpPortText = String(settings.xPlaneUDPPort)
@@ -758,40 +762,50 @@ struct MenuContentView: View {
     }
 
     private var telemetryHeroLabel: String {
-        switch sampler.snapshot.udpStatus.state {
-        case .misconfig:
+        if sampler.snapshot.udpStatus.state == .misconfig {
             return "TELEMETRY ERROR"
-        case .active:
+        }
+
+        switch sampler.telemetryLiveState {
+        case .live:
             return "TELEMETRY LIVE"
+        case .stale:
+            return "TELEMETRY STALE"
         case .listening:
             return "LISTENING FOR TELEMETRY"
-        case .idle:
-            return "WAITING FOR SIMULATOR"
+        case .offline:
+            return "TELEMETRY OFFLINE"
         }
     }
 
     private var telemetryHeroStatusTitle: String {
-        switch sampler.snapshot.udpStatus.state {
-        case .misconfig:
+        if sampler.snapshot.udpStatus.state == .misconfig {
             return "Telemetry Error"
-        case .active:
+        }
+
+        switch sampler.telemetryLiveState {
+        case .live:
             return "Telemetry Live"
+        case .stale:
+            return "Telemetry Stale"
         case .listening:
             return "Listening for telemetry"
-        case .idle:
-            return "Waiting for simulator"
+        case .offline:
+            return "Telemetry Offline"
         }
     }
 
     private var telemetryHeroStatusColor: Color {
-        switch sampler.snapshot.udpStatus.state {
-        case .active:
-            return accentColor
-        case .misconfig:
+        if sampler.snapshot.udpStatus.state == .misconfig {
             return neonOrange
-        case .listening:
-            return accentSoftColor
-        case .idle:
+        }
+
+        switch sampler.telemetryLiveState {
+        case .live:
+            return accentColor
+        case .stale, .listening:
+            return neonOrange
+        case .offline:
             return textSecondaryColor
         }
     }
@@ -1116,28 +1130,21 @@ struct MenuContentView: View {
 
             dashboardCard(title: "X-Plane UDP Setup") {
                 DisclosureGroup(isExpanded: $showUDPSetupGuide) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("1) X-Plane > Settings > Data Output")
-                        Text("2) Check Send network data output")
-                        Text("3) Set IP to 127.0.0.1")
-                        Text("4) Set Port to \(String(settings.xPlaneUDPPort))")
-                        Text("5) Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)")
+                    VStack(alignment: .leading, spacing: 12) {
+                        setupInstructionBlock(
+                            title: "X-Plane Data Output Setup",
+                            text: xPlaneDataOutputSetupText,
+                            copyButtonTitle: "Copy X-Plane Data Output Setup",
+                            copyMessage: "Copied X-Plane Data Output setup checklist."
+                        )
 
-                        HStack {
-                            Text("Setup line: 127.0.0.1:\(String(settings.xPlaneUDPPort))")
-                                .font(.caption)
-                            Spacer()
-                            Button("Copy setup line") {
-                                let line = "127.0.0.1:\(String(settings.xPlaneUDPPort))"
-                                copyToClipboard(line)
-                                diagnosticsExportResult = "Copied \(line)"
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                        .padding(.top, 6)
+                        setupInstructionBlock(
+                            title: "FlyWithLua Scripts Folder",
+                            text: flyWithLuaScriptsInstructionsText,
+                            copyButtonTitle: "Copy FlyWithLua instructions",
+                            copyMessage: "Copied FlyWithLua scripts folder instructions."
+                        )
                     }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
                 } label: {
                     Text("How to enable X-Plane UDP output")
                         .font(.headline)
@@ -1415,6 +1422,9 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Session Report") {
                 if let report = sampler.sessionReport {
+                    let replayEpisodes = sessionReplayEpisodes(for: report)
+                    let shareSummary = sessionShareSummaryText(report, replayEpisodes: replayEpisodes)
+
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Top cause: \(report.topCauses.first?.cause ?? "No dominant cause")")
                             .font(.headline)
@@ -1430,6 +1440,12 @@ struct MenuContentView: View {
                         Text("Session: \(timeOnly(report.sessionStartAt)) - \(timeOnly(report.sessionEndAt))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        if let context = sessionReplayContextText() {
+                            Text("Airport / scenario: \(context)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
                         if !report.topCauses.isEmpty {
                             Text("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: " • "))")
@@ -1459,6 +1475,22 @@ struct MenuContentView: View {
                             }
                         }
 
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Share summary")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(shareSummary)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.black.opacity(0.18))
+                                )
+                        }
+
                         HStack(spacing: 10) {
                             Button("Export Report (JSON)") {
                                 let outcome = sampler.exportSessionReport()
@@ -1467,15 +1499,66 @@ struct MenuContentView: View {
                             }
                             .buttonStyle(.borderedProminent)
 
-                            Button("Copy Summary") {
-                                copyToClipboard(sessionReportSummaryText(report))
-                                processActionResult = "Session report summary copied."
+                            Button("Copy Share Summary") {
+                                copyToClipboard(shareSummary)
+                                processActionResult = "Share summary copied."
                             }
                             .buttonStyle(.bordered)
                         }
                     }
                 } else {
                     Text("No session report yet. Start a sim session to generate a report.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            dashboardCard(title: "Session Replay") {
+                if let report = sampler.sessionReport {
+                    let replayEpisodes = sessionReplayEpisodes(for: report)
+
+                    if replayEpisodes.isEmpty {
+                        Text("No replayable stutter episodes are available for the latest session.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Top five episodes from the latest session. Select one to focus Frame-Time Lab when it is still in retained history.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            ForEach(replayEpisodes) { episode in
+                                let jumpAvailable = canJumpToFrameTimeLab(episode)
+
+                                Button {
+                                    jumpToFrameTimeLab(episode)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 10) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("\(timeOnly(episode.startAt)) - \(timeOnly(episode.endAt))")
+                                                .font(.subheadline.weight(.semibold))
+                                            Text("\(episode.cause.displayName) • \(sessionReplaySeverityText(episode)) • \(episodeDurationText(episode.startAt, episode.endAt)) • Count \(episode.count)")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            if let evidence = episode.evidenceSummary.first {
+                                                Text(evidence)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary.opacity(0.9))
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        Spacer()
+                                        Text(jumpAvailable ? "Open in lab" : "Unavailable")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(jumpAvailable ? accentColor : .secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!jumpAvailable)
+                            }
+                        }
+                    }
+                } else {
+                    Text("Session replay appears after a session report is available.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1562,31 +1645,32 @@ struct MenuContentView: View {
     }
 
     private var profilesSection: some View {
-        let templates = profileTemplates
-        let selectedTemplate = template(for: settings.selectedProfile)
+        let templates = situationTemplates
+        let selectedTemplate = template(for: featureStore.selectedSituationPreset)
+        let currentPresetConfig = featureStore.selectedSituationPreset.config(cruiseStyle: featureStore.cruiseSituationStyle)
 
         return HStack(alignment: .top, spacing: 18) {
-            dashboardCard(title: "Profile Templates") {
+            dashboardCard(title: "Situation Presets") {
                 VStack(alignment: .leading, spacing: 14) {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                         ForEach(templates) { template in
                             Button {
-                                settings.selectedProfile = template.mappedProfile
+                                applySituationPreset(template.preset)
                             } label: {
-                                profileTemplateCard(template, selected: template.mappedProfile == settings.selectedProfile)
+                                profileTemplateCard(template, selected: template.preset == featureStore.selectedSituationPreset)
                             }
                             .buttonStyle(.plain)
                             .disabled(featureStore.safeModeEnabled)
                         }
                     }
 
-                    Text("Custom profile create/delete is coming soon in this beta.")
+                    Text("Situation presets stay lightweight: they only remap existing workload, governor, and scan-pause settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            dashboardCard(title: "Profile Summary") {
+            dashboardCard(title: "Situation Summary") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(selectedTemplate.name)
                         .font(.title3.weight(.bold))
@@ -1594,6 +1678,25 @@ struct MenuContentView: View {
                     Text(selectedTemplate.tagline)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+
+                    if featureStore.selectedSituationPreset == .cruise {
+                        Picker("Cruise style", selection: Binding(
+                            get: { featureStore.cruiseSituationStyle },
+                            set: { style in
+                                featureStore.cruiseSituationStyle = style
+                                if featureStore.selectedSituationPreset == .cruise {
+                                    applySituationPreset(.cruise, announce: false)
+                                    processActionResult = "Cruise situation set to \(style.displayName.lowercased()) mode."
+                                }
+                            }
+                        )) {
+                            ForEach(CruiseSituationStyle.allCases) { style in
+                                Text(style.displayName).tag(style)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(featureStore.safeModeEnabled)
+                    }
 
                     Text("What this changes")
                         .font(.headline)
@@ -1603,32 +1706,46 @@ struct MenuContentView: View {
                             .font(.subheadline)
                     }
 
-                    Text("Ideal for: \(selectedTemplate.idealFor)")
+                    Text("Best for: \(selectedTemplate.idealFor)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    HStack {
-                        Text("Risk")
-                            .font(.subheadline.weight(.semibold))
-                        Text(selectedTemplate.risk)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.white.opacity(0.08), in: Capsule())
-                    }
+                    Divider()
+                        .padding(.vertical, 6)
 
-                    HStack {
-                        Button("Apply Profile") {
-                            settings.selectedProfile = selectedTemplate.mappedProfile
-                            processActionResult = "Applied profile \(selectedTemplate.name)."
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(featureStore.safeModeEnabled)
+                    Text("Effective behavior")
+                        .font(.headline)
 
-                        Button("Duplicate (Coming soon)") {}
-                        .buttonStyle(.bordered)
-                        .disabled(true)
+                    Text("Workload: \(featureStore.workloadProfile.title)")
+                        .font(.subheadline)
+                    Text("App-list profile: \(settings.selectedProfile.displayName)")
+                        .font(.subheadline)
+                    Text(
+                        String(
+                            format: "Governor LOD targets: G %.2f / T %.2f / C %.2f",
+                            settings.governorTargetLODGround,
+                            settings.governorTargetLODClimbDescent,
+                            settings.governorTargetLODCruise
+                        )
+                    )
+                    .font(.subheadline)
+                    Text(
+                        String(
+                            format: "Preset altitude bands: ground < %.0fft, cruise > %.0fft",
+                            currentPresetConfig.governorTargets.groundMaxAGLFeet,
+                            currentPresetConfig.governorTargets.cruiseMinAGLFeet
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Text("Pause heavy scans during sim: \(featureStore.pauseBackgroundScansDuringSim ? "On" : "Off")")
+                        .font(.subheadline)
+
+                    Button("Reapply Situation") {
+                        applySituationPreset(featureStore.selectedSituationPreset)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(featureStore.safeModeEnabled)
 
                     Divider()
                         .padding(.vertical, 6)
@@ -1645,7 +1762,7 @@ struct MenuContentView: View {
                     .disabled(featureStore.safeModeEnabled)
 
                     if featureStore.safeModeEnabled {
-                        Text("Safe Mode locks workload profile to General Performance.")
+                        Text("Safe Mode locks workload profile to General Performance and pauses heavy scans.")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
@@ -1831,16 +1948,16 @@ struct MenuContentView: View {
         let telemetryDetail: String
         if simOffline {
             telemetryState = .neutral
-            telemetryDetail = "Not started (sim offline)."
+            telemetryDetail = telemetryStateMeaning(.offline)
         } else if telemetryLive {
             telemetryState = .ok
-            telemetryDetail = "Live \(String(format: "%.1f", udp.packetsPerSecond)) pkt/s • last \(relativeAgeText(from: udp.lastPacketDate ?? now))"
+            telemetryDetail = "Live \(String(format: "%.1f", udp.packetsPerSecond)) pkt/s. \(telemetryStateMeaning(.live))"
         } else if hadPackets {
             telemetryState = .warn
-            telemetryDetail = "No recent packets • last \(relativeAgeText(from: udp.lastPacketDate ?? now))"
+            telemetryDetail = "Last packet \(relativeAgeText(from: udp.lastPacketDate ?? now)). \(telemetryStateMeaning(.stale))"
         } else {
             telemetryState = udp.state == .listening ? .neutral : .warn
-            telemetryDetail = "Waiting for telemetry packets."
+            telemetryDetail = telemetryStateMeaning(.listening)
         }
 
         let bridgeState: WizardCheckState
@@ -1848,24 +1965,26 @@ struct MenuContentView: View {
         switch sampler.regulatorControlState {
         case .udpAckOK(let lastAck, _):
             bridgeState = simOffline ? .neutral : .ok
-            bridgeDetail = simOffline ? "Not started (sim offline)." : "ACK OK • last \(relativeAgeText(from: lastAck))"
+            bridgeDetail = simOffline ? "Bridge not started because the sim is offline." : "Bridge OK. ACK received \(relativeAgeText(from: lastAck))."
         case .udpNoAck:
             bridgeState = simOffline ? .neutral : .warn
-            bridgeDetail = simOffline ? "Not started (sim offline)." : "Waiting for ACK"
+            bridgeDetail = simOffline ? "Bridge not started because the sim is offline." : "Waiting for bridge ACK."
         case .fileBridge(let lastUpdate):
             let status = sampler.regulatorFileBridgeStatus
             let updateDate = status?.lastUpdateDate ?? lastUpdate
             let fresh = now.timeIntervalSince(updateDate) <= 5
             if simOffline {
                 bridgeState = .neutral
-                bridgeDetail = "Not started (sim offline)."
+                bridgeDetail = "Bridge not started because the sim is offline."
             } else {
                 bridgeState = fresh ? .ok : .warn
-                bridgeDetail = "File bridge update \(relativeAgeText(from: updateDate))"
+                bridgeDetail = fresh
+                    ? "Bridge OK via file fallback. Update \(relativeAgeText(from: updateDate))."
+                    : "File fallback seen, but the last update is \(relativeAgeText(from: updateDate))."
             }
         case .disconnected:
             bridgeState = simOffline ? .neutral : .warn
-            bridgeDetail = simOffline ? "Not started (sim offline)." : "Bridge not configured"
+            bridgeDetail = simOffline ? "Bridge not started because the sim is offline." : "Bridge not configured."
         }
 
         let proof = sampler.computeProofState(now: now)
@@ -1895,13 +2014,19 @@ struct MenuContentView: View {
 
                 wizardChecklistRow(title: "UDP Listener", state: udpListenerState, detail: udpListenerDetail)
                 wizardChecklistRow(title: "Telemetry", state: telemetryState, detail: telemetryDetail)
-                wizardChecklistRow(title: "Bridge Script", state: bridgeState, detail: bridgeDetail)
+                wizardChecklistRow(title: "Bridge", state: bridgeState, detail: bridgeDetail)
                 wizardChecklistRow(title: "Proof: LOD Applied", state: proofState, detail: proofDetail)
 
                 HStack {
-                    Button("Copy Endpoint") {
-                        copyToClipboard(telemetryEndpoint)
-                        processActionResult = "Copied endpoint \(telemetryEndpoint)."
+                    Button("Copy X-Plane Data Output Setup") {
+                        copyToClipboard(xPlaneDataOutputSetupText)
+                        processActionResult = "Copied X-Plane Data Output setup checklist."
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Open FlyWithLua Scripts instructions") {
+                        showXPlaneHelpSheet = true
+                        processActionResult = "Opened FlyWithLua scripts setup instructions."
                     }
                     .buttonStyle(.bordered)
 
@@ -1912,26 +2037,104 @@ struct MenuContentView: View {
                     }
                     .buttonStyle(.bordered)
 
-                    Button("Open FlyWithLua Scripts Folder") {
-                        let outcome = openFlyWithLuaScriptsFolder()
-                        processActionResult = outcome.message
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                HStack {
-                    Button("How to enable UDP in X-Plane") {
-                        showXPlaneHelpSheet = true
-                    }
-                    .buttonStyle(.bordered)
-
                     Button("Test PING") {
                         let outcome = sampler.sendGovernorPing()
                         processActionResult = outcome.message
                     }
                     .buttonStyle(.borderedProminent)
                 }
+
+                setupInstructionBlock(
+                    title: "X-Plane Data Output Setup",
+                    text: xPlaneDataOutputSetupText,
+                    copyButtonTitle: "Copy X-Plane Data Output Setup",
+                    copyMessage: "Copied X-Plane Data Output setup checklist."
+                )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Telemetry states")
+                        .font(.headline)
+                    ForEach(Array(telemetryStateGuide.enumerated()), id: \.offset) { _, item in
+                        wizardChecklistRow(title: item.title, state: .neutral, detail: item.detail)
+                    }
+                }
             }
+        }
+    }
+
+    private var telemetryEndpoint: String {
+        let host = sampler.snapshot.udpStatus.listenHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpointHost = host.isEmpty ? "127.0.0.1" : host
+        return "\(endpointHost):\(sampler.snapshot.udpStatus.listenPort)"
+    }
+
+    private var xPlaneDataOutputSetupText: String {
+        [
+            "1) Open X-Plane > Settings > Data Output",
+            "2) Check Send network data output",
+            "3) Set IP to 127.0.0.1",
+            "4) Set Port to \(sampler.snapshot.udpStatus.listenPort)",
+            "5) Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)"
+        ].joined(separator: "\n")
+    }
+
+    private var flyWithLuaScriptsInstructionsText: String {
+        [
+            "Open your X-Plane folder, then go to:",
+            "Resources/plugins/FlyWithLua/Scripts/",
+            "",
+            "If FlyWithLua is not installed yet, install it first and then place the CruiseControl bridge script in that Scripts folder."
+        ].joined(separator: "\n")
+    }
+
+    private var telemetryStateGuide: [(title: String, detail: String)] {
+        [
+            ("Listening", telemetryStateMeaning(.listening)),
+            ("Live", telemetryStateMeaning(.live)),
+            ("Stale", telemetryStateMeaning(.stale)),
+            ("Offline", telemetryStateMeaning(.offline))
+        ]
+    }
+
+    private func telemetryStateMeaning(_ state: TelemetryLiveState) -> String {
+        switch state {
+        case .listening:
+            return "CruiseControl is listening on UDP, but no fresh valid X-Plane packets have arrived yet."
+        case .live:
+            return "Fresh X-Plane telemetry is arriving now and can drive live regulator feedback."
+        case .stale:
+            return "Telemetry arrived before, but the latest packet is too old to treat as live."
+        case .offline:
+            return "The sim is not feeding telemetry right now, or UDP listening is disabled."
+        }
+    }
+
+    private func setupInstructionBlock(
+        title: String,
+        text: String,
+        copyButtonTitle: String,
+        copyMessage: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+
+            Text(text)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+
+            Button(copyButtonTitle) {
+                copyToClipboard(text)
+                processActionResult = copyMessage
+            }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -2289,8 +2492,12 @@ struct MenuContentView: View {
                 .foregroundStyle(.secondary)
             }
 
-            dashboardCard(title: "Sim Mode Profiles") {
+            dashboardCard(title: "Advanced App-List Profiles") {
                 VStack(alignment: .leading, spacing: 12) {
+                    Text("Situation presets set this automatically. Only change it if you need a custom app allow/block list.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     Picker("Profile", selection: $settings.selectedProfile) {
                         ForEach(SimModeProfileType.allCases) { profile in
                             Text(profile.displayName).tag(profile)
@@ -3515,29 +3722,32 @@ struct MenuContentView: View {
 
     private var xPlaneHelpSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Enable X-Plane UDP Output")
+            Text("X-Plane Setup")
                 .font(.title2.weight(.bold))
 
-            Text("1) Open X-Plane > Settings > Data Output")
-            Text("2) Check Send network data output")
-            Text("3) Set IP to 127.0.0.1")
-            Text("4) Set Port to \(telemetryEndpoint)")
-            Text("5) Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)")
+            setupInstructionBlock(
+                title: "X-Plane Data Output Setup",
+                text: xPlaneDataOutputSetupText,
+                copyButtonTitle: "Copy X-Plane Data Output Setup",
+                copyMessage: "Copied X-Plane Data Output setup checklist."
+            )
 
-            Text("If you use the FlyWithLua bridge, install the script in:")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text("X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            setupInstructionBlock(
+                title: "FlyWithLua Scripts Folder",
+                text: flyWithLuaScriptsInstructionsText,
+                copyButtonTitle: "Copy FlyWithLua instructions",
+                copyMessage: "Copied FlyWithLua scripts folder instructions."
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Telemetry states")
+                    .font(.headline)
+                ForEach(Array(telemetryStateGuide.enumerated()), id: \.offset) { _, item in
+                    wizardChecklistRow(title: item.title, state: .neutral, detail: item.detail)
+                }
+            }
 
             HStack {
-                Button("Copy Endpoint") {
-                    copyToClipboard(telemetryEndpoint)
-                    processActionResult = "Copied endpoint \(telemetryEndpoint)."
-                }
-                .buttonStyle(.bordered)
-
                 Spacer()
 
                 Button("Close") {
@@ -3547,7 +3757,7 @@ struct MenuContentView: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 520)
     }
 
     private var firstReleaseHelpSheet: some View {
@@ -3603,7 +3813,7 @@ struct MenuContentView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("• GPU: GPU timing is shown only when X-Plane telemetry provides it. Otherwise GPU is \"Unavailable\" (we don't guess).")
                 Text("• Processes: Some apps can't be closed programmatically. If an action fails, we'll explain why and offer Activity Monitor.")
-                Text("• X-Plane setup: X-Plane features require UDP + FlyWithLua bridge. Use the Connection Wizard + self-test checklist.")
+                Text("• X-Plane setup: Use the Connection Wizard, then copy the X-Plane Data Output setup block and FlyWithLua Scripts instructions if you need to paste them elsewhere.")
                 Text("• Cleaner: Maintenance can help stability when pressure/swap/low disk suggests it. It's not a guaranteed FPS booster.")
             }
             .font(.subheadline)
@@ -4332,7 +4542,7 @@ struct MenuContentView: View {
             stutterTint = .secondary
         }
 
-        let profileValue = profileDisplayName(for: settings.selectedProfile)
+        let profileValue = featureStore.selectedSituationPreset.displayName
 
         return [
             StatusStripPill(title: "Sim", value: simValue, tint: simTint, action: { selectedSection = .simMode }),
@@ -4340,14 +4550,8 @@ struct MenuContentView: View {
             StatusStripPill(title: "Bottleneck", value: bottleneckValue, tint: bottleneckTint, action: { selectedSection = .frameTimeLab }),
             StatusStripPill(title: "Regulator", value: regulatorValue, tint: regulatorTint, action: { selectedSection = .simMode }),
             StatusStripPill(title: "Stutters (10m)", value: stutterValue, tint: stutterTint, action: { selectedSection = .frameTimeLab }),
-            StatusStripPill(title: "Profile", value: profileValue, tint: accentSoftColor, action: { selectedSection = .profiles })
+            StatusStripPill(title: "Situation", value: profileValue, tint: accentSoftColor, action: { selectedSection = .profiles })
         ]
-    }
-
-    private var telemetryEndpoint: String {
-        let host = sampler.snapshot.udpStatus.listenHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        let endpointHost = host.isEmpty ? "127.0.0.1" : host
-        return "\(endpointHost):\(sampler.snapshot.udpStatus.listenPort)"
     }
 
     private var telemetryCapabilities: TelemetryCapabilities {
@@ -4397,67 +4601,63 @@ struct MenuContentView: View {
     private struct ProfileTemplate: Identifiable {
         let id: String
         let name: String
-        let target: String
-        let lodSummary: String
         let tagline: String
         let idealFor: String
-        let risk: String
         let changes: [String]
-        let mappedProfile: SimModeProfileType
+        let preset: SituationPresetType
     }
 
-    private var profileTemplates: [ProfileTemplate] {
+    private var situationTemplates: [ProfileTemplate] {
         [
             ProfileTemplate(
-                id: "balanced",
-                name: "Balanced",
-                target: "Target FPS 30",
-                lodSummary: "Moderate LOD bias",
-                tagline: "Balanced visuals & performance",
-                idealFor: "Most flights and mixed workloads",
-                risk: "Low",
+                id: SituationPresetType.general.rawValue,
+                name: "General",
+                tagline: "Current default behavior with the lowest overhead.",
+                idealFor: "Normal desktop work and non-sim sessions",
                 changes: [
-                    "Balanced allowlist/blocklist presets",
-                    "Moderate LOD targets for stability",
-                    "No aggressive background app suppression"
+                    "Uses General Performance workload",
+                    "Applies the Balanced app-list preset",
+                    "Restores default governor targets"
                 ],
-                mappedProfile: .balanced
+                preset: .general
             ),
             ProfileTemplate(
-                id: "performance",
-                name: "Performance",
-                target: "Target FPS 45",
-                lodSummary: "Higher LOD bias for FPS",
-                tagline: "Prioritize frametime",
-                idealFor: "Busy hubs and heavy scenery",
-                risk: "Medium",
+                id: SituationPresetType.airport.rawValue,
+                name: "Airport",
+                tagline: "Stability-first on the ground with tighter sim sampling.",
+                idealFor: "Taxi, takeoff, approach, and dense airport scenery",
                 changes: [
-                    "Aggressive allowlist/blocklist presets",
-                    "Higher LOD bias under load",
-                    "Reduced background app noise"
+                    "Switches workload to Sim Mode",
+                    "Applies the Performance app-list preset",
+                    "Raises ground and transition LOD targets for safer FPS near airports",
+                    "Pauses heavy scans while the simulator is active"
                 ],
-                mappedProfile: .aggressive
+                preset: .airport
             ),
             ProfileTemplate(
-                id: "ultra",
-                name: "Ultra",
-                target: "Target FPS 60",
-                lodSummary: "Visual-first LOD bias",
-                tagline: "Max visuals in cruise",
-                idealFor: "Cruise and capture flights",
-                risk: "High",
+                id: SituationPresetType.cruise.rawValue,
+                name: "Cruise",
+                tagline: featureStore.cruiseSituationStyle == .visuals
+                    ? "Relaxed cruise LOD for visuals once you're en route."
+                    : "Performance-oriented cruise with sim-ready monitoring cadence.",
+                idealFor: "En route legs, long-haul cruise, and optional capture flights",
                 changes: [
-                    "Visual-leaning LOD targets",
-                    "Preserves streaming utilities",
-                    "Lower background suppression"
+                    "Switches workload to Sim Mode",
+                    featureStore.cruiseSituationStyle == .visuals
+                        ? "Uses the Streaming-safe app-list preset for tools like OBS"
+                        : "Keeps the Balanced app-list preset for a lighter-touch setup",
+                    featureStore.cruiseSituationStyle == .visuals
+                        ? "Relaxes cruise LOD targets for better distant visuals"
+                        : "Keeps cruise LOD targets conservative enough for steady frametime",
+                    "Pauses heavy scans while the simulator is active"
                 ],
-                mappedProfile: .streaming
+                preset: .cruise
             )
         ]
     }
 
-    private func template(for profile: SimModeProfileType) -> ProfileTemplate {
-        profileTemplates.first { $0.mappedProfile == profile } ?? profileTemplates[0]
+    private func template(for preset: SituationPresetType) -> ProfileTemplate {
+        situationTemplates.first { $0.preset == preset } ?? situationTemplates[0]
     }
 
     private func profileDisplayName(for profile: SimModeProfileType) -> String {
@@ -4467,7 +4667,7 @@ struct MenuContentView: View {
         case .aggressive:
             return "Performance"
         case .streaming:
-            return "Ultra"
+            return "Streaming-safe"
         }
     }
 
@@ -4476,14 +4676,6 @@ struct MenuContentView: View {
             Text(template.name)
                 .font(.headline)
                 .foregroundStyle(.white)
-
-            Text(template.target)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text("LOD policy: \(template.lodSummary)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             Text(template.tagline)
                 .font(.subheadline)
@@ -4806,45 +4998,158 @@ struct MenuContentView: View {
         }
     }
 
-    private func sessionReportSummaryText(_ report: SessionReport) -> String {
-        var lines: [String] = [
-            "Session Report",
-            "Window: \(timeOnly(report.sessionStartAt)) - \(timeOnly(report.sessionEndAt))",
-            "Duration: \(durationText(seconds: report.durationSeconds))",
-            "Top cause: \(report.topCauses.first?.cause ?? "None")",
-            "Episodes: \(report.stutterEpisodesCount)",
-            String(format: "Pressure index avg/max: %.2f / %.2f", report.avgPressureIndex, report.maxPressureIndex)
-        ]
+    private var frameTimeLabMaximumMinutes: Int {
+        FrameTimeRangeOption.allCases.map(\.minutes).max() ?? FrameTimeRangeOption.thirtyMinutes.minutes
+    }
 
-        if !report.topCauses.isEmpty {
-            lines.append("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: ", "))")
+    private func sessionReplayEpisodes(for report: SessionReport) -> [StutterEpisode] {
+        sampler.stutterEpisodes
+            .filter { $0.endAt >= report.sessionStartAt && $0.startAt <= report.sessionEndAt }
+            .sorted {
+                if $0.peakSeverity == $1.peakSeverity {
+                    if $0.count == $1.count {
+                        return $0.endAt > $1.endAt
+                    }
+                    return $0.count > $1.count
+                }
+                return $0.peakSeverity > $1.peakSeverity
+            }
+            .prefix(5)
+            .map { $0 }
+    }
+
+    private func applySituationPreset(_ preset: SituationPresetType, announce: Bool = true) {
+        featureStore.applySituationPreset(preset, settings: settings)
+        if announce {
+            processActionResult = "Applied \(preset.displayName) situation."
         }
+    }
 
-        if let worst = report.worstWindow {
-            lines.append("Worst window: \(timeOnly(worst.startAt)) - \(timeOnly(worst.endAt)) • \(worst.reason)")
-        }
+    private func sessionReplayContextText() -> String? {
+        let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
+        var parts: [String] = []
 
-        if report.actionsTakenSummary.count > 0 {
-            let topActions = report.actionsTakenSummary.topActions
-                .map { "\($0.action) (\($0.count))" }
-                .joined(separator: ", ")
-            lines.append(topActions.isEmpty ? "Actions logged: \(report.actionsTakenSummary.count)" : "Actions logged: \(report.actionsTakenSummary.count) • \(topActions)")
-        } else {
-            lines.append("Actions logged: none")
-        }
-
-        if let advisor = report.advisorTriggersSummary, !advisor.topTriggers.isEmpty {
-            lines.append("Advisor triggers: \(advisor.topTriggers.joined(separator: ", "))")
-        }
-
-        if !report.keyRecommendations.isEmpty {
-            lines.append("Recommendations:")
-            for recommendation in report.keyRecommendations.prefix(3) {
-                lines.append("- \(recommendation)")
+        if let icao = activeAirport.icao, !icao.isEmpty {
+            if let name = activeAirport.profile?.name, !name.isEmpty {
+                parts.append("\(icao) (\(name))")
+            } else {
+                parts.append(icao)
             }
         }
 
+        parts.append(featureStore.workloadProfile.title)
+        parts.append(telemetryIsLive ? "Live telemetry" : "Historical session")
+
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    private func sessionShareSummaryText(_ report: SessionReport, replayEpisodes: [StutterEpisode]) -> String {
+        var lines: [String] = [
+            "CruiseControl Session Share Summary",
+            "Session window: \(report.sessionStartAt.formatted(date: .abbreviated, time: .shortened)) -> \(report.sessionEndAt.formatted(date: .omitted, time: .shortened))"
+        ]
+
+        if let context = sessionReplayContextText() {
+            lines.append("Airport/Scenario: \(context)")
+        }
+
+        lines.append("Duration: \(durationText(seconds: report.durationSeconds))")
+
+        if !report.topCauses.isEmpty {
+            lines.append("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: ", "))")
+        } else {
+            lines.append("Top causes: None captured")
+        }
+
+        if let worst = report.worstWindow {
+            lines.append("Worst window: \(timeOnly(worst.startAt)) - \(timeOnly(worst.endAt)) (\(worst.reason))")
+        } else {
+            lines.append("Worst window: None captured")
+        }
+
+        lines.append(String(format: "Pressure max/avg: %.2f / %.2f", report.maxPressureIndex, report.avgPressureIndex))
+
+        if report.actionsTakenSummary.count > 0 {
+            let topActions = report.actionsTakenSummary.topActions
+                .prefix(3)
+                .map { "\($0.action) (\($0.count))" }
+                .joined(separator: ", ")
+            if topActions.isEmpty {
+                lines.append("What helped: \(report.actionsTakenSummary.count) action receipt(s)")
+            } else {
+                lines.append("What helped: \(report.actionsTakenSummary.count) action receipt(s) • \(topActions)")
+            }
+        } else {
+            lines.append("What helped: No action receipts logged")
+        }
+
+        if !replayEpisodes.isEmpty {
+            lines.append("Replay highlights: \(replayEpisodes.prefix(3).map { "\(timeOnly($0.startAt)) \($0.cause.displayName) (\(String(format: "%.2f", $0.peakSeverity)))" }.joined(separator: " | "))")
+        }
+
         return lines.joined(separator: "\n")
+    }
+
+    private func sessionReplaySeverityText(_ episode: StutterEpisode) -> String {
+        let label: String
+        switch episode.peakSeverity {
+        case 0.85...:
+            label = "High"
+        case 0.55...:
+            label = "Medium"
+        default:
+            label = "Low"
+        }
+        return "\(label) severity \(String(format: "%.2f", episode.peakSeverity))"
+    }
+
+    private func canJumpToFrameTimeLab(_ episode: StutterEpisode) -> Bool {
+        let cutoff = now.addingTimeInterval(-Double(frameTimeLabMaximumMinutes * 60))
+        return episode.endAt >= cutoff
+    }
+
+    private func preferredFrameTimeRange(for episode: StutterEpisode) -> FrameTimeRangeOption {
+        let ageSeconds = max(now.timeIntervalSince(episode.endAt), 0)
+        if ageSeconds <= Double(FrameTimeRangeOption.tenMinutes.minutes * 60) {
+            return .tenMinutes
+        }
+        if ageSeconds <= Double(FrameTimeRangeOption.thirtyMinutes.minutes * 60) {
+            return .thirtyMinutes
+        }
+        return .sixtyMinutes
+    }
+
+    private func frameTimeSelection(for episode: StutterEpisode) -> FrameTimeHeatmapSelection {
+        let padding: TimeInterval = 15
+        let start = episode.startAt.addingTimeInterval(-padding)
+        let end = max(episode.endAt.addingTimeInterval(padding), start.addingTimeInterval(1))
+        return FrameTimeHeatmapSelection(start: start, end: end)
+    }
+
+    private func jumpToFrameTimeLab(_ episode: StutterEpisode) {
+        guard canJumpToFrameTimeLab(episode) else {
+            processActionResult = "Episode is outside the current Frame-Time Lab history."
+            return
+        }
+
+        let range = preferredFrameTimeRange(for: episode)
+        let selection = frameTimeSelection(for: episode)
+
+        frameTimeLabViewMode = .heatmap
+        selectedSection = .frameTimeLab
+
+        if frameTimeRange == range {
+            selectedHeatmapWindow = selection
+            selectedStutterEpisodeID = episode.id
+            selectedStutterEventID = nil
+        } else {
+            frameTimeRange = range
+            DispatchQueue.main.async {
+                self.selectedHeatmapWindow = selection
+                self.selectedStutterEpisodeID = episode.id
+                self.selectedStutterEventID = nil
+            }
+        }
     }
 
     private var isStale: Bool {
@@ -5169,6 +5474,7 @@ struct MenuContentView: View {
         let lastSessionTopCause = sampler.sessionReport?.topCauses.first?.cause ?? "None"
         let episodes10m = sampler.stutterEpisodesInWindow(lastMinutes: 10).count
         let raw10m = sampler.rawStutterEventsInWindow(lastMinutes: 10).count
+        let situation = featureStore.selectedSituationPreset.displayName
         let profile = settings.selectedProfile.displayName
         let workload = featureStore.workloadProfile.title
         let pressure = sampler.snapshot.memoryPressure.displayName
@@ -5179,7 +5485,7 @@ struct MenuContentView: View {
         var lines: [String] = [
             "CruiseControl Support Summary",
             "Version \(version) (build \(build))",
-            "Profile \(profile) | Workload \(workload)",
+            "Situation \(situation) | App-list \(profile) | Workload \(workload)",
             "Telemetry \(telemetry) | Pressure \(pressure) | Swap \(swapDelta) | Thermal \(thermal)",
             "Stutters 10m: \(episodes10m) episodes / \(raw10m) raw | Live top cause: \(liveTopCause)",
             "Last session top cause: \(lastSessionTopCause)"
@@ -5867,25 +6173,6 @@ struct MenuContentView: View {
         recordCleanerActionReceipt(action: "delete", itemCount: selected.count, outcome: outcome, before: before)
     }
 
-    private func openFlyWithLuaScriptsFolder() -> ActionOutcome {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [
-            home.appendingPathComponent("Library/Application Support/Steam/steamapps/common/X-Plane 12/Resources/plugins/FlyWithLua/Scripts"),
-            home.appendingPathComponent("Library/Application Support/Steam/steamapps/common/X-Plane 11/Resources/plugins/FlyWithLua/Scripts"),
-            home.appendingPathComponent("X-Plane 12/Resources/plugins/FlyWithLua/Scripts"),
-            home.appendingPathComponent("X-Plane 11/Resources/plugins/FlyWithLua/Scripts")
-        ]
-
-        for url in candidates {
-            if FileManager.default.fileExists(atPath: url.path) {
-                NSWorkspace.shared.open(url)
-                return ActionOutcome(success: true, message: "Opened FlyWithLua Scripts folder.")
-            }
-        }
-
-        return ActionOutcome(success: false, message: "Couldn't locate FlyWithLua Scripts folder. Install FlyWithLua and place scripts in X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts.")
-    }
-
     private func cleanerVerificationLine(before: MetricSample?, after: MetricSample?) -> String {
         guard let before, let after else {
             return "Verification unavailable yet."
@@ -5939,6 +6226,8 @@ struct MenuContentView: View {
             "smoothingAlpha": String(format: "%.2f", settings.smoothingAlpha),
             "udpEnabled": settings.xPlaneUDPListeningEnabled ? "true" : "false",
             "udpPort": String(settings.xPlaneUDPPort),
+            "selectedSituation": featureStore.selectedSituationPreset.rawValue,
+            "cruiseSituationStyle": featureStore.cruiseSituationStyle.rawValue,
             "workloadProfile": featureStore.workloadProfile.rawValue,
             "cpuBudgetModeEnabled": featureStore.cpuBudgetModeEnabled ? "true" : "false",
             "retentionWindow": featureStore.historyDuration.rawValue,

@@ -52,7 +52,7 @@ enum TelemetryLiveState: String, Codable {
     var displayName: String {
         switch self {
         case .offline:
-            return "Waiting"
+            return "Offline"
         case .listening:
             return "Listening"
         case .live:

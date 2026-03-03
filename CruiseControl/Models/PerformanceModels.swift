@@ -67,7 +67,7 @@ enum XPlaneUDPConnectionState: String, Codable {
     var displayName: String {
         switch self {
         case .idle:
-            return "Waiting"
+            return "Offline"
         case .listening:
             return "Listening"
         case .active:
@@ -233,6 +233,128 @@ enum ProfileKind: String, Codable, CaseIterable, Identifiable {
             return 2.0
         case .simMode:
             return 1.0
+        }
+    }
+}
+
+enum SituationPresetType: String, Codable, CaseIterable, Identifiable {
+    case general
+    case airport
+    case cruise
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .general:
+            return "General"
+        case .airport:
+            return "Airport"
+        case .cruise:
+            return "Cruise"
+        }
+    }
+}
+
+enum CruiseSituationStyle: String, Codable, CaseIterable, Identifiable {
+    case performance
+    case visuals
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .performance:
+            return "Performance"
+        case .visuals:
+            return "Visuals"
+        }
+    }
+}
+
+struct SituationGovernorTargetPreset {
+    var groundMaxAGLFeet: Double
+    var cruiseMinAGLFeet: Double
+    var targetLODGround: Double
+    var targetLODClimbDescent: Double
+    var targetLODCruise: Double
+    var clampMinLOD: Double
+    var clampMaxLOD: Double
+}
+
+struct SituationPresetConfig {
+    var workloadProfile: ProfileKind
+    var selectedProfile: SimModeProfileType
+    var pauseBackgroundScansDuringSim: Bool
+    var governorTargets: SituationGovernorTargetPreset
+}
+
+extension SituationPresetType {
+    func config(cruiseStyle: CruiseSituationStyle) -> SituationPresetConfig {
+        switch self {
+        case .general:
+            return SituationPresetConfig(
+                workloadProfile: .generalPerformance,
+                selectedProfile: .balanced,
+                pauseBackgroundScansDuringSim: false,
+                governorTargets: SituationGovernorTargetPreset(
+                    groundMaxAGLFeet: 1_500,
+                    cruiseMinAGLFeet: 10_000,
+                    targetLODGround: 1.45,
+                    targetLODClimbDescent: 1.15,
+                    targetLODCruise: 0.95,
+                    clampMinLOD: 0.20,
+                    clampMaxLOD: 3.00
+                )
+            )
+        case .airport:
+            return SituationPresetConfig(
+                workloadProfile: .simMode,
+                selectedProfile: .aggressive,
+                pauseBackgroundScansDuringSim: true,
+                governorTargets: SituationGovernorTargetPreset(
+                    groundMaxAGLFeet: 2_000,
+                    cruiseMinAGLFeet: 11_000,
+                    targetLODGround: 1.55,
+                    targetLODClimbDescent: 1.20,
+                    targetLODCruise: 0.95,
+                    clampMinLOD: 0.30,
+                    clampMaxLOD: 2.60
+                )
+            )
+        case .cruise:
+            switch cruiseStyle {
+            case .performance:
+                return SituationPresetConfig(
+                    workloadProfile: .simMode,
+                    selectedProfile: .balanced,
+                    pauseBackgroundScansDuringSim: true,
+                    governorTargets: SituationGovernorTargetPreset(
+                        groundMaxAGLFeet: 1_500,
+                        cruiseMinAGLFeet: 9_000,
+                        targetLODGround: 1.35,
+                        targetLODClimbDescent: 1.05,
+                        targetLODCruise: 0.90,
+                        clampMinLOD: 0.20,
+                        clampMaxLOD: 2.40
+                    )
+                )
+            case .visuals:
+                return SituationPresetConfig(
+                    workloadProfile: .simMode,
+                    selectedProfile: .streaming,
+                    pauseBackgroundScansDuringSim: true,
+                    governorTargets: SituationGovernorTargetPreset(
+                        groundMaxAGLFeet: 1_500,
+                        cruiseMinAGLFeet: 9_000,
+                        targetLODGround: 1.20,
+                        targetLODClimbDescent: 0.95,
+                        targetLODCruise: 0.75,
+                        clampMinLOD: 0.20,
+                        clampMaxLOD: 2.10
+                    )
+                )
+            }
         }
     }
 }
