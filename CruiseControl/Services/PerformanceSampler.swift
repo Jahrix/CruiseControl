@@ -513,15 +513,47 @@ final class PerformanceSampler: ObservableObject {
     }
 
     @MainActor
-    func createSupportPack(settingsSnapshot: [String: String] = [:]) -> SupportPackOutcome {
+    func reviewSupportPack(
+        createdAt: Date,
+        settingsSnapshot: [String: String] = [:],
+        updateStatusMessage: String? = nil,
+        updateOutcome: UpdateCheckOutcome? = nil,
+        checkedRepo: String = AppMaintenanceService.checkedGitHubRepository(),
+        selection: SupportPackSelection = .init(includeXPlaneLog: false, selectedURL: nil)
+    ) -> SupportPackReview {
+        SupportPackService.review(
+            for: supportPackRequest(
+                createdAt: createdAt,
+                settingsSnapshot: settingsSnapshot,
+                updateStatusMessage: updateStatusMessage,
+                updateOutcome: updateOutcome,
+                checkedRepo: checkedRepo,
+                selection: selection
+            )
+        )
+    }
+
+    @MainActor
+    func createSupportPack(
+        createdAt: Date,
+        settingsSnapshot: [String: String] = [:],
+        updateStatusMessage: String? = nil,
+        updateOutcome: UpdateCheckOutcome? = nil,
+        checkedRepo: String = AppMaintenanceService.checkedGitHubRepository(),
+        selection: SupportPackSelection = .init(includeXPlaneLog: false, selectedURL: nil)
+    ) -> SupportPackOutcome {
         let summary = supportSummaryText()
 
         do {
-            let diagnosticsData = try diagnosticsExportData(settingsSnapshot: settingsSnapshot)
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyyMMdd-HHmmss"
-            let stamp = formatter.string(from: Date())
-            let baseName = "CruiseControl-support-pack-\(stamp)"
+            let request = supportPackRequest(
+                createdAt: createdAt,
+                settingsSnapshot: settingsSnapshot,
+                updateStatusMessage: updateStatusMessage,
+                updateOutcome: updateOutcome,
+                checkedRepo: checkedRepo,
+                selection: selection
+            )
+            let baseName = SupportPackService.rootFolderName(for: createdAt)
 
             let panel = NSSavePanel()
             panel.title = "Create Support Pack"
@@ -535,41 +567,12 @@ final class PerformanceSampler: ObservableObject {
                 return SupportPackOutcome(success: false, destinationURL: nil, summary: summary, message: "Support Pack creation cancelled.")
             }
 
-            let workspaceFolder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: workspaceFolder) }
-
-            let packFolder = workspaceFolder.appendingPathComponent(baseName, isDirectory: true)
-            try FileManager.default.createDirectory(at: packFolder, withIntermediateDirectories: true)
-
-            let diagnosticsFile = packFolder.appendingPathComponent("diagnostics-v2.json")
-            let summaryFile = packFolder.appendingPathComponent("support-summary.txt")
-            try diagnosticsData.write(to: diagnosticsFile, options: .atomic)
-            try Data(summary.utf8).write(to: summaryFile, options: .atomic)
-
-            let extensionLowercased = destinationURL.pathExtension.lowercased()
-            if extensionLowercased == "zip" {
-                try zipSupportPack(folderURL: packFolder, destinationZipURL: destinationURL)
-                return SupportPackOutcome(
-                    success: true,
-                    destinationURL: destinationURL,
-                    summary: summary,
-                    message: "Support Pack saved to \(destinationURL.path)."
-                )
-            }
-
-            let folderDestination = destinationURL.pathExtension.isEmpty
-                ? destinationURL
-                : destinationURL.deletingPathExtension()
-            if FileManager.default.fileExists(atPath: folderDestination.path) {
-                try FileManager.default.removeItem(at: folderDestination)
-            }
-            try FileManager.default.copyItem(at: packFolder, to: folderDestination)
+            let finalURL = try SupportPackService.writePack(for: request, destinationURL: destinationURL)
             return SupportPackOutcome(
                 success: true,
-                destinationURL: folderDestination,
+                destinationURL: finalURL,
                 summary: summary,
-                message: "Support Pack folder saved to \(folderDestination.path)."
+                message: "Support Pack saved to \(finalURL.path)."
             )
         } catch {
             return SupportPackOutcome(success: false, destinationURL: nil, summary: summary, message: "Failed to create Support Pack: \(error.localizedDescription)")
@@ -694,26 +697,6 @@ final class PerformanceSampler: ObservableObject {
         return try encoder.encode(report)
     }
 
-    private func zipSupportPack(folderURL: URL, destinationZipURL: URL) throws {
-        if FileManager.default.fileExists(atPath: destinationZipURL.path) {
-            try FileManager.default.removeItem(at: destinationZipURL)
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", folderURL.path, destinationZipURL.path]
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw NSError(
-                domain: "CruiseControl.SupportPack",
-                code: Int(process.terminationStatus),
-                userInfo: [NSLocalizedDescriptionKey: "zip packaging failed (\(process.terminationStatus))."]
-            )
-        }
-    }
-
     private func macModelIdentifier() -> String {
         var size: size_t = 0
         guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else {
@@ -737,6 +720,209 @@ final class PerformanceSampler: ObservableObject {
         let minutes = seconds / 60
         let remainder = seconds % 60
         return "\(minutes)m \(remainder)s"
+    }
+
+    @MainActor
+    private func supportPackRequest(
+        createdAt: Date,
+        settingsSnapshot: [String: String],
+        updateStatusMessage: String?,
+        updateOutcome: UpdateCheckOutcome?,
+        checkedRepo: String,
+        selection: SupportPackSelection
+    ) -> SupportPackRequest {
+        SupportPackRequest(
+            createdAt: createdAt,
+            system: supportPackSystemPayload(createdAt: createdAt),
+            settingsSnapshot: settingsSnapshot,
+            updateStatus: supportPackUpdatePayload(
+                createdAt: createdAt,
+                updateStatusMessage: updateStatusMessage,
+                updateOutcome: updateOutcome,
+                checkedRepo: checkedRepo
+            ),
+            perfSummary: supportPackPerfSummaryPayload(createdAt: createdAt),
+            appLogsText: supportPackLogsText(createdAt: createdAt),
+            selection: selection
+        )
+    }
+
+    @MainActor
+    private func supportPackSystemPayload(createdAt: Date) -> SupportPackSystemPayload {
+        SupportPackSystemPayload(
+            generatedAt: createdAt,
+            appVersion: AppMaintenanceService.currentVersionString(),
+            appBuild: AppMaintenanceService.currentBuildString(),
+            gitCommitHash: gitCommitHashIfAvailable(),
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            cpuModel: cpuBrandString(),
+            macModelIdentifier: macModelIdentifier(),
+            physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
+            freeDiskBytes: snapshot.freeDiskBytes
+        )
+    }
+
+    @MainActor
+    private func supportPackUpdatePayload(
+        createdAt: Date,
+        updateStatusMessage: String?,
+        updateOutcome: UpdateCheckOutcome?,
+        checkedRepo: String
+    ) -> SupportPackUpdateStatusPayload {
+        let currentVersion = updateOutcome?.currentVersion ?? AppMaintenanceService.currentVersionString()
+        let currentBuild = updateOutcome?.currentBuild ?? AppMaintenanceService.currentBuildString()
+        let latestTag = updateOutcome?.latestTag
+        let trimmedStatus = updateStatusMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let status = trimmedStatus.isEmpty ? "Not checked yet." : trimmedStatus
+
+        return SupportPackUpdateStatusPayload(
+            capturedAt: createdAt,
+            currentVersion: currentVersion,
+            currentBuild: currentBuild,
+            checkedRepo: checkedRepo,
+            latestReleaseTag: latestTag,
+            updateAvailable: updateOutcome?.isUpdateAvailable ?? false,
+            statusMessage: status
+        )
+    }
+
+    @MainActor
+    private func supportPackPerfSummaryPayload(createdAt: Date) -> SupportPackPerfSummaryPayload {
+        let sessionSummary = lastSessionSnapshot.map {
+            SupportPackPerfSummaryPayload.LastSessionSummary(
+                capturedAt: $0.capturedAt,
+                sessionDurationText: timeSummary(for: $0),
+                totalPackets: $0.telemetrySummary.totalPackets,
+                lastTarget: $0.regulatorSummary.lastTarget,
+                lastApplied: $0.regulatorSummary.lastApplied,
+                lastAckAt: $0.regulatorSummary.lastAckAt,
+                reasons: $0.regulatorSummary.reasons
+            )
+        }
+
+        return SupportPackPerfSummaryPayload(
+            generatedAt: createdAt,
+            telemetryState: telemetryLiveState.displayName,
+            simActive: isSimActive,
+            memoryPressure: snapshot.memoryPressure.displayName,
+            memoryPressureTrend: snapshot.memoryPressureTrend.rawValue,
+            thermalState: Self.thermalStateDescription(snapshot.thermalState),
+            swapUsedBytes: snapshot.swapUsedBytes,
+            swapDelta5MinBytes: snapshot.swapDelta5MinBytes,
+            compressedMemoryBytes: snapshot.compressedMemoryBytes,
+            diskReadMBps: snapshot.diskReadMBps,
+            diskWriteMBps: snapshot.diskWriteMBps,
+            freeDiskBytes: snapshot.freeDiskBytes,
+            ioPressureLikely: snapshot.ioPressureLikely,
+            stutterEpisodesLast10m: stutterEpisodesInWindow(lastMinutes: 10).count,
+            rawStutterEventsLast10m: rawStutterEventsInWindow(lastMinutes: 10).count,
+            topStutterCause: recentStutterCauseRanking(lastMinutes: 10).first?.cause.displayName ?? "None",
+            warningCount: warnings.count,
+            warnings: Array(warnings.prefix(8)),
+            culprits: Array(culprits.prefix(8)),
+            lastSessionSummary: sessionSummary
+        )
+    }
+
+    @MainActor
+    private func supportPackLogsText(createdAt: Date) -> String {
+        var lines: [String] = []
+        lines.append("CruiseControl Logs Tail")
+        lines.append("Generated: \(createdAt.formatted(date: .abbreviated, time: .standard))")
+        lines.append("")
+        lines.append("[Action Receipts]")
+        if actionReceipts.isEmpty {
+            lines.append("No action receipts captured.")
+        } else {
+            for receipt in actionReceipts.suffix(40) {
+                lines.append("\(receipt.timestamp.ISO8601Format()) [\(receipt.kind.rawValue)] \(receipt.outcome ? "OK" : "FAIL") \(receipt.message)")
+            }
+        }
+
+        lines.append("")
+        lines.append("[Regulator Actions]")
+        if regulatorRecentActions.isEmpty {
+            lines.append("No regulator action logs captured.")
+        } else {
+            for entry in regulatorRecentActions.suffix(40) {
+                lines.append("\(entry.timestamp.ISO8601Format()) \(entry.message)")
+            }
+        }
+
+        lines.append("")
+        lines.append("[Tier Events]")
+        if regulatorTierEvents.isEmpty {
+            lines.append("No tier events captured.")
+        } else {
+            for entry in regulatorTierEvents.suffix(60) {
+                lines.append("\(entry.timestamp.ISO8601Format()) \(entry.message)")
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func cpuBrandString() -> String {
+        let keys = ["machdep.cpu.brand_string", "hw.model"]
+        for key in keys {
+            var size: size_t = 0
+            guard sysctlbyname(key, nil, &size, nil, 0) == 0, size > 0 else { continue }
+            var buffer = [CChar](repeating: 0, count: size)
+            guard sysctlbyname(key, &buffer, &size, nil, 0) == 0 else { continue }
+            let value = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.isEmpty == false {
+                return value
+            }
+        }
+        return "Unknown"
+    }
+
+    private func gitCommitHashIfAvailable() -> String? {
+        let candidateRoots = [
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
+            Bundle.main.bundleURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+        ]
+
+        for root in candidateRoots {
+            guard let gitRoot = findGitRoot(startingAt: root) else { continue }
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", gitRoot.path, "rev-parse", "--short", "HEAD"]
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { continue }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let value = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                if value.isEmpty == false {
+                    return value
+                }
+            } catch {
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private func findGitRoot(startingAt startURL: URL) -> URL? {
+        var current = startURL.standardizedFileURL
+        for _ in 0..<8 {
+            let gitURL = current.appendingPathComponent(".git", isDirectory: true)
+            if FileManager.default.fileExists(atPath: gitURL.path) {
+                return current
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+        return nil
     }
 
     @MainActor

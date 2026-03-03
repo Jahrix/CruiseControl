@@ -278,6 +278,10 @@ enum AppMaintenanceService {
         "\(currentVersionString()) (Build \(currentBuildString()))"
     }
 
+    nonisolated static func checkedGitHubRepository() -> String {
+        GitHubReleaseClient.repoLabel
+    }
+
     static func checkForUpdates(
         currentVersion: String,
         preferSparkle: Bool = true,

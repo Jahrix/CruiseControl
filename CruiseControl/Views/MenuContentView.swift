@@ -262,6 +262,11 @@ struct MenuContentView: View {
     @State private var processActionResult: String?
     @State private var diagnosticsExportResult: String?
     @State private var supportPackSummary: String = ""
+    @State private var showSupportPackReviewSheet: Bool = false
+    @State private var supportPackDraftCreatedAt: Date?
+    @State private var supportPackReview: SupportPackReview?
+    @State private var supportPackIncludeXPlaneLog: Bool = false
+    @State private var supportPackSelectedXPlaneURL: URL?
     @State private var forceQuitCandidate: ProcessSample?
 
     @State private var allowlistText: String = ""
@@ -449,6 +454,9 @@ struct MenuContentView: View {
             }
             .sheet(isPresented: $showFirstReleaseHelpSheet) {
                 firstReleaseHelpSheet
+            }
+            .sheet(isPresented: $showSupportPackReviewSheet) {
+                supportPackReviewSheet
             }
         }
         .onAppear {
@@ -2764,12 +2772,7 @@ struct MenuContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Button("Create Support Pack") {
-                        runVerifiedAction(kind: .createSupportPack, params: [:]) {
-                            let outcome = sampler.createSupportPack(settingsSnapshot: diagnosticsSettingsSnapshot())
-                            supportPackSummary = outcome.summary
-                            diagnosticsExportResult = outcome.message
-                            return ActionOutcome(success: outcome.success, message: outcome.message)
-                        }
+                        beginSupportPackReview()
                     }
                     .buttonStyle(.borderedProminent)
 
@@ -2782,7 +2785,7 @@ struct MenuContentView: View {
                     .buttonStyle(.bordered)
                 }
 
-                Text("Includes diagnostics JSON v2 and a short machine/session summary for support.")
+                Text("Builds a minimal support bundle from scrubbed app diagnostics, reviewable before export.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -3809,6 +3812,118 @@ struct MenuContentView: View {
         }
         .padding(20)
         .frame(width: 460)
+    }
+
+    private var supportPackReviewSheet: some View {
+        let review = supportPackReview
+
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Review Support Pack")
+                .font(.title2.weight(.semibold))
+
+            Text("CruiseControl stages scrubbed copies first, then zips only that staging folder.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Toggle(
+                "Include X-Plane Log.txt",
+                isOn: Binding(
+                    get: { supportPackIncludeXPlaneLog },
+                    set: { newValue in
+                        supportPackIncludeXPlaneLog = newValue
+                        refreshSupportPackReview()
+                    }
+                )
+            )
+
+            HStack {
+                Button("Select Log.txt or X-Plane Folder") {
+                    pickSupportPackXPlaneLog()
+                }
+                .buttonStyle(.bordered)
+
+                Text(supportPackSelectedXPlaneURL.map { SupportPackService.reviewPathLabel(for: $0) } ?? "No X-Plane file selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            GroupBox("Included Files") {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let review {
+                            ForEach(review.includedFiles) { item in
+                                HStack(alignment: .top) {
+                                    Text(item.relativePath)
+                                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    Spacer(minLength: 12)
+                                    Text(byteCountString(item.sizeBytes))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let note = item.note {
+                                    Text(note)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        } else {
+                            Text("Preparing review…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 150, maxHeight: 220)
+            }
+
+            GroupBox("Exclusions") {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(SupportPackService.exclusionRuleDescriptions, id: \.self) { rule in
+                            Text("• \(rule)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if let review, review.omissions.isEmpty == false {
+                            Divider().padding(.vertical, 4)
+                            ForEach(review.omissions) { omission in
+                                Text("• \(omission.reason)\(omission.sourcePath.map { " (\($0))" } ?? "")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 140, maxHeight: 220)
+            }
+
+            if let review {
+                Text("Planned payload: \(byteCountString(review.totalBytes)) of \(byteCountString(SupportPackService.maxTotalPayloadBytes))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Cancel") {
+                    showSupportPackReviewSheet = false
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("Export Support Pack") {
+                    exportSupportPackFromReview()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(review == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
     }
 
     private func feedbackCard(title: String, text: String) -> some View {
@@ -5509,6 +5624,74 @@ struct MenuContentView: View {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    private func beginSupportPackReview() {
+        supportPackDraftCreatedAt = Date()
+        supportPackIncludeXPlaneLog = false
+        supportPackSelectedXPlaneURL = nil
+        refreshSupportPackReview()
+        showSupportPackReviewSheet = true
+    }
+
+    private func refreshSupportPackReview() {
+        guard let createdAt = supportPackDraftCreatedAt else {
+            supportPackReview = nil
+            return
+        }
+
+        supportPackReview = sampler.reviewSupportPack(
+            createdAt: createdAt,
+            settingsSnapshot: diagnosticsSettingsSnapshot(),
+            updateStatusMessage: updateCheckStatus,
+            updateOutcome: updateCheckOutcome,
+            checkedRepo: AppMaintenanceService.checkedGitHubRepository(),
+            selection: SupportPackSelection(
+                includeXPlaneLog: supportPackIncludeXPlaneLog,
+                selectedURL: supportPackSelectedXPlaneURL
+            )
+        )
+    }
+
+    private func exportSupportPackFromReview() {
+        guard let createdAt = supportPackDraftCreatedAt else { return }
+
+        runVerifiedAction(
+            kind: .createSupportPack,
+            params: ["includeXPlaneLog": supportPackIncludeXPlaneLog ? "true" : "false"]
+        ) {
+            let outcome = sampler.createSupportPack(
+                createdAt: createdAt,
+                settingsSnapshot: diagnosticsSettingsSnapshot(),
+                updateStatusMessage: updateCheckStatus,
+                updateOutcome: updateCheckOutcome,
+                checkedRepo: AppMaintenanceService.checkedGitHubRepository(),
+                selection: SupportPackSelection(
+                    includeXPlaneLog: supportPackIncludeXPlaneLog,
+                    selectedURL: supportPackSelectedXPlaneURL
+                )
+            )
+            supportPackSummary = outcome.summary
+            diagnosticsExportResult = outcome.message
+            if outcome.success {
+                showSupportPackReviewSheet = false
+            }
+            return ActionOutcome(success: outcome.success, message: outcome.message)
+        }
+    }
+
+    private func pickSupportPackXPlaneLog() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select"
+        panel.message = "Choose X-Plane Log.txt or the X-Plane folder containing Log.txt. CruiseControl will only include Log.txt."
+
+        if panel.runModal() == .OK {
+            supportPackSelectedXPlaneURL = panel.url
+            refreshSupportPackReview()
+        }
     }
 
     private func supportLog(_ message: String) {
