@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.3-rc4 - Repository rename path cleanup
+
+### Changed
+- Bumped the v1.1.3 release-candidate build number to `1134`.
+- Updated repo documentation and archived patch references from `/Users/Boon/Downloads/Speed for Mac` to `/Users/Boon/Downloads/CruiseControl`.
+
+### Fixed
+- Removed stale absolute-path examples that still pointed at the pre-rename local folder.
+
 ## v1.1.3-rc3 - Build warning cleanup + app icon hygiene
 
 ### Changed

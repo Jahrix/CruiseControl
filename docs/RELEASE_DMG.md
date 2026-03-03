@@ -103,11 +103,11 @@ Expected output from the release workflow:
 - A workflow artifact containing that DMG
 - A GitHub Release for the tag with the DMG attached
 
-## Publishing v1.1.3-rc3
+## Publishing v1.1.3-rc4
 
 1. Merge to `main`
-2. `git tag v1.1.3-rc3`
-3. `git push origin v1.1.3-rc3`
+2. `git tag v1.1.3-rc4`
+3. `git push origin v1.1.3-rc4`
 4. GitHub Actions will build the DMG and publish the prerelease automatically
 
 Closed beta Gatekeeper note:

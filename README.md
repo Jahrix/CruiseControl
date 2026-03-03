@@ -101,7 +101,7 @@ Export JSON bundle includes:
 ## Build
 
 ```bash
-xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj" \
+xcodebuild -project "/Users/Boon/Downloads/CruiseControl/CruiseControl.xcodeproj" \
   -scheme "CruiseControl" \
   -configuration Debug \
   CODE_SIGNING_ALLOWED=NO build
