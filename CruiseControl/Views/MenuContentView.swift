@@ -205,6 +205,7 @@ struct RecentActionsFeedView: View {
 enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
     case tenMinutes = "10m"
     case thirtyMinutes = "30m"
+    case sixtyMinutes = "60m"
 
     var id: String { rawValue }
 
@@ -214,6 +215,8 @@ enum FrameTimeRangeOption: String, CaseIterable, Identifiable {
             return 10
         case .thirtyMinutes:
             return 30
+        case .sixtyMinutes:
+            return 60
         }
     }
 }
@@ -1415,6 +1418,9 @@ struct MenuContentView: View {
 
             dashboardCard(title: "Session Report") {
                 if let report = sampler.sessionReport {
+                    let replayEpisodes = sessionReplayEpisodes(for: report)
+                    let shareSummary = sessionShareSummaryText(report, replayEpisodes: replayEpisodes)
+
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Top cause: \(report.topCauses.first?.cause ?? "No dominant cause")")
                             .font(.headline)
@@ -1430,6 +1436,12 @@ struct MenuContentView: View {
                         Text("Session: \(timeOnly(report.sessionStartAt)) - \(timeOnly(report.sessionEndAt))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        if let context = sessionReplayContextText() {
+                            Text("Airport / scenario: \(context)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
                         if !report.topCauses.isEmpty {
                             Text("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: " • "))")
@@ -1459,6 +1471,22 @@ struct MenuContentView: View {
                             }
                         }
 
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Share summary")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(shareSummary)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.black.opacity(0.18))
+                                )
+                        }
+
                         HStack(spacing: 10) {
                             Button("Export Report (JSON)") {
                                 let outcome = sampler.exportSessionReport()
@@ -1467,15 +1495,66 @@ struct MenuContentView: View {
                             }
                             .buttonStyle(.borderedProminent)
 
-                            Button("Copy Summary") {
-                                copyToClipboard(sessionReportSummaryText(report))
-                                processActionResult = "Session report summary copied."
+                            Button("Copy Share Summary") {
+                                copyToClipboard(shareSummary)
+                                processActionResult = "Share summary copied."
                             }
                             .buttonStyle(.bordered)
                         }
                     }
                 } else {
                     Text("No session report yet. Start a sim session to generate a report.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            dashboardCard(title: "Session Replay") {
+                if let report = sampler.sessionReport {
+                    let replayEpisodes = sessionReplayEpisodes(for: report)
+
+                    if replayEpisodes.isEmpty {
+                        Text("No replayable stutter episodes are available for the latest session.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Top five episodes from the latest session. Select one to focus Frame-Time Lab when it is still in retained history.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            ForEach(replayEpisodes) { episode in
+                                let jumpAvailable = canJumpToFrameTimeLab(episode)
+
+                                Button {
+                                    jumpToFrameTimeLab(episode)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 10) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("\(timeOnly(episode.startAt)) - \(timeOnly(episode.endAt))")
+                                                .font(.subheadline.weight(.semibold))
+                                            Text("\(episode.cause.displayName) • \(sessionReplaySeverityText(episode)) • \(episodeDurationText(episode.startAt, episode.endAt)) • Count \(episode.count)")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            if let evidence = episode.evidenceSummary.first {
+                                                Text(evidence)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary.opacity(0.9))
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        Spacer()
+                                        Text(jumpAvailable ? "Open in lab" : "Unavailable")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(jumpAvailable ? accentColor : .secondary)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!jumpAvailable)
+                            }
+                        }
+                    }
+                } else {
+                    Text("Session replay appears after a session report is available.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -4806,45 +4885,151 @@ struct MenuContentView: View {
         }
     }
 
-    private func sessionReportSummaryText(_ report: SessionReport) -> String {
-        var lines: [String] = [
-            "Session Report",
-            "Window: \(timeOnly(report.sessionStartAt)) - \(timeOnly(report.sessionEndAt))",
-            "Duration: \(durationText(seconds: report.durationSeconds))",
-            "Top cause: \(report.topCauses.first?.cause ?? "None")",
-            "Episodes: \(report.stutterEpisodesCount)",
-            String(format: "Pressure index avg/max: %.2f / %.2f", report.avgPressureIndex, report.maxPressureIndex)
-        ]
+    private var frameTimeLabMaximumMinutes: Int {
+        FrameTimeRangeOption.allCases.map(\.minutes).max() ?? FrameTimeRangeOption.thirtyMinutes.minutes
+    }
 
-        if !report.topCauses.isEmpty {
-            lines.append("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: ", "))")
-        }
+    private func sessionReplayEpisodes(for report: SessionReport) -> [StutterEpisode] {
+        sampler.stutterEpisodes
+            .filter { $0.endAt >= report.sessionStartAt && $0.startAt <= report.sessionEndAt }
+            .sorted {
+                if $0.peakSeverity == $1.peakSeverity {
+                    if $0.count == $1.count {
+                        return $0.endAt > $1.endAt
+                    }
+                    return $0.count > $1.count
+                }
+                return $0.peakSeverity > $1.peakSeverity
+            }
+            .prefix(5)
+            .map { $0 }
+    }
 
-        if let worst = report.worstWindow {
-            lines.append("Worst window: \(timeOnly(worst.startAt)) - \(timeOnly(worst.endAt)) • \(worst.reason)")
-        }
+    private func sessionReplayContextText() -> String? {
+        let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
+        var parts: [String] = []
 
-        if report.actionsTakenSummary.count > 0 {
-            let topActions = report.actionsTakenSummary.topActions
-                .map { "\($0.action) (\($0.count))" }
-                .joined(separator: ", ")
-            lines.append(topActions.isEmpty ? "Actions logged: \(report.actionsTakenSummary.count)" : "Actions logged: \(report.actionsTakenSummary.count) • \(topActions)")
-        } else {
-            lines.append("Actions logged: none")
-        }
-
-        if let advisor = report.advisorTriggersSummary, !advisor.topTriggers.isEmpty {
-            lines.append("Advisor triggers: \(advisor.topTriggers.joined(separator: ", "))")
-        }
-
-        if !report.keyRecommendations.isEmpty {
-            lines.append("Recommendations:")
-            for recommendation in report.keyRecommendations.prefix(3) {
-                lines.append("- \(recommendation)")
+        if let icao = activeAirport.icao, !icao.isEmpty {
+            if let name = activeAirport.profile?.name, !name.isEmpty {
+                parts.append("\(icao) (\(name))")
+            } else {
+                parts.append(icao)
             }
         }
 
+        parts.append(featureStore.workloadProfile.title)
+        parts.append(telemetryIsLive ? "Live telemetry" : "Historical session")
+
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    private func sessionShareSummaryText(_ report: SessionReport, replayEpisodes: [StutterEpisode]) -> String {
+        var lines: [String] = [
+            "CruiseControl Session Share Summary",
+            "Session window: \(report.sessionStartAt.formatted(date: .abbreviated, time: .shortened)) -> \(report.sessionEndAt.formatted(date: .omitted, time: .shortened))"
+        ]
+
+        if let context = sessionReplayContextText() {
+            lines.append("Airport/Scenario: \(context)")
+        }
+
+        lines.append("Duration: \(durationText(seconds: report.durationSeconds))")
+
+        if !report.topCauses.isEmpty {
+            lines.append("Top causes: \(report.topCauses.map { "\($0.cause) (\($0.count))" }.joined(separator: ", "))")
+        } else {
+            lines.append("Top causes: None captured")
+        }
+
+        if let worst = report.worstWindow {
+            lines.append("Worst window: \(timeOnly(worst.startAt)) - \(timeOnly(worst.endAt)) (\(worst.reason))")
+        } else {
+            lines.append("Worst window: None captured")
+        }
+
+        lines.append(String(format: "Pressure max/avg: %.2f / %.2f", report.maxPressureIndex, report.avgPressureIndex))
+
+        if report.actionsTakenSummary.count > 0 {
+            let topActions = report.actionsTakenSummary.topActions
+                .prefix(3)
+                .map { "\($0.action) (\($0.count))" }
+                .joined(separator: ", ")
+            if topActions.isEmpty {
+                lines.append("What helped: \(report.actionsTakenSummary.count) action receipt(s)")
+            } else {
+                lines.append("What helped: \(report.actionsTakenSummary.count) action receipt(s) • \(topActions)")
+            }
+        } else {
+            lines.append("What helped: No action receipts logged")
+        }
+
+        if !replayEpisodes.isEmpty {
+            lines.append("Replay highlights: \(replayEpisodes.prefix(3).map { "\(timeOnly($0.startAt)) \($0.cause.displayName) (\(String(format: "%.2f", $0.peakSeverity)))" }.joined(separator: " | "))")
+        }
+
         return lines.joined(separator: "\n")
+    }
+
+    private func sessionReplaySeverityText(_ episode: StutterEpisode) -> String {
+        let label: String
+        switch episode.peakSeverity {
+        case 0.85...:
+            label = "High"
+        case 0.55...:
+            label = "Medium"
+        default:
+            label = "Low"
+        }
+        return "\(label) severity \(String(format: "%.2f", episode.peakSeverity))"
+    }
+
+    private func canJumpToFrameTimeLab(_ episode: StutterEpisode) -> Bool {
+        let cutoff = now.addingTimeInterval(-Double(frameTimeLabMaximumMinutes * 60))
+        return episode.endAt >= cutoff
+    }
+
+    private func preferredFrameTimeRange(for episode: StutterEpisode) -> FrameTimeRangeOption {
+        let ageSeconds = max(now.timeIntervalSince(episode.endAt), 0)
+        if ageSeconds <= Double(FrameTimeRangeOption.tenMinutes.minutes * 60) {
+            return .tenMinutes
+        }
+        if ageSeconds <= Double(FrameTimeRangeOption.thirtyMinutes.minutes * 60) {
+            return .thirtyMinutes
+        }
+        return .sixtyMinutes
+    }
+
+    private func frameTimeSelection(for episode: StutterEpisode) -> FrameTimeHeatmapSelection {
+        let padding: TimeInterval = 15
+        let start = episode.startAt.addingTimeInterval(-padding)
+        let end = max(episode.endAt.addingTimeInterval(padding), start.addingTimeInterval(1))
+        return FrameTimeHeatmapSelection(start: start, end: end)
+    }
+
+    private func jumpToFrameTimeLab(_ episode: StutterEpisode) {
+        guard canJumpToFrameTimeLab(episode) else {
+            processActionResult = "Episode is outside the current Frame-Time Lab history."
+            return
+        }
+
+        let range = preferredFrameTimeRange(for: episode)
+        let selection = frameTimeSelection(for: episode)
+
+        frameTimeLabViewMode = .heatmap
+        selectedSection = .frameTimeLab
+
+        if frameTimeRange == range {
+            selectedHeatmapWindow = selection
+            selectedStutterEpisodeID = episode.id
+            selectedStutterEventID = nil
+        } else {
+            frameTimeRange = range
+            DispatchQueue.main.async {
+                self.selectedHeatmapWindow = selection
+                self.selectedStutterEpisodeID = episode.id
+                self.selectedStutterEventID = nil
+            }
+        }
     }
 
     private var isStale: Bool {
