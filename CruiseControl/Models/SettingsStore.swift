@@ -10,7 +10,14 @@ enum SimModeProfileType: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var displayName: String {
-        rawValue.capitalized
+        switch self {
+        case .balanced:
+            return "Balanced"
+        case .aggressive:
+            return "Performance"
+        case .streaming:
+            return "Streaming-safe"
+        }
     }
 }
 
@@ -276,6 +283,16 @@ final class SettingsStore: ObservableObject {
             commandPort: min(max(governorCommandPort, 1_024), 65_535),
             useMSLFallbackWhenAGLUnavailable: governorUseMSLFallbackWhenAGLUnavailable
         )
+    }
+
+    func applySituationGovernorTargetPreset(_ preset: SituationGovernorTargetPreset) {
+        governorGroundMaxAGLFeet = preset.groundMaxAGLFeet
+        governorCruiseMinAGLFeet = max(preset.cruiseMinAGLFeet, preset.groundMaxAGLFeet + 100)
+        governorTargetLODGround = preset.targetLODGround
+        governorTargetLODClimbDescent = preset.targetLODClimbDescent
+        governorTargetLODCruise = preset.targetLODCruise
+        governorLODMinClamp = min(preset.clampMinLOD, preset.clampMaxLOD)
+        governorLODMaxClamp = max(preset.clampMinLOD, preset.clampMaxLOD)
     }
 
     func updateSelection(bundleID: String, selected: Bool) {
