@@ -5024,7 +5024,6 @@ struct MenuContentView: View {
             processActionResult = "Applied \(preset.displayName) situation."
         }
     }
-
     private func sessionReplayContextText() -> String? {
         let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
         var parts: [String] = []
