@@ -34,9 +34,11 @@ It is not a fake RAM cleaner and does not use private macOS control paths.
 
 ## Profiles
 
-- `General Performance` (low overhead)
-- `Sim Mode` (higher cadence for sim sessions)
-- X-Plane detection can suggest switching to Sim Mode
+- Situation presets:
+  - `General`: current default behavior with General Performance workload
+  - `Airport`: Sim Mode workload + performance-oriented app-list preset + conservative ground LOD targets
+  - `Cruise`: Sim Mode workload + user choice between performance-oriented or visuals-oriented cruise targets
+- Situation presets persist and only remap existing workload/app-list/governor settings
 
 ## Actions + receipts
 
@@ -57,6 +59,18 @@ Examples:
 - `LOD Applied` and `Recent Activity` are tracked separately
 - bridge modes: UDP ACK, File fallback, or disconnected
 - proof includes target/applied/delta, evidence age, and reasons
+
+### Setup checklist
+Use the same setup text shown in the Connection Wizard:
+1. Open X-Plane > Settings > Data Output
+2. Check Send network data output
+3. Set IP to 127.0.0.1
+4. Set Port to `49005` (or the port shown in CruiseControl)
+5. Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)
+
+FlyWithLua bridge location:
+- Open your X-Plane folder, then go to `Resources/plugins/FlyWithLua/Scripts/`
+- Install FlyWithLua first if that folder does not exist yet
 
 ### Advisor
 Guidance cards are recommendations only:
@@ -103,5 +117,5 @@ xcodebuild -project "/Users/Boon/Downloads/Speed for Mac/CruiseControl.xcodeproj
 
 - GPU metrics are shown only when sim telemetry provides GPU timing; otherwise GPU is marked unavailable (no fabricated utilization).
 - Process actions can fail; CruiseControl shows the reason and offers an Activity Monitor fallback.
-- X-Plane companion features include a Connection Wizard + self-test checklist to guide UDP/FlyWithLua setup.
+- X-Plane companion features include a Connection Wizard with copyable X-Plane Data Output and FlyWithLua setup blocks.
 - Cleaner is maintenance-oriented; recommendations appear only when pressure/swap or low-space conditions suggest it may help.
