@@ -96,19 +96,19 @@ struct SupportPackRequest {
 }
 
 enum SupportPackService {
-    static let maxFileBytes: UInt64 = 10 * 1024 * 1024
-    static let maxTotalPayloadBytes: UInt64 = 25 * 1024 * 1024
-    private static let maxAppLogsBytes: Int = 512 * 1024
-    private static let maxAppLogsFallbackBytes: Int = 128 * 1024
-    private static let maxXPlaneLogBytes: Int = 2 * 1024 * 1024
-    private static let maxXPlaneLogFallbackBytes: Int = 256 * 1024
-    private static let blockedDirectoryNames = [".git", ".svn", ".hg"]
-    private static let blockedPathComponents = ["deriveddata", ".build", "build", "dist", "node_modules", "carthage", "pods"]
-    private static let blockedFilenameTokens = [
+    nonisolated static let maxFileBytes: UInt64 = 10 * 1024 * 1024
+    nonisolated static let maxTotalPayloadBytes: UInt64 = 25 * 1024 * 1024
+    nonisolated private static let maxAppLogsBytes: Int = 512 * 1024
+    nonisolated private static let maxAppLogsFallbackBytes: Int = 128 * 1024
+    nonisolated private static let maxXPlaneLogBytes: Int = 2 * 1024 * 1024
+    nonisolated private static let maxXPlaneLogFallbackBytes: Int = 256 * 1024
+    nonisolated private static let blockedDirectoryNames: Set<String> = [".git", ".svn", ".hg"]
+    nonisolated private static let blockedPathComponents: Set<String> = ["deriveddata", ".build", "build", "dist", "node_modules", "carthage", "pods"]
+    nonisolated private static let blockedFilenameTokens = [
         "token", "secret", "password", "credentials", "key", "private", "id_rsa", "oauth", "bearer", "api_key", "auth"
     ]
 
-    static let exclusionRuleDescriptions: [String] = [
+    nonisolated static let exclusionRuleDescriptions: [String] = [
         "Never include version control folders (.git, .svn, .hg).",
         "Never include build outputs or caches (DerivedData, .build, build, dist, node_modules, Carthage, Pods).",
         "Never include Xcode or SwiftPM caches from Library/Caches or Library/Developer/Xcode.",
@@ -118,12 +118,12 @@ enum SupportPackService {
         "Never include files larger than 10 MB unless explicitly allowlisted, and keep total payload under 25 MB."
     ]
 
-    private static let requiredRelativePaths = Set([
+    nonisolated private static let requiredRelativePaths: Set<String> = [
         "system.json",
         "app/settings_redacted.json",
         "app/update_status.json",
         "app/logs_tail.txt"
-    ])
+    ]
 
     nonisolated static func rootFolderName(for date: Date) -> String {
         let formatter = DateFormatter()

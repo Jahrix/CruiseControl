@@ -52,11 +52,11 @@ enum GitHubReleaseLookupResult {
 }
 
 enum GitHubReleaseClient {
-    static let owner = "jahrix"
-    static let repo = "cruisecontrol"
-    static let repoLabel = "\(owner)/\(repo)"
-    static let releasesPageURL = URL(string: "https://github.com/\(owner)/\(repo)/releases")!
-    static let releasesEndpoint = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases")!
+    nonisolated static let owner = "jahrix"
+    nonisolated static let repo = "cruisecontrol"
+    nonisolated static let repoLabel = "\(owner)/\(repo)"
+    nonisolated static let releasesPageURL = URL(string: "https://github.com/\(owner)/\(repo)/releases")!
+    nonisolated static let releasesEndpoint = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases")!
 
     static func fetchLatestRelease(
         currentVersion: String,

@@ -18,7 +18,7 @@ struct SmartScanItem: Identifiable, Codable, Hashable {
     let note: String
     let safeByDefault: Bool
 
-    init(module: SmartScanModule, path: String, sizeBytes: UInt64, note: String = "", safeByDefault: Bool = true) {
+    nonisolated init(module: SmartScanModule, path: String, sizeBytes: UInt64, note: String = "", safeByDefault: Bool = true) {
         self.id = UUID()
         self.module = module
         self.path = path
