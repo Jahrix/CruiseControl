@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.3 - Premium shell UI pass
+
+### Added
+- Royal theme picker with 16 persisted shell themes for the existing CruiseControl layout.
+- In-app "How to publish the first release" help sheet from Preferences > Updates.
+
+### Changed
+- Header typography now uses a cleaner premium hierarchy for the brand, signature, and tagline.
+- Telemetry wording now uses calm states: Waiting for simulator, Listening for telemetry, Telemetry Live, and Telemetry Error.
+- Update messaging now shows clearer status text with current/latest version-build formatting.
+- Shell surfaces use softer borders, lower glow intensity, and theme-driven colors without changing app logic.
+
 ## v1.2.2 - Closed-beta updater + DMG install flow
 
 ### Added

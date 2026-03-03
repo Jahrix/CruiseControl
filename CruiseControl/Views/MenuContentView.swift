@@ -83,7 +83,7 @@ struct StatusStripPill: Identifiable {
 
 struct StatusStripView: View {
     let pills: [StatusStripPill]
-    private let stripFill = Color(red: 0.06, green: 0.09, blue: 0.16)
+    let theme: CruiseTheme
 
     var body: some View {
         HStack(spacing: 10) {
@@ -101,20 +101,20 @@ struct StatusStripView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(stripFill.opacity(0.94))
+                .fill(theme.cardFill.opacity(0.94))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                .stroke(theme.cardStroke.opacity(0.95), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.24), radius: 12, x: 0, y: 6)
+        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 5)
     }
 
     private func pillContent(_ pill: StatusStripPill) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(pill.title.uppercased())
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(theme.textSecondary.opacity(0.82))
             Text(pill.value)
                 .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(pill.tint)
@@ -123,11 +123,11 @@ struct StatusStripView: View {
         .padding(.vertical, 7)
         .background(
             Capsule()
-                .fill(Color.black.opacity(0.26))
+                .fill(theme.cardFill.opacity(0.78))
         )
         .overlay(
             Capsule()
-                .stroke(pill.tint.opacity(0.35), lineWidth: 1)
+                .stroke(pill.tint.opacity(0.24), lineWidth: 1)
         )
     }
 }
@@ -322,8 +322,10 @@ struct MenuContentView: View {
     @State private var updateCheckOutcome: UpdateCheckOutcome?
     @State private var isCheckingForUpdates: Bool = false
     @State private var isInstallingUpdate: Bool = false
+    @State private var showFirstReleaseHelpSheet: Bool = false
     @AppStorage("ccPreferredStartSection") private var preferredStartSectionRaw: String = DashboardSection.overview.rawValue
     @AppStorage("ccOpenXPlaneWizardOnLaunch") private var openXPlaneWizardOnLaunch: Bool = false
+    @AppStorage("ccThemeId") private var ccThemeID: String = ThemeManager.defaultThemeID
     @State private var frameTimeRange: FrameTimeRangeOption = .tenMinutes
     @State private var frameTimeLabViewMode: FrameTimeLabViewMode = .heatmap
     @State private var selectedHeatmapWindow: FrameTimeHeatmapSelection?
@@ -343,11 +345,7 @@ struct MenuContentView: View {
     private let smartScanService = SmartScanService()
     private let clockTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
-    private let neonMint = Color(red: 0.30, green: 0.95, blue: 0.68)
-    private let neonBlue = Color(red: 0.42, green: 0.72, blue: 1.00)
-    private let neonViolet = Color(red: 0.61, green: 0.52, blue: 1.00)
-    private let neonOrange = Color(red: 1.00, green: 0.52, blue: 0.18)
-    private let cardInk = Color(red: 0.05, green: 0.08, blue: 0.16)
+    private let neonOrange = Color(red: 0.96, green: 0.56, blue: 0.24)
     private let decimalFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -356,9 +354,20 @@ struct MenuContentView: View {
         return formatter
     }()
 
+    private var currentTheme: CruiseTheme {
+        ThemeManager.theme(id: ccThemeID)
+    }
+
+    private var accentColor: Color { currentTheme.accent }
+    private var accentSoftColor: Color { currentTheme.accentSoft }
+    private var highlightColor: Color { currentTheme.accentSoft.opacity(0.78) }
+    private var cardInk: Color { currentTheme.cardFill }
+    private var textPrimaryColor: Color { currentTheme.textPrimary }
+    private var textSecondaryColor: Color { currentTheme.textSecondary }
+
     var body: some View {
         ZStack {
-            CruiseBackgroundView()
+            CruiseBackgroundView(theme: currentTheme)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
@@ -427,12 +436,15 @@ struct MenuContentView: View {
                 .background(Color.clear)
             }
             .navigationSplitViewStyle(.balanced)
-            .tint(neonBlue)
+            .tint(accentSoftColor)
             .sheet(isPresented: $showXPlaneHelpSheet) {
                 xPlaneHelpSheet
             }
             .sheet(isPresented: $showHelpSheet) {
                 helpCardSheet
+            }
+            .sheet(isPresented: $showFirstReleaseHelpSheet) {
+                firstReleaseHelpSheet
             }
         }
         .onAppear {
@@ -560,18 +572,18 @@ struct MenuContentView: View {
         .frame(minWidth: 268, maxWidth: 286)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.04, green: 0.07, blue: 0.14).opacity(0.97))
+                .fill(cardInk.opacity(0.97))
         )
         .overlay(
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(currentTheme.cardStroke.opacity(0.7))
                 .frame(width: 1)
                 .padding(.vertical, 12),
             alignment: .trailing
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .stroke(currentTheme.cardStroke.opacity(0.95), lineWidth: 1)
         )
     }
 
@@ -579,36 +591,37 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(neonViolet.opacity(0.35))
+                    .fill(accentSoftColor.opacity(0.22))
                     .frame(width: 34, height: 34)
                     .overlay(
                         Image(systemName: "gauge.high")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(neonBlue)
+                            .foregroundStyle(accentColor)
                     )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("CruiseControl")
-                        .font(.system(size: 26, weight: .black, design: .rounded))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 26, weight: .semibold, design: .default))
+                        .tracking(-0.3)
+                        .foregroundStyle(textPrimaryColor)
                     Text("FLIGHT PERFORMANCE LAB")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.52))
+                        .foregroundStyle(textSecondaryColor.opacity(0.78))
                 }
             }
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(sampler.isSimActive ? neonMint : .orange)
+                    .fill(sampler.isSimActive ? accentColor : neonOrange)
                     .frame(width: 8, height: 8)
                 Text(sampler.isSimActive ? "SIM ACTIVE" : "STANDBY")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(sampler.isSimActive ? neonMint : .orange)
+                    .foregroundStyle(sampler.isSimActive ? accentColor : neonOrange)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(Capsule().fill(Color.black.opacity(0.24)))
-            .overlay(Capsule().stroke((sampler.isSimActive ? neonMint : .orange).opacity(0.55), lineWidth: 1))
+            .overlay(Capsule().stroke((sampler.isSimActive ? accentColor : neonOrange).opacity(0.42), lineWidth: 1))
         }
         .padding(.top, 8)
     }
@@ -629,18 +642,18 @@ struct MenuContentView: View {
             HStack(spacing: 10) {
                 Image(systemName: section.icon)
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(isActive ? neonBlue : .white.opacity(0.6))
+                    .foregroundStyle(isActive ? accentSoftColor : textSecondaryColor)
                     .frame(width: 18)
 
                 Text(section.title)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(isActive ? .white : .white.opacity(0.72))
+                    .foregroundStyle(isActive ? textPrimaryColor : textSecondaryColor)
 
                 Spacer()
 
                 if isActive {
                     Circle()
-                        .fill(neonMint)
+                        .fill(accentColor)
                         .frame(width: 6, height: 6)
                 }
             }
@@ -649,11 +662,11 @@ struct MenuContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isActive ? Color(red: 0.10, green: 0.18, blue: 0.31).opacity(0.92) : Color.clear)
+                    .fill(isActive ? accentSoftColor.opacity(0.12) : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isActive ? neonBlue.opacity(0.45) : Color.white.opacity(0.06), lineWidth: 1)
+                    .stroke(isActive ? accentSoftColor.opacity(0.28) : Color.white.opacity(0.05), lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
@@ -668,10 +681,10 @@ struct MenuContentView: View {
             quickMetric(title: "Regulator", value: settings.governorModeEnabled ? "ON" : "OFF")
         }
         .padding(12)
-        .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(cardInk.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(neonBlue.opacity(0.28), lineWidth: 1)
+                .stroke(accentSoftColor.opacity(0.18), lineWidth: 1)
         )
     }
 
@@ -744,28 +757,69 @@ struct MenuContentView: View {
         )
     }
 
+    private var telemetryHeroLabel: String {
+        switch sampler.snapshot.udpStatus.state {
+        case .misconfig:
+            return "TELEMETRY ERROR"
+        case .active:
+            return "TELEMETRY LIVE"
+        case .listening:
+            return "LISTENING FOR TELEMETRY"
+        case .idle:
+            return "WAITING FOR SIMULATOR"
+        }
+    }
+
+    private var telemetryHeroStatusTitle: String {
+        switch sampler.snapshot.udpStatus.state {
+        case .misconfig:
+            return "Telemetry Error"
+        case .active:
+            return "Telemetry Live"
+        case .listening:
+            return "Listening for telemetry"
+        case .idle:
+            return "Waiting for simulator"
+        }
+    }
+
+    private var telemetryHeroStatusColor: Color {
+        switch sampler.snapshot.udpStatus.state {
+        case .active:
+            return accentColor
+        case .misconfig:
+            return neonOrange
+        case .listening:
+            return accentSoftColor
+        case .idle:
+            return textSecondaryColor
+        }
+    }
+
     private var heroBanner: some View {
         HStack(alignment: .top, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(sampler.isSimActive ? neonMint : .orange)
+                        .fill(telemetryHeroStatusColor)
                         .frame(width: 8, height: 8)
-                    Text(sampler.snapshot.udpStatus.state == .active ? "LIVE TELEMETRY" : "WAITING FOR STREAM")
+                    Text(telemetryHeroLabel)
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(sampler.snapshot.udpStatus.state == .active ? neonMint : .orange)
+                        .foregroundStyle(telemetryHeroStatusColor)
                 }
 
                 Text("CruiseControl")
-                    .font(.system(size: 40, weight: .black, design: .rounded))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 46, weight: .semibold, design: .default))
+                    .tracking(-0.5)
+                    .foregroundStyle(textPrimaryColor)
                 Text("by Jahrix")
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.68))
+                    .font(.system(size: 18, weight: .medium, design: .serif))
+                    .foregroundStyle(textSecondaryColor)
 
-                Text("Real-time simulator performance monitoring, regulator controls, and diagnostics tuned for long-haul sessions.")
-                    .font(.system(size: 18, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.68))
+                Text("Real-time flight simulator performance monitoring, regulator controls, and diagnostics tuned for long-haul sessions.")
+                    .font(.system(size: 16, weight: .regular, design: .serif))
+                    .lineSpacing(3)
+                    .foregroundStyle(textSecondaryColor)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -774,33 +828,33 @@ struct MenuContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("NETWORK STATUS")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.55))
-                Text(sampler.snapshot.udpStatus.state == .active ? "All Systems Operational" : "Telemetry Not Locked")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(sampler.snapshot.udpStatus.state == .active ? neonMint : .orange)
+                    .foregroundStyle(textSecondaryColor.opacity(0.82))
+                Text(telemetryHeroStatusTitle)
+                    .font(.system(size: 28, weight: .semibold, design: .default))
+                    .foregroundStyle(telemetryHeroStatusColor)
 
                 Text("Packets/sec: \(String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond))")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(textSecondaryColor)
                 Text("Endpoint: \(sampler.snapshot.udpStatus.listenHost):\(String(sampler.snapshot.udpStatus.listenPort))")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(textSecondaryColor)
             }
             .padding(16)
-            .background(Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.94), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(cardInk.opacity(0.94), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.white.opacity(0.11), lineWidth: 1)
+                    .stroke(currentTheme.cardStroke.opacity(0.95), lineWidth: 1)
             )
             .frame(maxWidth: 420, alignment: .leading)
         }
         .padding(18)
-        .background(Color(red: 0.05, green: 0.08, blue: 0.15).opacity(0.95), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(cardInk.opacity(0.95), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .stroke(currentTheme.cardStroke.opacity(0.95), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.28), radius: 14, x: 0, y: 8)
+        .shadow(color: .black.opacity(0.22), radius: 12, x: 0, y: 6)
     }
 
     private var overviewSection: some View {
@@ -814,7 +868,7 @@ struct MenuContentView: View {
             dashboardCard(title: "Session Overview") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text(sampler.isSimActive ? "X-Plane detected" : "Waiting for simulator")
+                        Text(telemetryHeroStatusTitle)
                             .font(.title3)
                             .fontWeight(.semibold)
                         Spacer()
@@ -1255,14 +1309,14 @@ struct MenuContentView: View {
                                     x: .value("Time", sample.timestamp),
                                     y: .value("Pressure Index", sample.pressureIndex)
                                 )
-                                .foregroundStyle(neonMint)
+                                .foregroundStyle(accentColor)
                                 .lineStyle(StrokeStyle(lineWidth: 2))
 
                                 LineMark(
                                     x: .value("Time", sample.timestamp),
                                     y: .value("CPU", min(sample.cpuTotal / 100.0, 1.0))
                                 )
-                                .foregroundStyle(neonBlue.opacity(0.8))
+                                .foregroundStyle(accentSoftColor.opacity(0.8))
                                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                             }
 
@@ -2774,7 +2828,7 @@ struct MenuContentView: View {
                 if let betaQASelfCheckResult {
                     Text(betaQASelfCheckResult)
                         .font(.caption)
-                        .foregroundStyle(betaQASelfCheckPassed == true ? neonMint : neonOrange)
+                        .foregroundStyle(betaQASelfCheckPassed == true ? accentColor : neonOrange)
                         .padding(.top, 4)
                 }
             }
@@ -3225,6 +3279,26 @@ struct MenuContentView: View {
     private var preferencesSection: some View {
         dashboardCard(title: "Preferences") {
             VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Appearance")
+                        .font(.headline)
+                    Picker("Theme", selection: $ccThemeID) {
+                        ForEach(CruiseTheme.all) { theme in
+                            Text(theme.name).tag(theme.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(currentTheme.accent)
+                            .frame(width: 12, height: 12)
+                        Text("Theme applies immediately across cards, accents, and background.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Picker("Update Interval", selection: $settings.samplingInterval) {
                     ForEach(SamplingIntervalOption.allCases) { option in
                         Text(option.rawValue).tag(option)
@@ -3314,7 +3388,7 @@ struct MenuContentView: View {
                         }
                     }
 
-                    Text(updateCheckStatus ?? "No update check has been run yet. Current: \(AppMaintenanceService.currentVersionBuildString())")
+                    Text(updateCheckStatus ?? "Current: \(AppMaintenanceService.currentVersionBuildString())\nCheck for Updates to look for a newer release.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
@@ -3368,6 +3442,11 @@ struct MenuContentView: View {
                                 .buttonStyle(.bordered)
                             }
                         }
+
+                        Button("How to publish the first release") {
+                            showFirstReleaseHelpSheet = true
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     HStack {
@@ -3421,17 +3500,17 @@ struct MenuContentView: View {
             Text(title)
                 .font(.title3)
                 .fontWeight(.semibold)
-                .foregroundStyle(.white)
+                .foregroundStyle(textPrimaryColor)
             content()
-                .foregroundStyle(.white.opacity(0.92))
+                .foregroundStyle(textPrimaryColor.opacity(0.92))
         }
         .padding(16)
-        .background(Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.95), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(cardInk.opacity(0.95), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                .stroke(currentTheme.cardStroke.opacity(0.95), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+        .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 4)
     }
 
     private var xPlaneHelpSheet: some View {
@@ -3469,6 +3548,45 @@ struct MenuContentView: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+
+    private var firstReleaseHelpSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("How to publish the first release")
+                .font(.title2.weight(.semibold))
+
+            Text("CruiseControl checks GitHub Releases for updates. If nothing is published yet, the updater has nothing to install.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("1) Build the DMG with Scripts/build_dmg.sh")
+                Text("2) Create a tag like v1.2.3 and push it")
+                Text("3) Publish a GitHub Release for that tag")
+                Text("4) Upload the DMG directly to the release")
+            }
+            .font(.subheadline)
+
+            Text("Tip: upload the DMG itself, not a re-zipped app bundle.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Open Releases Page") {
+                    AppMaintenanceService.openReleasesPage()
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("Close") {
+                    showFirstReleaseHelpSheet = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
     }
 
     private func feedbackCard(title: String, text: String) -> some View {
@@ -3981,7 +4099,7 @@ struct MenuContentView: View {
     private func wizardStep(title: String, good: Bool, detail: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: good ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(good ? neonMint : neonOrange)
+                .foregroundStyle(good ? accentColor : neonOrange)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -4001,7 +4119,7 @@ struct MenuContentView: View {
         switch state {
         case .ok:
             iconName = "checkmark.circle.fill"
-            color = neonMint
+            color = accentColor
         case .warn:
             iconName = "exclamationmark.triangle.fill"
             color = neonOrange
@@ -4029,7 +4147,7 @@ struct MenuContentView: View {
     private func checklistRow(title: String, passed: Bool, detail: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: passed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(passed ? neonMint : neonOrange)
+                .foregroundStyle(passed ? accentColor : neonOrange)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
@@ -4045,20 +4163,20 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label.uppercased())
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.48))
+                .foregroundStyle(textSecondaryColor.opacity(0.82))
             Text(value)
                 .font(.system(size: 17, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(textPrimaryColor)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.3))
+                .fill(cardInk.opacity(0.78))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(neonViolet.opacity(0.24), lineWidth: 1)
+                .stroke(accentSoftColor.opacity(0.18), lineWidth: 1)
         )
     }
 
@@ -4066,20 +4184,20 @@ struct MenuContentView: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label.uppercased())
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.46))
+                .foregroundStyle(textSecondaryColor.opacity(0.8))
             Text(value)
-                .font(.system(size: 28, weight: .heavy, design: .rounded))
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
                 .foregroundStyle(color)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.black.opacity(0.32))
+                .fill(cardInk.opacity(0.82))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(color.opacity(0.35), lineWidth: 1)
+                .stroke(color.opacity(0.24), lineWidth: 1)
         )
     }
 
@@ -4087,11 +4205,11 @@ struct MenuContentView: View {
         HStack {
             Text(title.uppercased())
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(textSecondaryColor.opacity(0.82))
             Spacer()
             Text(value)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(textPrimaryColor)
         }
     }
 
@@ -4103,7 +4221,7 @@ struct MenuContentView: View {
         case .listening:
             color = neonOrange
         case .active:
-            color = neonMint
+            color = accentColor
         case .misconfig:
             color = .red
         }
@@ -4122,7 +4240,7 @@ struct MenuContentView: View {
     }
 
     private var statusStripView: some View {
-        StatusStripView(pills: statusStripPills)
+        StatusStripView(pills: statusStripPills, theme: currentTheme)
     }
 
     private func shouldShowStatusStrip(for section: DashboardSection) -> Bool {
@@ -4222,7 +4340,7 @@ struct MenuContentView: View {
             StatusStripPill(title: "Bottleneck", value: bottleneckValue, tint: bottleneckTint, action: { selectedSection = .frameTimeLab }),
             StatusStripPill(title: "Regulator", value: regulatorValue, tint: regulatorTint, action: { selectedSection = .simMode }),
             StatusStripPill(title: "Stutters (10m)", value: stutterValue, tint: stutterTint, action: { selectedSection = .frameTimeLab }),
-            StatusStripPill(title: "Profile", value: profileValue, tint: neonBlue, action: { selectedSection = .profiles })
+            StatusStripPill(title: "Profile", value: profileValue, tint: accentSoftColor, action: { selectedSection = .profiles })
         ]
     }
 
@@ -4376,7 +4494,7 @@ struct MenuContentView: View {
         .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(selected ? neonBlue.opacity(0.7) : Color.white.opacity(0.08), lineWidth: selected ? 2 : 1)
+                .stroke(selected ? accentSoftColor.opacity(0.46) : Color.white.opacity(0.08), lineWidth: selected ? 2 : 1)
         )
     }
 
@@ -5842,16 +5960,18 @@ struct MenuContentView: View {
 }
 
 private struct CruiseBackgroundView: View {
+    let theme: CruiseTheme
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color(red: 0.02, green: 0.04, blue: 0.09)
+                theme.backgroundBottom
 
                 LinearGradient(
                     colors: [
-                        Color(red: 0.02, green: 0.04, blue: 0.09).opacity(0.55),
-                        Color(red: 0.03, green: 0.06, blue: 0.12).opacity(0.45),
-                        Color(red: 0.02, green: 0.03, blue: 0.07).opacity(0.4)
+                        theme.backgroundTop.opacity(0.62),
+                        theme.backgroundBottom.opacity(0.46),
+                        theme.backgroundBottom.opacity(0.88)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -5874,20 +5994,20 @@ private struct CruiseBackgroundView: View {
                             x += 8
                         }
 
-                        context.stroke(path, with: .color(Color.white.opacity(0.06)), lineWidth: 0.7)
+                        context.stroke(path, with: .color(theme.textPrimary.opacity(0.045)), lineWidth: 0.7)
                         y += spacing
                     }
                 }
 
                 Circle()
-                    .fill(Color(red: 0.43, green: 0.35, blue: 1.0).opacity(0.16))
-                    .blur(radius: 45)
+                    .fill(theme.accentSoft.opacity(0.10))
+                    .blur(radius: 38)
                     .frame(width: 220, height: 220)
                     .position(x: geo.size.width * 0.12, y: 90)
 
                 Circle()
-                    .fill(Color(red: 0.24, green: 0.95, blue: 0.72).opacity(0.14))
-                    .blur(radius: 50)
+                    .fill(theme.accent.opacity(0.09))
+                    .blur(radius: 42)
                     .frame(width: 260, height: 260)
                     .position(x: geo.size.width * 0.78, y: geo.size.height * 0.18)
             }

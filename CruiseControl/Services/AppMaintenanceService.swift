@@ -69,7 +69,7 @@ struct UpdateCheckOutcome {
     }
 
     var currentVersionBuildString: String {
-        "\(currentVersion) (\(currentBuild))"
+        "\(currentVersion) (Build \(currentBuild))"
     }
 
     var latestVersionBuildString: String? {
@@ -77,7 +77,7 @@ struct UpdateCheckOutcome {
             return nil
         }
         if let latestBuild, latestBuild.isEmpty == false {
-            return "\(latestVersion) (\(latestBuild))"
+            return "\(latestVersion) (Build \(latestBuild))"
         }
         return latestVersion
     }
@@ -399,7 +399,7 @@ enum AppMaintenanceService {
                         info: nil,
                         outcome: UpdateCheckOutcome(
                             success: false,
-                            message: statusMessage("No GitHub Releases found yet. Create a Release for tag vX.Y.Z to enable updates."),
+                            message: statusMessage("No releases are published yet. Updates will work after the first GitHub Release is created."),
                             latestVersion: nil,
                             releaseURL: githubReleasesPageURL
                         )
@@ -413,7 +413,7 @@ enum AppMaintenanceService {
                         info: nil,
                         outcome: UpdateCheckOutcome(
                             success: false,
-                            message: statusMessage("GitHub API rate limit reached. Try again later."),
+                            message: statusMessage("Update check is temporarily rate-limited by GitHub. Try again later."),
                             latestVersion: nil,
                             releaseURL: githubReleasesPageURL
                         )
@@ -473,7 +473,7 @@ enum AppMaintenanceService {
                     info: nil,
                     outcome: UpdateCheckOutcome(
                         success: true,
-                        message: statusMessage("You appear to be offline. Connect to the internet and check again."),
+                            message: statusMessage("You appear offline. Connect and try again."),
                         latestVersion: nil,
                         releaseURL: githubReleasesPageURL,
                         isUpdateAvailable: false,
@@ -765,7 +765,7 @@ enum AppMaintenanceService {
 
     private static func formattedVersionBuild(version: String, build: String?) -> String {
         if let build, build.isEmpty == false {
-            return "\(version) (\(build))"
+            return "\(version) (Build \(build))"
         }
         return version
     }

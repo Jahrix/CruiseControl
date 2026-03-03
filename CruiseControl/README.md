@@ -1,4 +1,4 @@
-# CruiseControl v1.2.2 (Desktop App)
+# CruiseControl v1.2.3 (Desktop App)
 
 CruiseControl v1.2 centers the app around frame-time diagnostics and X-Plane companion workflows.
 

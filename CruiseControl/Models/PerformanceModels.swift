@@ -65,7 +65,16 @@ enum XPlaneUDPConnectionState: String, Codable {
     case misconfig
 
     var displayName: String {
-        rawValue.uppercased()
+        switch self {
+        case .idle:
+            return "Waiting"
+        case .listening:
+            return "Listening"
+        case .active:
+            return "Live"
+        case .misconfig:
+            return "Error"
+        }
     }
 }
 
