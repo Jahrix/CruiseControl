@@ -6,11 +6,23 @@ CruiseControl v1.2 centers the app around frame-time diagnostics and X-Plane com
 
 - Frame-Time Lab with Swift Charts timeline + stutter markers
 - Stutter classifier (`swapThrash`, `diskStall`, `cpuSaturation`, `thermalThrottle`, `gpuBoundHeuristic`, `unknown`)
-- Workload Profiles (`General Performance`, `Sim Mode`)
+- Situation presets (`General`, `Airport`, `Cruise`) layered on top of existing workload/app-list/governor settings
 - Action receipts with before/after sample snapshots
 - X-Plane Advisor recommendation cards (guidance-only)
 - Diagnostics export v2 payload
 - Demo/Mock mode for no-sim UI/testing
+
+## X-Plane setup
+
+The Connection Wizard and in-app setup sheet use this exact checklist:
+
+1. Open X-Plane > Settings > Data Output
+2. Check Send network data output
+3. Set IP to 127.0.0.1
+4. Set Port to `49005` (or the port shown in CruiseControl)
+5. Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)
+
+FlyWithLua bridge scripts go in `Resources/plugins/FlyWithLua/Scripts/` inside your X-Plane install folder.
 
 ## Diagnostics export v2 payload
 

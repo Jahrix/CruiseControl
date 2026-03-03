@@ -91,11 +91,23 @@ final class V112FeatureStore: ObservableObject {
         didSet { save() }
     }
 
+    @Published var selectedSituationPreset: SituationPresetType {
+        didSet {
+            hasPersistedSituationPresetSelection = true
+            save()
+        }
+    }
+
+    @Published var cruiseSituationStyle: CruiseSituationStyle {
+        didSet { save() }
+    }
+
     @Published var safeModeEnabled: Bool {
         didSet { save() }
     }
 
     private let defaults: UserDefaults
+    private(set) var hasPersistedSituationPresetSelection: Bool
 
     private enum Keys {
         static let historyDuration = "v112.history.duration"
@@ -115,6 +127,8 @@ final class V112FeatureStore: ObservableObject {
         static let largeFilesTopN = "v114.largeFiles.topN"
         static let largeFilesDefaultScopes = "v114.largeFiles.defaultScopes"
         static let pauseBackgroundScansDuringSim = "v114.scans.pauseWhenSimActive"
+        static let selectedSituationPreset = "v1234.situations.selectedPreset"
+        static let cruiseSituationStyle = "v1234.situations.cruiseStyle"
         static let safeModeEnabled = "v120.safeMode.enabled"
     }
 
@@ -168,6 +182,22 @@ final class V112FeatureStore: ObservableObject {
 
         self.largeFilesDefaultScopes = defaults.array(forKey: Keys.largeFilesDefaultScopes) as? [String] ?? []
         self.pauseBackgroundScansDuringSim = defaults.object(forKey: Keys.pauseBackgroundScansDuringSim) as? Bool ?? true
+        self.hasPersistedSituationPresetSelection = defaults.object(forKey: Keys.selectedSituationPreset) != nil
+
+        if let raw = defaults.string(forKey: Keys.selectedSituationPreset),
+           let parsed = SituationPresetType(rawValue: raw) {
+            self.selectedSituationPreset = parsed
+        } else {
+            self.selectedSituationPreset = .general
+        }
+
+        if let raw = defaults.string(forKey: Keys.cruiseSituationStyle),
+           let parsed = CruiseSituationStyle(rawValue: raw) {
+            self.cruiseSituationStyle = parsed
+        } else {
+            self.cruiseSituationStyle = .performance
+        }
+
         self.safeModeEnabled = defaults.object(forKey: Keys.safeModeEnabled) as? Bool ?? false
     }
 
@@ -180,6 +210,40 @@ final class V112FeatureStore: ObservableObject {
 
     func deactivateSafeMode() {
         safeModeEnabled = false
+    }
+
+    func applySituationPreset(_ preset: SituationPresetType, settings: SettingsStore) {
+        selectedSituationPreset = preset
+
+        let config = preset.config(cruiseStyle: cruiseSituationStyle)
+        workloadProfile = config.workloadProfile
+        pauseBackgroundScansDuringSim = config.pauseBackgroundScansDuringSim
+        settings.selectedProfile = config.selectedProfile
+        settings.applySituationGovernorTargetPreset(config.governorTargets)
+    }
+
+    func syncSituationPresetFromCurrentSettings(settings: SettingsStore) {
+        guard !hasPersistedSituationPresetSelection else { return }
+
+        let inferredPreset: SituationPresetType
+        let inferredCruiseStyle: CruiseSituationStyle
+
+        if workloadProfile == .generalPerformance {
+            inferredPreset = .general
+            inferredCruiseStyle = .performance
+        } else if settings.selectedProfile == .streaming || settings.governorTargetLODCruise <= 0.85 {
+            inferredPreset = .cruise
+            inferredCruiseStyle = .visuals
+        } else if settings.selectedProfile == .balanced {
+            inferredPreset = .cruise
+            inferredCruiseStyle = .performance
+        } else {
+            inferredPreset = .airport
+            inferredCruiseStyle = .performance
+        }
+
+        cruiseSituationStyle = inferredCruiseStyle
+        selectedSituationPreset = inferredPreset
     }
 
     func upsertAirportProfile(_ profile: AirportGovernorProfile) {
@@ -315,6 +379,8 @@ final class V112FeatureStore: ObservableObject {
         defaults.set(largeFilesTopN, forKey: Keys.largeFilesTopN)
         defaults.set(largeFilesDefaultScopes, forKey: Keys.largeFilesDefaultScopes)
         defaults.set(pauseBackgroundScansDuringSim, forKey: Keys.pauseBackgroundScansDuringSim)
+        defaults.set(selectedSituationPreset.rawValue, forKey: Keys.selectedSituationPreset)
+        defaults.set(cruiseSituationStyle.rawValue, forKey: Keys.cruiseSituationStyle)
         defaults.set(safeModeEnabled, forKey: Keys.safeModeEnabled)
 
         if let profilesData = try? JSONEncoder().encode(airportProfiles) {
