@@ -324,11 +324,12 @@ struct MenuContentView: View {
     @State private var updateCheckStatus: String?
     @State private var updateCheckOutcome: UpdateCheckOutcome?
     @State private var isCheckingForUpdates: Bool = false
-    @State private var isInstallingUpdate: Bool = false
+    @State private var isDownloadingUpdate: Bool = false
     @State private var showFirstReleaseHelpSheet: Bool = false
     @AppStorage("ccPreferredStartSection") private var preferredStartSectionRaw: String = DashboardSection.overview.rawValue
     @AppStorage("ccOpenXPlaneWizardOnLaunch") private var openXPlaneWizardOnLaunch: Bool = false
     @AppStorage("ccThemeId") private var ccThemeID: String = ThemeManager.defaultThemeID
+    @AppStorage("ccIncludePrereleaseUpdates") private var includePrereleaseUpdates: Bool = false
     @State private var frameTimeRange: FrameTimeRangeOption = .tenMinutes
     @State private var frameTimeLabViewMode: FrameTimeLabViewMode = .heatmap
     @State private var selectedHeatmapWindow: FrameTimeHeatmapSelection?
@@ -3595,9 +3596,21 @@ struct MenuContentView: View {
                         }
                     }
 
-                    Text(updateCheckStatus ?? "Current: \(AppMaintenanceService.currentVersionBuildString())\nCheck for Updates to look for a newer release.")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Checking updates from \(AppMaintenanceService.updateSourceLabel)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(textSecondaryColor)
+                        Text(AppMaintenanceService.updateEndpointLabel)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(updateCheckStatus ?? "Checking updates from \(AppMaintenanceService.updateSourceLabel)\nCurrent: \(AppMaintenanceService.currentVersionBuildString())\nCheck for Updates to look for a newer release.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+
+                    Toggle("Include prereleases", isOn: $includePrereleaseUpdates)
+                        .toggleStyle(.checkbox)
 
                     HStack {
                         Button(isCheckingForUpdates ? "Checking..." : "Check for Updates") {
@@ -3605,9 +3618,13 @@ struct MenuContentView: View {
                                 let current = AppMaintenanceService.currentVersionString()
                                 await MainActor.run {
                                     isCheckingForUpdates = true
-                                    updateCheckStatus = "Current: \(AppMaintenanceService.currentVersionBuildString())\nChecking GitHub Releases…"
+                                    updateCheckStatus = "Checking updates from \(AppMaintenanceService.updateSourceLabel)\nEndpoint: \(AppMaintenanceService.updateEndpointLabel)\nCurrent: \(AppMaintenanceService.currentVersionBuildString())\nChecking GitHub Releases…"
                                 }
-                                let outcome = await AppMaintenanceService.checkForUpdates(currentVersion: current, preferSparkle: false)
+                                let outcome = await AppMaintenanceService.checkForUpdates(
+                                    currentVersion: current,
+                                    preferSparkle: false,
+                                    includePrereleases: includePrereleaseUpdates
+                                )
                                 await MainActor.run {
                                     updateCheckOutcome = outcome
                                     updateCheckStatus = outcome.message
@@ -3616,31 +3633,31 @@ struct MenuContentView: View {
                             }
                         }
                         .buttonStyle(.bordered)
-                        .disabled(isCheckingForUpdates || isInstallingUpdate)
+                        .disabled(isCheckingForUpdates || isDownloadingUpdate)
 
                         if let outcome = updateCheckOutcome, outcome.isUpdateAvailable {
-                            Button(isInstallingUpdate ? "Updating..." : "Update Now") {
+                            Button(isDownloadingUpdate ? "Downloading..." : outcome.downloadButtonTitle) {
                                 Task {
                                     let current = AppMaintenanceService.currentVersionString()
                                     await MainActor.run {
-                                        isInstallingUpdate = true
-                                        updateCheckStatus = "Current: \(AppMaintenanceService.currentVersionBuildString())\nDownloading update…"
+                                        isDownloadingUpdate = true
+                                        updateCheckStatus = "Checking updates from \(AppMaintenanceService.updateSourceLabel)\nEndpoint: \(AppMaintenanceService.updateEndpointLabel)\nCurrent: \(AppMaintenanceService.currentVersionBuildString())\nDownloading update…"
                                     }
-                                    let outcome = await AppMaintenanceService.checkForUpdatesAndInstall(
+                                    let outcome = await AppMaintenanceService.downloadLatestReleaseAsset(
                                         currentVersion: current,
-                                        preferSparkle: false
+                                        includePrereleases: includePrereleaseUpdates
                                     ) { status in
                                         updateCheckStatus = status
                                     }
                                     await MainActor.run {
                                         updateCheckOutcome = outcome
                                         updateCheckStatus = outcome.message
-                                        isInstallingUpdate = false
+                                        isDownloadingUpdate = false
                                     }
                                 }
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(isCheckingForUpdates || isInstallingUpdate == true || outcome.canInstallAutomatically == false)
+                            .disabled(isCheckingForUpdates || isDownloadingUpdate || outcome.canDownloadAsset == false)
 
                             if let releaseURL = outcome.releaseURL {
                                 Button("Open Release Page") {
@@ -3659,16 +3676,8 @@ struct MenuContentView: View {
                     HStack {
                         if let downloadedAssetURL = updateCheckOutcome?.downloadedAssetURL,
                            updateCheckOutcome?.shouldOfferOpenDownloadedAsset == true {
-                            Button("Open DMG in Finder") {
+                            Button("Reveal in Finder") {
                                 let outcome = AppMaintenanceService.openDownloadedAssetInFinder(downloadedAssetURL)
-                                processActionResult = outcome.message
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
-                        if updateCheckOutcome?.shouldOfferApplicationsFolder == true {
-                            Button("Open Applications Folder") {
-                                let outcome = AppMaintenanceService.openApplicationsFolder()
                                 processActionResult = outcome.message
                             }
                             .buttonStyle(.bordered)
@@ -3683,7 +3692,10 @@ struct MenuContentView: View {
                         }
                     }
 
-                    Text("Closed beta note: if macOS says CruiseControl is damaged, right-click the app and choose Open once, or use the copied Gatekeeper command in Terminal.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Closed beta note: CruiseControl downloads the latest DMG or ZIP and then hands off to Finder. It does not perform silent installs.")
+                        Text("If macOS says the app is damaged: right-click the app and choose Open once, or use the copied Gatekeeper command in Terminal.")
+                    }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
