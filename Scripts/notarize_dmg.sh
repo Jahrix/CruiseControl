@@ -24,6 +24,20 @@ function log_warn() {
   printf "[notarize_dmg][warn] %s\n" "$1"
 }
 
+function notarize_submit() {
+  local file_path="$1"
+
+  if [[ -n "${NOTARY_KEYCHAIN_PROFILE}" ]]; then
+    xcrun notarytool submit "${file_path}" --keychain-profile "${NOTARY_KEYCHAIN_PROFILE}" --wait
+  else
+    xcrun notarytool submit "${file_path}" \
+      --apple-id "${APPLE_ID}" \
+      --team-id "${TEAM_ID}" \
+      --password "${APP_PASSWORD}" \
+      --wait
+  fi
+}
+
 function fail_with_setup_instructions() {
   cat <<'EOF'
 [notarize_dmg] Signing/notarization is not configured.
@@ -95,8 +109,22 @@ fi
 log_info "Signing app bundle"
 codesign --force --deep --options runtime --timestamp --sign "${DEVELOPER_ID_APP_CERT}" "${APP_PATH}"
 codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+spctl -a -vvv -t exec "${APP_PATH}" || log_warn "Gatekeeper assessment failed before notarization; continuing to submit for notarization."
 
-log_info "Packaging signed app into DMG"
+APP_ZIP_PATH="$(mktemp -u "${TMPDIR:-/tmp}/CruiseControl-notary.XXXXXX.zip")"
+trap 'rm -f "${APP_ZIP_PATH}"' EXIT
+
+log_info "Packaging signed app for notarization"
+ditto -c -k --keepParent "${APP_PATH}" "${APP_ZIP_PATH}"
+
+log_info "Submitting app for notarization"
+notarize_submit "${APP_ZIP_PATH}"
+
+log_info "Stapling app bundle"
+xcrun stapler staple "${APP_PATH}"
+xcrun stapler validate "${APP_PATH}"
+
+log_info "Packaging stapled app into DMG"
 SKIP_BUILD=1 APP_SOURCE_PATH="${APP_PATH}" "${REPO_ROOT}/Scripts/build_dmg.sh"
 
 if [[ -z "${DMG_PATH}" ]]; then
@@ -110,19 +138,13 @@ fi
 log_info "Signing DMG"
 codesign --force --timestamp --sign "${DEVELOPER_ID_APP_CERT}" "${DMG_PATH}"
 codesign --verify --verbose=2 "${DMG_PATH}" || log_warn "DMG signature verification returned a warning."
+spctl -a -vvv -t open --context context:primary-signature "${DMG_PATH}" || log_warn "Gatekeeper DMG assessment failed before notarization; continuing to submit for notarization."
 
 log_info "Submitting DMG for notarization"
-if [[ -n "${NOTARY_KEYCHAIN_PROFILE}" ]]; then
-  xcrun notarytool submit "${DMG_PATH}" --keychain-profile "${NOTARY_KEYCHAIN_PROFILE}" --wait
-else
-  xcrun notarytool submit "${DMG_PATH}" \
-    --apple-id "${APPLE_ID}" \
-    --team-id "${TEAM_ID}" \
-    --password "${APP_PASSWORD}" \
-    --wait
-fi
+notarize_submit "${DMG_PATH}"
 
 log_info "Stapling notarization ticket"
 xcrun stapler staple "${DMG_PATH}"
+xcrun stapler validate "${DMG_PATH}"
 
 log_info "Notarization flow completed: ${DMG_PATH}"

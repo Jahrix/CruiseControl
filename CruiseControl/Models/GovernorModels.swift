@@ -1,5 +1,30 @@
 import Foundation
 
+enum GovernorAckState: String, Codable {
+    case connected = "Connected"
+    case noAck = "No ACK"
+    case ackOK = "ACK OK"
+    case paused = "Paused"
+    case disabled = "Disabled"
+
+    var displayName: String { rawValue }
+
+    var score: Double {
+        switch self {
+        case .ackOK:
+            return 1.0
+        case .connected:
+            return 0.75
+        case .paused:
+            return 0.5
+        case .disabled:
+            return 0.25
+        case .noAck:
+            return 0.0
+        }
+    }
+}
+
 enum GovernorTier: String, Codable, CaseIterable {
     case ground = "GROUND"
     case transition = "TRANSITION"

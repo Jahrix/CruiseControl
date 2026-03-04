@@ -163,6 +163,7 @@ final class SettingsStore: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private var pendingSaveWorkItem: DispatchWorkItem?
     private var recentTerminationAttempts: [Int32: Date] = [:]
 
     private enum Keys {
@@ -479,17 +480,20 @@ final class SettingsStore: ObservableObject {
     }
 
     private func waitForProcessExit(pid: Int32, timeout: TimeInterval) -> Bool {
-        let start = Date()
-        while Date().timeIntervalSince(start) <= timeout {
-            guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
-                return true
+        // Run the polling loop on a background thread to avoid blocking the main thread / UI.
+        DispatchQueue.global(qos: .userInitiated).sync {
+            let start = Date()
+            while Date().timeIntervalSince(start) <= timeout {
+                guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+                    return true
+                }
+                if app.isTerminated {
+                    return true
+                }
+                Thread.sleep(forTimeInterval: 0.2)
             }
-            if app.isTerminated {
-                return true
-            }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            return false
         }
-        return false
     }
 
     private func runningApplicationBundlePath(bundleID: String) -> String? {
@@ -523,6 +527,15 @@ final class SettingsStore: ObservableObject {
     }
 
     private func savePreferences() {
+        pendingSaveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.performSave()
+        }
+        pendingSaveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+    }
+
+    private func performSave() {
         defaults.set(quitSelectedApps, forKey: Keys.quitSelectedApps)
         defaults.set(showICloudGuidance, forKey: Keys.showICloudGuidance)
         defaults.set(showLowPowerGuidance, forKey: Keys.showLowPowerGuidance)

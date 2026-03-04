@@ -16,13 +16,16 @@ struct DiskIOSnapshot {
 }
 
 enum SystemMetricsReader {
+    /// Cached host port to avoid leaking Mach send rights on every call.
+    private static let hostPort: mach_port_t = mach_host_self()
+
     static func readHostCPUTicks() -> host_cpu_load_info_data_t? {
         var cpuInfo = host_cpu_load_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride)
 
         let result = withUnsafeMutablePointer(to: &cpuInfo) { pointer -> kern_return_t in
             pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
-                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, reboundPointer, &count)
+                host_statistics(hostPort, HOST_CPU_LOAD_INFO, reboundPointer, &count)
             }
         }
 
@@ -36,14 +39,14 @@ enum SystemMetricsReader {
 
         let result = withUnsafeMutablePointer(to: &vmStats) { pointer -> kern_return_t in
             pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, reboundPointer, &count)
+                host_statistics64(hostPort, HOST_VM_INFO64, reboundPointer, &count)
             }
         }
 
         guard result == KERN_SUCCESS else { return nil }
 
         var pageSize: vm_size_t = 0
-        guard host_page_size(mach_host_self(), &pageSize) == KERN_SUCCESS else { return nil }
+        guard host_page_size(hostPort, &pageSize) == KERN_SUCCESS else { return nil }
 
         let pageBytes = UInt64(pageSize)
         return MemorySnapshot(

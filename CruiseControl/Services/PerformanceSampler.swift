@@ -138,6 +138,11 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var cpuBudgetModeEnabled: Bool = false
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
+
+    /// 20 GB — threshold below which free disk warnings are emitted.
+    private static let lowDiskThresholdBytes: UInt64 = 20 * 1_073_741_824
+    /// CPU % above which a background process is flagged as a hog.
+    private static let cpuHogThresholdPercent: Double = 50
     private let xPlaneReceiver = XPlaneUDPReceiver()
     private let governorBridge = GovernorCommandBridge()
 
@@ -1489,60 +1494,28 @@ final class PerformanceSampler: ObservableObject {
         udpStatus: XPlaneUDPStatus,
         simActive: Bool,
         now: Date
-    ) -> (
-        decision: GovernorDecision?,
-        statusLine: String,
-        currentTier: GovernorTier?,
-        currentTargetLOD: Double?,
-        smoothedLOD: Double?,
-        activeAGLFeet: Double?,
-        lastSentLOD: Double?,
-        commandStatus: String,
-        ackState: GovernorAckState,
-        lastCommand: String?,
-        lastACK: String?,
-        lastACKDate: Date?,
-        pauseReason: String?,
-        reasons: [String],
-        rampInProgress: Bool
-    ) {
-        func pausedResult(reason: String, reasons: [String]) -> (
-            decision: GovernorDecision?,
-            statusLine: String,
-            currentTier: GovernorTier?,
-            currentTargetLOD: Double?,
-            smoothedLOD: Double?,
-            activeAGLFeet: Double?,
-            lastSentLOD: Double?,
-            commandStatus: String,
-            ackState: GovernorAckState,
-            lastCommand: String?,
-            lastACK: String?,
-            lastACKDate: Date?,
-            pauseReason: String?,
-            reasons: [String],
-            rampInProgress: Bool
-        ) {
+    ) -> GovernorEvaluationResult {
+        func pausedResult(reason: String, reasons: [String]) -> GovernorEvaluationResult {
             _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
             governorBridge.setPausedState()
             governorPreviouslyEnabled = false
             resetGovernorRuntimeState()
-            return (
-                nil,
-                "Regulator: \(reason)",
-                nil,
-                nil,
-                nil,
-                nil,
-                governorBridge.lastSentLOD,
-                GovernorAckState.paused.displayName,
-                .paused,
-                governorBridge.lastCommand,
-                governorBridge.lastAckMessage,
-                governorBridge.lastAckAt,
-                reason,
-                reasons,
-                false
+            return GovernorEvaluationResult(
+                decision: nil,
+                statusLine: "Regulator: \(reason)",
+                currentTier: nil,
+                currentTargetLOD: nil,
+                smoothedLOD: nil,
+                activeAGLFeet: nil,
+                lastSentLOD: governorBridge.lastSentLOD,
+                commandStatus: GovernorAckState.paused.displayName,
+                ackState: .paused,
+                lastCommand: governorBridge.lastCommand,
+                lastACK: governorBridge.lastAckMessage,
+                lastACKDate: governorBridge.lastAckAt,
+                pauseReason: reason,
+                reasons: reasons,
+                rampInProgress: false
             )
         }
 
@@ -1553,43 +1526,43 @@ final class PerformanceSampler: ObservableObject {
             }
             governorBridge.setDisabledState()
             resetGovernorRuntimeState()
-            return (
-                nil,
-                "Regulator: Disabled",
-                nil,
-                nil,
-                nil,
-                nil,
-                governorBridge.lastSentLOD,
-                GovernorAckState.disabled.displayName,
-                .disabled,
-                governorBridge.lastCommand,
-                governorBridge.lastAckMessage,
-                governorBridge.lastAckAt,
-                nil,
-                [],
-                false
+            return GovernorEvaluationResult(
+                decision: nil,
+                statusLine: "Regulator: Disabled",
+                currentTier: nil,
+                currentTargetLOD: nil,
+                smoothedLOD: nil,
+                activeAGLFeet: nil,
+                lastSentLOD: governorBridge.lastSentLOD,
+                commandStatus: GovernorAckState.disabled.displayName,
+                ackState: .disabled,
+                lastCommand: governorBridge.lastCommand,
+                lastACK: governorBridge.lastAckMessage,
+                lastACKDate: governorBridge.lastAckAt,
+                pauseReason: nil,
+                reasons: [],
+                rampInProgress: false
             )
         }
 
         if let test = pendingRegulatorTest, now < test.endsAt {
             let remaining = max(Int(ceil(test.endsAt.timeIntervalSince(now))), 0)
-            return (
-                nil,
-                "Regulator test active (\(test.modeLabel), \(remaining)s remaining)",
-                governorLockedTier,
-                governorSmoothedLODInternal,
-                governorSmoothedLODInternal,
-                governorActiveAGLFeet,
-                governorBridge.lastSentLOD,
-                governorBridge.commandStatusText(now: now),
-                governorBridge.ackState,
-                governorBridge.lastCommand,
-                governorBridge.lastAckMessage,
-                governorBridge.lastAckAt,
-                nil,
-                ["Timed test active; temporary override in progress."],
-                false
+            return GovernorEvaluationResult(
+                decision: nil,
+                statusLine: "Regulator test active (\(test.modeLabel), \(remaining)s remaining)",
+                currentTier: governorLockedTier,
+                currentTargetLOD: governorSmoothedLODInternal,
+                smoothedLOD: governorSmoothedLODInternal,
+                activeAGLFeet: governorActiveAGLFeet,
+                lastSentLOD: governorBridge.lastSentLOD,
+                commandStatus: governorBridge.commandStatusText(now: now),
+                ackState: governorBridge.ackState,
+                lastCommand: governorBridge.lastCommand,
+                lastACK: governorBridge.lastAckMessage,
+                lastACKDate: governorBridge.lastAckAt,
+                pauseReason: nil,
+                reasons: ["Timed test active; temporary override in progress."],
+                rampInProgress: false
             )
         }
 
@@ -1723,22 +1696,22 @@ final class PerformanceSampler: ObservableObject {
 
         let orderedReasons = Array(NSOrderedSet(array: reasons)) as? [String] ?? reasons
 
-        return (
-            decision,
-            statusLine,
-            effectiveTier,
-            tierTarget,
-            smoothedLOD,
-            aglFeet,
-            governorBridge.lastSentLOD,
-            sendResult.statusText,
-            sendResult.ackState,
-            governorBridge.lastCommand,
-            governorBridge.lastAckMessage,
-            governorBridge.lastAckAt,
-            nil,
-            orderedReasons,
-            rampInProgress
+        return GovernorEvaluationResult(
+            decision: decision,
+            statusLine: statusLine,
+            currentTier: effectiveTier,
+            currentTargetLOD: tierTarget,
+            smoothedLOD: smoothedLOD,
+            activeAGLFeet: aglFeet,
+            lastSentLOD: governorBridge.lastSentLOD,
+            commandStatus: sendResult.statusText,
+            ackState: sendResult.ackState,
+            lastCommand: governorBridge.lastCommand,
+            lastACK: governorBridge.lastAckMessage,
+            lastACKDate: governorBridge.lastAckAt,
+            pauseReason: nil,
+            reasons: orderedReasons,
+            rampInProgress: rampInProgress
         )
     }
 
@@ -1828,23 +1801,7 @@ final class PerformanceSampler: ObservableObject {
         simActive: Bool,
         controlState: RegulatorControlState,
         fileBridgeStatus: GovernorFileBridgeStatus?,
-        governorResult: (
-            decision: GovernorDecision?,
-            statusLine: String,
-            currentTier: GovernorTier?,
-            currentTargetLOD: Double?,
-            smoothedLOD: Double?,
-            activeAGLFeet: Double?,
-            lastSentLOD: Double?,
-            commandStatus: String,
-            ackState: GovernorAckState,
-            lastCommand: String?,
-            lastACK: String?,
-            lastACKDate: Date?,
-            pauseReason: String?,
-            reasons: [String],
-            rampInProgress: Bool
-        )
+        governorResult: GovernorEvaluationResult
     ) -> RegulatorProofState {
         let target = governorResult.currentTargetLOD ?? governorResult.smoothedLOD
         var applied: Double?
@@ -2471,13 +2428,12 @@ final class PerformanceSampler: ObservableObject {
             items.append(udpStatus.detail ?? "UDP packets look misconfigured.")
         }
 
-        let lowDiskThreshold: UInt64 = 20 * 1_073_741_824
-        if freeDiskBytes > 0 && freeDiskBytes < lowDiskThreshold {
+        if freeDiskBytes > 0 && freeDiskBytes < Self.lowDiskThresholdBytes {
             items.append("Low disk free space (\(ByteCountFormatter.string(fromByteCount: Int64(freeDiskBytes), countStyle: .file))).")
         }
 
         if let hog = topCPUProcesses.first(where: { process in
-            process.cpuPercent > 50 &&
+            process.cpuPercent > Self.cpuHogThresholdPercent &&
             !process.name.localizedCaseInsensitiveContains("X-Plane") &&
             !process.name.localizedCaseInsensitiveContains("Speed")
         }) {
@@ -2514,12 +2470,11 @@ final class PerformanceSampler: ObservableObject {
             ranked.append("Storage I/O pressure is likely contributing to frame-time spikes.")
         }
 
-        if let hog = topCPUProcesses.first(where: { $0.cpuPercent > 45 && !$0.name.localizedCaseInsensitiveContains("X-Plane") }) {
+        if let hog = topCPUProcesses.first(where: { $0.cpuPercent > Self.cpuHogThresholdPercent && !$0.name.localizedCaseInsensitiveContains("X-Plane") }) {
             ranked.append("\(hog.name) is consuming \(String(format: "%.1f", hog.cpuPercent))% CPU in the background.")
         }
 
-        let lowDiskThreshold: UInt64 = 20 * 1_073_741_824
-        if freeDiskBytes > 0 && freeDiskBytes < lowDiskThreshold {
+        if freeDiskBytes > 0 && freeDiskBytes < Self.lowDiskThresholdBytes {
             ranked.append("Low free disk space can worsen paging and asset streaming latency.")
         }
 

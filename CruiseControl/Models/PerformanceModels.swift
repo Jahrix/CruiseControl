@@ -176,7 +176,7 @@ struct ProcessSample: Identifiable, Hashable, Codable {
     let sampledAt: Date
 
     var id: String {
-        "\(pid)-\(name)"
+        "\(pid)-\(name)-\(Int(sampledAt.timeIntervalSince1970))"
     }
 }
 
