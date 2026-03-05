@@ -139,11 +139,25 @@ enum SupportPackService {
 
     static func review(for request: SupportPackRequest) -> SupportPackReview {
         let prepared = buildPreparedPack(for: request)
+
+        var includedFiles = prepared.files.map {
+            SupportPackReview.FileEntry(
+                relativePath: $0.relativePath,
+                sizeBytes: UInt64($0.data.count),
+                note: $0.note
+            )
+        }
+        // manifest.json is written by writePack() after staging, so its real size
+        // is unknown here. Add a sentinel entry so reviewers see it before approving.
+        includedFiles.append(SupportPackReview.FileEntry(
+            relativePath: "manifest.json",
+            sizeBytes: 0,
+            note: "Auto-generated on export — lists all files with SHA-256 hashes and omissions"
+        ))
+
         return SupportPackReview(
             rootFolderName: prepared.rootFolderName,
-            includedFiles: prepared.files.map {
-                SupportPackReview.FileEntry(relativePath: $0.relativePath, sizeBytes: UInt64($0.data.count), note: $0.note)
-            },
+            includedFiles: includedFiles.sorted { $0.relativePath < $1.relativePath },
             omissions: prepared.omissions,
             totalBytes: prepared.files.reduce(0) { $0 + UInt64($1.data.count) },
             exclusionRules: exclusionRuleDescriptions
@@ -230,6 +244,10 @@ enum SupportPackService {
 
         if blockedReason(for: URL(fileURLWithPath: "/Users/Test/Library/Developer/Xcode/DerivedData/Foo"), allowlistedFilename: false) == nil {
             failures.append("DerivedData path was not blocked")
+        }
+
+        if blockedReason(for: URL(fileURLWithPath: "\(NSHomeDirectory())/.config/gh/token"), allowlistedFilename: false) == nil {
+            failures.append(".config path was not blocked")
         }
 
         let scrubbed = scrubText("Open /Users/Test/Documents/Log.txt and \(NSHomeDirectory())/Library/Application Support/CruiseControl")
@@ -529,6 +547,7 @@ enum SupportPackService {
             home.appendingPathComponent("Library/Keychains"),
             home.appendingPathComponent(".ssh"),
             home.appendingPathComponent(".gnupg"),
+            home.appendingPathComponent(".config"),
             home.appendingPathComponent("Library/Mail"),
             home.appendingPathComponent("Library/Messages")
         ]

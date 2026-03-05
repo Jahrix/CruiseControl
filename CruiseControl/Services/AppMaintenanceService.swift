@@ -35,11 +35,13 @@ struct UpdateCheckOutcome {
     let isOffline: Bool
     let canDownloadAsset: Bool
     let shouldOfferOpenDownloadedAsset: Bool
+    let statusBody: String
     let gatekeeperCommand: String?
 
     init(
         success: Bool,
         message: String,
+        statusBody: String? = nil,
         currentVersion: String? = nil,
         currentBuild: String? = nil,
         checkedRepo: String = GitHubReleaseClient.repoLabel,
@@ -74,6 +76,12 @@ struct UpdateCheckOutcome {
         self.isOffline = isOffline
         self.canDownloadAsset = canDownloadAsset
         self.shouldOfferOpenDownloadedAsset = shouldOfferOpenDownloadedAsset
+        let derivedBody: String = statusBody
+            ?? message
+                .components(separatedBy: "\n")
+                .last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+            ?? message
+        self.statusBody = derivedBody
         self.gatekeeperCommand = gatekeeperCommand
     }
 

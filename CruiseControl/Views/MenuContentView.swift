@@ -328,6 +328,18 @@ struct MenuContentView: View {
 
     @State private var updateCheckStatus: String?
     @State private var updateCheckOutcome: UpdateCheckOutcome?
+    private var updateCheckBodyText: String {
+        if let body = updateCheckOutcome?.statusBody, !body.isEmpty {
+            return body
+        }
+        if let raw = updateCheckStatus {
+            return raw
+                .components(separatedBy: "\n")
+                .last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+                ?? raw
+        }
+        return "Press \u{201C}Check for Updates\u{201D} to look for a newer release."
+    }
     @State private var isCheckingForUpdates: Bool = false
     @State private var isDownloadingUpdate: Bool = false
     @State private var showFirstReleaseHelpSheet: Bool = false
@@ -3608,7 +3620,7 @@ struct MenuContentView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Text(updateCheckStatus ?? "Checking updates from \(AppMaintenanceService.updateSourceLabel)\nCurrent: \(AppMaintenanceService.currentVersionBuildString())\nCheck for Updates to look for a newer release.")
+                    Text(updateCheckBodyText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
@@ -3686,21 +3698,26 @@ struct MenuContentView: View {
                             .buttonStyle(.bordered)
                         }
 
-                        if let gatekeeperCommand = updateCheckOutcome?.gatekeeperCommand {
-                            Button("Fix Gatekeeper") {
-                                copyToClipboard(gatekeeperCommand)
-                                processActionResult = "Copied Gatekeeper fix command."
-                            }
-                            .buttonStyle(.bordered)
+                        Button("Copy xattr Command") {
+                            copyToClipboard(AppMaintenanceService.gatekeeperFixCommand())
+                            processActionResult = "Copied: \(AppMaintenanceService.gatekeeperFixCommand())"
                         }
+                        .buttonStyle(.bordered)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Closed beta note: CruiseControl downloads the latest DMG or ZIP and then hands off to Finder. It does not perform silent installs.")
-                        Text("If macOS says the app is damaged: right-click the app and choose Open once, or use the copied Gatekeeper command in Terminal.")
+                        Text("Closed beta: CruiseControl downloads the DMG or ZIP to ~/Downloads and reveals it in Finder — no silent installs.")
+                        Text("If macOS says \u{201C}damaged\u{201D} or \u{201C}can\u{2019}t be opened\u{201D}: right-click the app \u{2192} Open, or run in Terminal:")
+                        Text(AppMaintenanceService.gatekeeperFixCommand())
+                            .font(.caption2.monospaced())
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.secondary.opacity(0.10))
+                            .cornerRadius(4)
                     }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
 
                 Text("UDP state: \(sampler.snapshot.udpStatus.state.displayName)")
