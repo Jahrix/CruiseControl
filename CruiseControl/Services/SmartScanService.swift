@@ -172,7 +172,7 @@ final class SmartScanService {
         )
     }
 
-    func quarantine(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
+    func quarantine(items: [SmartScanItem], advancedModeEnabled: Bool) async -> ActionOutcome {
         guard !items.isEmpty else {
             return ActionOutcome(success: false, message: "No scan items selected for quarantine.")
         }
@@ -334,7 +334,7 @@ final class SmartScanService {
         return permanentlyDeleteQuarantineBatch(batchID: batch.batchID)
     }
 
-    func deletePermanently(items: [SmartScanItem], advancedModeEnabled: Bool) -> ActionOutcome {
+    func deletePermanently(items: [SmartScanItem], advancedModeEnabled: Bool) async -> ActionOutcome {
         guard !items.isEmpty else {
             return ActionOutcome(success: false, message: "No items selected for permanent delete.")
         }

@@ -250,9 +250,11 @@ private struct FrameTimeHeatmapSelection: Equatable {
 }
 
 struct MenuContentView: View {
+    @Environment(\.openSettings) private var openSettings
     @EnvironmentObject private var sampler: PerformanceSampler
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var featureStore: V112FeatureStore
+    @EnvironmentObject private var proGate: ProGate
 
     @State private var selectedSection: DashboardSection? = .overview
 
@@ -385,6 +387,18 @@ struct MenuContentView: View {
     private var cardInk: Color { currentTheme.cardFill }
     private var textPrimaryColor: Color { currentTheme.textPrimary }
     private var textSecondaryColor: Color { currentTheme.textSecondary }
+    private var proStatusColor: Color {
+        switch proGate.licenseStatus {
+        case .unlocked:
+            return .green
+        case .expired:
+            return .orange
+        case .invalid:
+            return .red
+        case .locked, .missing:
+            return .secondary
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -1672,22 +1686,29 @@ struct MenuContentView: View {
 
         return HStack(alignment: .top, spacing: 18) {
             dashboardCard(title: "Situation Presets") {
-                VStack(alignment: .leading, spacing: 14) {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                        ForEach(templates) { template in
-                            Button {
-                                applySituationPreset(template.preset)
-                            } label: {
-                                profileTemplateCard(template, selected: template.preset == featureStore.selectedSituationPreset)
+                ProFeatureGateView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            ForEach(templates) { template in
+                                Button {
+                                    applySituationPreset(template.preset)
+                                } label: {
+                                    profileTemplateCard(template, selected: template.preset == featureStore.selectedSituationPreset)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(featureStore.safeModeEnabled)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(featureStore.safeModeEnabled)
                         }
-                    }
 
-                    Text("Situation presets stay lightweight: they only remap existing workload, governor, and scan-pause settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        Text("Situation presets stay lightweight: they only remap existing workload, governor, and scan-pause settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } lockedView: {
+                    ProLockedCardView(
+                        title: "CruiseControl Pro required",
+                        message: "Unlock Situation Presets for one-click cruise, arrival, and performance session modes."
+                    )
                 }
             }
 
@@ -2382,123 +2403,130 @@ struct MenuContentView: View {
             }
 
             dashboardCard(title: "Per-Airport Regulator Profiles") {
-                VStack(alignment: .leading, spacing: 10) {
-                    let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
+                ProFeatureGateView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        let activeAirport = featureStore.activeAirportProfile(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
 
-                    Toggle("Enable airport auto-switch", isOn: $featureStore.airportAutoSwitchEnabled)
+                        Toggle("Enable airport auto-switch", isOn: $featureStore.airportAutoSwitchEnabled)
 
-                    Text("Current airport ICAO: \(resolvedActiveICAO)")
-                        .font(.subheadline)
-                    if let activeProfile = activeAirport.profile {
-                        Text("Active profile: \(activeProfile.icao) - \(activeProfile.name) (\(activeAirport.source.label))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Active profile: None (no matching airport profile)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    HStack {
-                        Text("Current Airport ICAO")
-                        TextField("e.g. KATL", text: $featureStore.manualAirportICAO)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 120)
-                        Button("Use Current ICAO") {
-                            let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
-                            guard !normalized.isEmpty else {
-                                processActionResult = "Select or enter an ICAO first."
-                                return
-                            }
-                            featureStore.manualAirportICAO = normalized
-                            processActionResult = "Manual current airport set to \(normalized)."
+                        Text("Current airport ICAO: \(resolvedActiveICAO)")
+                            .font(.subheadline)
+                        if let activeProfile = activeAirport.profile {
+                            Text("Active profile: \(activeProfile.icao) - \(activeProfile.name) (\(activeAirport.source.label))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Active profile: None (no matching airport profile)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.bordered)
-                    }
 
-                    if !featureStore.airportProfiles.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Profiles")
-                                .font(.headline)
-                            ForEach(featureStore.airportProfiles) { profile in
-                                HStack {
-                                    Button {
-                                        selectedAirportProfileICAO = profile.icao
-                                        loadAirportProfileEditor()
-                                    } label: {
-                                        Text("\(profile.icao) -> \(profile.name)")
-                                            .font(.subheadline)
-                                    }
-                                    .buttonStyle(.plain)
-                                    Spacer()
-                                    if activeAirport.profile?.icao == profile.icao {
-                                        Text("ACTIVE")
-                                            .font(.caption2.weight(.bold))
-                                            .foregroundStyle(.green)
+                        HStack {
+                            Text("Current Airport ICAO")
+                            TextField("e.g. KATL", text: $featureStore.manualAirportICAO)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 120)
+                            Button("Use Current ICAO") {
+                                let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
+                                guard !normalized.isEmpty else {
+                                    processActionResult = "Select or enter an ICAO first."
+                                    return
+                                }
+                                featureStore.manualAirportICAO = normalized
+                                processActionResult = "Manual current airport set to \(normalized)."
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        if !featureStore.airportProfiles.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Profiles")
+                                    .font(.headline)
+                                ForEach(featureStore.airportProfiles) { profile in
+                                    HStack {
+                                        Button {
+                                            selectedAirportProfileICAO = profile.icao
+                                            loadAirportProfileEditor()
+                                        } label: {
+                                            Text("\(profile.icao) -> \(profile.name)")
+                                                .font(.subheadline)
+                                        }
+                                        .buttonStyle(.plain)
+                                        Spacer()
+                                        if activeAirport.profile?.icao == profile.icao {
+                                            Text("ACTIVE")
+                                                .font(.caption2.weight(.bold))
+                                                .foregroundStyle(.green)
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    HStack {
-                        TextField("ICAO", text: $selectedAirportProfileICAO)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 100)
-                        TextField("Profile name", text: $airportProfileName)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(minWidth: 180)
-                    }
-                    HStack {
-                        Button("New Profile") {
-                            resetAirportProfileEditor()
+                        HStack {
+                            TextField("ICAO", text: $selectedAirportProfileICAO)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 100)
+                            TextField("Profile name", text: $airportProfileName)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 180)
                         }
-                        .buttonStyle(.bordered)
+                        HStack {
+                            Button("New Profile") {
+                                resetAirportProfileEditor()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        sliderRow(label: "GROUND upper (ft)", value: $airportGroundMax, range: 500...5000, step: 100)
+                        sliderRow(label: "CRUISE lower (ft)", value: $airportCruiseMin, range: 6000...45000, step: 250)
+                        sliderRow(label: "GROUND LOD", value: $airportTargetGround, range: 0.20...3.00, step: 0.05)
+                        sliderRow(label: "TRANSITION LOD", value: $airportTargetTransition, range: 0.20...3.00, step: 0.05)
+                        sliderRow(label: "CRUISE LOD", value: $airportTargetCruise, range: 0.20...3.00, step: 0.05)
+                        sliderRow(label: "Min clamp", value: $airportClampMin, range: 0.20...2.00, step: 0.05)
+                        sliderRow(label: "Max clamp", value: $airportClampMax, range: 0.50...3.00, step: 0.05)
+
+                        HStack {
+                            Button("Save / Update Profile") {
+                                saveAirportProfileFromEditor()
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button("Delete") {
+                                let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
+                                featureStore.deleteAirportProfile(icao: normalized)
+                                processActionResult = "Deleted airport profile \(normalized)."
+                                resetAirportProfileEditor()
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO).isEmpty)
+                        }
+
+                        HStack {
+                            Button("Export Profiles JSON") {
+                                let outcome = featureStore.exportAirportProfiles()
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Import Profiles JSON") {
+                                let outcome = featureStore.importAirportProfiles(from: airportImportJSONText)
+                                processActionResult = outcome.message
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        TextEditor(text: $airportImportJSONText)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .frame(minHeight: 120)
+                            .scrollContentBackground(.hidden)
+                            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
-
-                    sliderRow(label: "GROUND upper (ft)", value: $airportGroundMax, range: 500...5000, step: 100)
-                    sliderRow(label: "CRUISE lower (ft)", value: $airportCruiseMin, range: 6000...45000, step: 250)
-                    sliderRow(label: "GROUND LOD", value: $airportTargetGround, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "TRANSITION LOD", value: $airportTargetTransition, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "CRUISE LOD", value: $airportTargetCruise, range: 0.20...3.00, step: 0.05)
-                    sliderRow(label: "Min clamp", value: $airportClampMin, range: 0.20...2.00, step: 0.05)
-                    sliderRow(label: "Max clamp", value: $airportClampMax, range: 0.50...3.00, step: 0.05)
-
-                    HStack {
-                        Button("Save / Update Profile") {
-                            saveAirportProfileFromEditor()
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Delete") {
-                            let normalized = AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO)
-                            featureStore.deleteAirportProfile(icao: normalized)
-                            processActionResult = "Deleted airport profile \(normalized)."
-                            resetAirportProfileEditor()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(AirportGovernorProfile.normalizeICAO(selectedAirportProfileICAO).isEmpty)
-                    }
-
-                    HStack {
-                        Button("Export Profiles JSON") {
-                            let outcome = featureStore.exportAirportProfiles()
-                            processActionResult = outcome.message
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Import Profiles JSON") {
-                            let outcome = featureStore.importAirportProfiles(from: airportImportJSONText)
-                            processActionResult = outcome.message
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    TextEditor(text: $airportImportJSONText)
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
-                        .frame(minHeight: 120)
-                        .scrollContentBackground(.hidden)
-                        .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } lockedView: {
+                    ProLockedCardView(
+                        title: "CruiseControl Pro required",
+                        message: "Unlock airport auto-switching, custom ICAO tuning, and profile import/export for simulator-specific regulator setups."
+                    )
                 }
             }
 
@@ -3520,6 +3548,33 @@ struct MenuContentView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Upgrade to Pro")
+                        .font(.headline)
+
+                    HStack(spacing: 10) {
+                        Text(proGate.licenseStatus.badgeText)
+                            .font(.caption.weight(.bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(proStatusColor.opacity(0.14), in: Capsule())
+                            .foregroundStyle(proStatusColor)
+
+                        Button(proGate.isProUnlocked ? "Manage License" : "Upgrade to Pro") {
+                            openSettings()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+
+                    Text(proGate.statusLine())
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Text("Activation is offline. License keys are verified locally and stored in Keychain.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Picker("Update Interval", selection: $settings.samplingInterval) {
@@ -6341,13 +6396,15 @@ struct MenuContentView: View {
     private func quarantineSelectedScanItems() {
         let selected = selectedScanItemsForAction
         let before = sampler.metricSamples.last
-        let outcome = smartScanService.quarantine(
-            items: selected,
-            advancedModeEnabled: featureStore.advancedModeEnabled
-        )
-        processActionResult = outcome.message
-        refreshQuarantineBatches()
-        recordCleanerActionReceipt(action: "quarantine", itemCount: selected.count, outcome: outcome, before: before)
+        Task { @MainActor in
+            let outcome = await smartScanService.quarantine(
+                items: selected,
+                advancedModeEnabled: featureStore.advancedModeEnabled
+            )
+            processActionResult = outcome.message
+            refreshQuarantineBatches()
+            recordCleanerActionReceipt(action: "quarantine", itemCount: selected.count, outcome: outcome, before: before)
+        }
     }
 
     private func deleteSelectedScanItems() {
@@ -6357,30 +6414,32 @@ struct MenuContentView: View {
 
         let selected = selectedScanItemsForAction
         let before = sampler.metricSamples.last
-        let outcome = smartScanService.deletePermanently(
-            items: selected,
-            advancedModeEnabled: featureStore.advancedModeEnabled
-        )
-        processActionResult = outcome.message
-
-        if selectedSection == .cleaner {
-            cleanerItems.removeAll { selectedCleanerItemIDs.contains($0.id) }
-            selectedCleanerItemIDs.removeAll()
-        } else if selectedSection == .largeFiles {
-            largeFileItems.removeAll { selectedLargeFileItemIDs.contains($0.id) }
-            selectedLargeFileItemIDs.removeAll()
-        } else {
-            smartScanSummary = SmartScanSummary(
-                generatedAt: smartScanSummary?.generatedAt ?? Date(),
-                duration: smartScanSummary?.duration ?? 0,
-                moduleResults: smartScanSummary?.moduleResults ?? [],
-                items: (smartScanSummary?.items ?? []).filter { !selectedSmartScanItemIDs.contains($0.id) }
+        Task { @MainActor in
+            let outcome = await smartScanService.deletePermanently(
+                items: selected,
+                advancedModeEnabled: featureStore.advancedModeEnabled
             )
-            selectedSmartScanItemIDs.removeAll()
-        }
+            processActionResult = outcome.message
 
-        refreshQuarantineBatches()
-        recordCleanerActionReceipt(action: "delete", itemCount: selected.count, outcome: outcome, before: before)
+            if selectedSection == .cleaner {
+                cleanerItems.removeAll { selectedCleanerItemIDs.contains($0.id) }
+                selectedCleanerItemIDs.removeAll()
+            } else if selectedSection == .largeFiles {
+                largeFileItems.removeAll { selectedLargeFileItemIDs.contains($0.id) }
+                selectedLargeFileItemIDs.removeAll()
+            } else {
+                smartScanSummary = SmartScanSummary(
+                    generatedAt: smartScanSummary?.generatedAt ?? Date(),
+                    duration: smartScanSummary?.duration ?? 0,
+                    moduleResults: smartScanSummary?.moduleResults ?? [],
+                    items: (smartScanSummary?.items ?? []).filter { !selectedSmartScanItemIDs.contains($0.id) }
+                )
+                selectedSmartScanItemIDs.removeAll()
+            }
+
+            refreshQuarantineBatches()
+            recordCleanerActionReceipt(action: "delete", itemCount: selected.count, outcome: outcome, before: before)
+        }
     }
 
     private func cleanerVerificationLine(before: MetricSample?, after: MetricSample?) -> String {

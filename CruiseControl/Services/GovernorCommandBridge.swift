@@ -40,7 +40,17 @@ final class GovernorCommandBridge {
     private var disableSent: Bool = false
     private var noAckCounter: Int = 0
 
+    private var socketFD: Int32?
+    private var currentSocketHost: String?
+    private var currentSocketPort: Int?
+
     private let fileManager = FileManager.default
+
+    deinit {
+        if let fd = socketFD {
+            Darwin.close(fd)
+        }
+    }
 
     static func bridgeFolderURL() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -252,9 +262,16 @@ final class GovernorCommandBridge {
         lastCommand = normalized
         lastCommandAt = now
 
-        let fallbackError = writeFallbackCommand(command: normalized, now: now)
         let udpResult = sendUDP(message: normalized + "\n", host: host, port: port, waitForResponse: expectAck)
-        let usingFallbackThisCommand = udpResult.sendError != nil && fallbackError == nil
+        
+        var fallbackError: String? = nil
+        let udpFailed = udpResult.sendError != nil
+        
+        if udpFailed {
+            fallbackError = writeFallbackCommand(command: normalized, now: now)
+        }
+        
+        let usingFallbackThisCommand = udpFailed && fallbackError == nil
 
         let sent = udpResult.sendError == nil || fallbackError == nil
 
@@ -386,15 +403,31 @@ final class GovernorCommandBridge {
     }
 
     private func sendUDP(message: String, host: String, port: Int, waitForResponse: Bool) -> (sendError: String?, response: String?) {
-        let fd = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        guard fd >= 0 else {
-            return ("Regulator bridge failed to create UDP socket.", nil)
+        if socketFD != nil && (currentSocketHost != host || currentSocketPort != port) {
+            if let fd = socketFD {
+                Darwin.close(fd)
+                socketFD = nil
+            }
         }
-        defer { Darwin.close(fd) }
 
-        var timeout = timeval(tv_sec: 0, tv_usec: 350_000)
-        _ = withUnsafePointer(to: &timeout) { pointer in
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, pointer, socklen_t(MemoryLayout<timeval>.size))
+        let fd: Int32
+        if let existingFD = socketFD {
+            fd = existingFD
+        } else {
+            let newFD = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+            guard newFD >= 0 else {
+                return ("Regulator bridge failed to create UDP socket.", nil)
+            }
+            
+            var timeout = timeval(tv_sec: 0, tv_usec: 350_000)
+            _ = withUnsafePointer(to: &timeout) { pointer in
+                setsockopt(newFD, SOL_SOCKET, SO_RCVTIMEO, pointer, socklen_t(MemoryLayout<timeval>.size))
+            }
+            
+            socketFD = newFD
+            currentSocketHost = host
+            currentSocketPort = port
+            fd = newFD
         }
 
         var address = sockaddr_in()
@@ -426,6 +459,8 @@ final class GovernorCommandBridge {
 
         if sent < 0 {
             let code = errno
+            Darwin.close(fd)
+            socketFD = nil
             return ("Regulator bridge send error: \(String(cString: strerror(code))).", nil)
         }
 

@@ -11,6 +11,7 @@ import Sparkle
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let settingsStore = SettingsStore()
     let featureStore = V112FeatureStore()
+    let proGate = ProGate()
     lazy var sampler = PerformanceSampler()
 
     #if canImport(Sparkle)
@@ -40,9 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         configureNotifications()
         configureSparkleIfAvailable()
+        proGate.refreshStoredLicense()
 
         #if DEBUG
         GovernorPolicyEngineSelfTests.run()
+        LicenseDebugSelfTests.run()
         #endif
 
         settingsStore.$samplingInterval

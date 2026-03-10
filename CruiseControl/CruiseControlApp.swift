@@ -10,20 +10,13 @@ struct CruiseControlApp: App {
                 .environmentObject(appDelegate.sampler)
                 .environmentObject(appDelegate.settingsStore)
                 .environmentObject(appDelegate.featureStore)
+                .environmentObject(appDelegate.proGate)
                 .frame(minWidth: 1120, minHeight: 760)
         }
 
         Settings {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("CruiseControl")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Desktop performance control center for flight simulator sessions.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(20)
-            .frame(width: 440)
+            UpgradeSettingsView()
+                .environmentObject(appDelegate.proGate)
         }
 
         .commands {
