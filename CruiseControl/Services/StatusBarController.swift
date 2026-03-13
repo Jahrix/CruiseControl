@@ -17,7 +17,7 @@ final class StatusBarController: NSObject {
         popover.contentViewController = NSHostingController(rootView: rootView)
 
         if let button = statusItem.button {
-            button.title = "Speed [G]"
+            button.title = "CC [G]"
             button.action = #selector(togglePopover(_:))
             button.target = self
         }
@@ -37,7 +37,7 @@ final class StatusBarController: NSObject {
         }
 
         let simCode = simActive ? "SIM" : "IDLE"
-        button.title = "Speed \(simCode) [\(pressureCode)]"
+        button.title = "CC \(simCode) [\(pressureCode)]"
     }
 
     func showPopover() {

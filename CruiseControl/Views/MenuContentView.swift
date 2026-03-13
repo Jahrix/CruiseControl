@@ -2100,6 +2100,41 @@ struct MenuContentView: View {
                         wizardChecklistRow(title: item.title, state: .neutral, detail: item.detail)
                     }
                 }
+
+                let allChecksPass = udpListenerState == .ok
+                    && telemetryState == .ok
+                    && bridgeState == .ok
+                    && proofState == .ok
+                if allChecksPass {
+                    let resolvedICAO = featureStore.resolvedAirportICAO(
+                        telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO
+                    ).icao
+                    let icaoLabel = resolvedICAO.map { " (\($0))" } ?? ""
+                    VStack(alignment: .leading, spacing: 8) {
+                        Divider()
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("All checks passed\(icaoLabel)")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Apply a Situation Preset or set up a per-airport regulator profile.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 8) {
+                                    Button("Situation Presets") {
+                                        selectedSection = .profiles
+                                    }
+                                    .buttonStyle(.bordered)
+                                    Button("Airport Profiles") {
+                                        selectedSection = .simMode
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -5282,6 +5317,21 @@ struct MenuContentView: View {
 
         if !replayEpisodes.isEmpty {
             lines.append("Replay highlights: \(replayEpisodes.prefix(3).map { "\(timeOnly($0.startAt)) \($0.cause.displayName) (\(String(format: "%.2f", $0.peakSeverity)))" }.joined(separator: " | "))")
+        }
+
+        if let session = sampler.lastSessionSnapshot {
+            let reg = session.regulatorSummary
+            let target = reg.lastTarget.map { String(format: "%.2f", $0) } ?? "-"
+            let applied = reg.lastApplied.map { String(format: "%.2f", $0) } ?? "-"
+            let ackSuffix: String
+            if let ackAt = reg.lastAckAt {
+                ackSuffix = " (ACK \(timeOnly(ackAt)))"
+            } else {
+                ackSuffix = reg.activityRecent ? " (recent activity, no ACK)" : ""
+            }
+            lines.append("Governor: target \(target) → applied \(applied)\(ackSuffix)")
+        } else {
+            lines.append("Governor: no session activity")
         }
 
         return lines.joined(separator: "\n")

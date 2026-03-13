@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var previousAlertFlags = AlertFlags(memoryPressureRed: false, thermalCritical: false, swapRisingFast: false)
     private var pendingRuntimeConfigApplyTask: Task<Void, Never>?
     private var didSuggestSimProfile = false
+    private static let overlayOriginXKey = "cc.overlay.originX"
+    private static let overlayOriginYKey = "cc.overlay.originY"
     private var overlayPanel: OverlayPanel?
     private var overlaySnapshotController: OverlaySnapshotController?
 
@@ -216,8 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let snapshotController = OverlaySnapshotController(sampler: sampler)
                 let overlayView = XPlaneMiniOverlayView(snapshotController: snapshotController)
                 let hosting = NSHostingController(rootView: overlayView)
+                let savedX = UserDefaults.standard.object(forKey: Self.overlayOriginXKey) as? Double ?? 40.0
+                let savedY = UserDefaults.standard.object(forKey: Self.overlayOriginYKey) as? Double ?? 40.0
                 let panel = OverlayPanel(
-                    contentRect: NSRect(x: 40, y: 40, width: 270, height: 145),
+                    contentRect: NSRect(x: savedX, y: savedY, width: 270, height: 145),
                     styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
                     backing: .buffered,
                     defer: false
@@ -246,6 +250,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             overlayPanel?.orderFrontRegardless()
         } else {
             overlaySnapshotController?.stop()
+            if let frame = overlayPanel?.frame {
+                UserDefaults.standard.set(Double(frame.origin.x), forKey: Self.overlayOriginXKey)
+                UserDefaults.standard.set(Double(frame.origin.y), forKey: Self.overlayOriginYKey)
+            }
             overlayPanel?.orderOut(nil)
         }
     }
