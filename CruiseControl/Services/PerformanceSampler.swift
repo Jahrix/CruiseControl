@@ -136,6 +136,23 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var sessionReport: SessionReport?
     @Published private(set) var configuredRetentionSeconds: TimeInterval = HistoryDurationOption.tenMinutes.seconds
     @Published private(set) var cpuBudgetModeEnabled: Bool = false
+    @Published private(set) var liveDiagnosis = DiagnosticResult(
+        bottleneck: .insufficientEvidence,
+        confidence: .low,
+        explanation: "Waiting for X-Plane telemetry.",
+        evidence: "No measurements have been received.",
+        recommendation: "Open Setup and configure X-Plane Data Output.",
+        validation: "Diagnosis begins automatically after a stable evidence window.",
+        revert: "No setting change is recommended yet.",
+        statistics: nil
+    )
+    @Published private(set) var connectionPhase: ConnectionPhase = .xPlaneNotRunning
+    @Published private(set) var frameSamples: [FrameSample] = []
+    @Published private(set) var sessionFrameStatistics: FrameStatistics?
+    @Published private(set) var experimentComparison: ExperimentComparison?
+    @Published private(set) var experimentIsActive = false
+    @Published private(set) var experimentSecondsRemaining: Int?
+    @Published private(set) var diagnosticChanges: [DiagnosticChange] = []
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
 
@@ -145,6 +162,11 @@ final class PerformanceSampler: ObservableObject {
     private static let cpuHogThresholdPercent: Double = 50
     private let xPlaneReceiver = XPlaneUDPReceiver()
     private let governorBridge = GovernorCommandBridge()
+    private let monotonicClock: MonotonicClock = SystemMonotonicClock()
+    private let diagnosticEngine = DiagnosticEngine()
+    private var samplePipeline = SamplePipeline(capacity: 75_000, staleAfterSeconds: 4)
+    private var experimentTracker = ExperimentTracker()
+    private var diagnosticChangeBuffer: [DiagnosticChange] = []
 
     private var timer: DispatchSourceTimer?
     private var sampleCount: UInt64 = 0
@@ -152,6 +174,11 @@ final class PerformanceSampler: ObservableObject {
     private var previousSwapUsedBytes: UInt64 = 0
     private var previousDiskIO: DiskIOSnapshot?
     private var previousDiskSampleDate: Date?
+    private var cachedFreeDiskBytes: UInt64 = 0
+    private var lastFreeDiskReadUptimeNanoseconds: UInt64?
+    private var xPlaneDetectedAtUptimeNanoseconds: UInt64?
+    private var cachedXPlaneProcessDetected = false
+    private var lastXPlaneProcessCheckUptimeNanoseconds: UInt64?
 
     private var historyBuffer: [MetricHistoryPoint] = []
     private var metricSampleBuffer: [MetricSample] = []
@@ -451,6 +478,12 @@ final class PerformanceSampler: ObservableObject {
         stutterCauseSummaries = []
         actionReceipts = []
         sessionReport = nil
+        frameSamples = []
+        sessionFrameStatistics = nil
+        experimentComparison = nil
+        experimentIsActive = false
+        experimentSecondsRemaining = nil
+        diagnosticChanges = []
         queue.async { [weak self] in
             guard let self else { return }
             self.historyBuffer.removeAll(keepingCapacity: true)
@@ -462,7 +495,33 @@ final class PerformanceSampler: ObservableObject {
             self.stutterEpisodeAccumulators.removeAll()
             self.stutterLastEmissionAt.removeAll()
             self.lastBuiltSessionReport = nil
+            self.samplePipeline = SamplePipeline(capacity: 75_000, staleAfterSeconds: 4)
+            self.experimentTracker.reset()
+            self.diagnosticChangeBuffer.removeAll(keepingCapacity: true)
         }
+    }
+
+    @MainActor
+    func startDiagnosisExperiment() -> Bool {
+        let now = monotonicClock.nowNanoseconds()
+        let started = queue.sync {
+            let baseline = samplePipeline.samples(inLast: 20, nowNanoseconds: now)
+            return experimentTracker.begin(baselineSamples: baseline, nowNanoseconds: now)
+        }
+        if started {
+            experimentComparison = nil
+            experimentIsActive = true
+            experimentSecondsRemaining = 30
+        }
+        return started
+    }
+
+    @MainActor
+    func resetDiagnosisExperiment() {
+        queue.sync { experimentTracker.reset() }
+        experimentComparison = nil
+        experimentIsActive = false
+        experimentSecondsRemaining = nil
     }
 
     @MainActor
@@ -1041,6 +1100,7 @@ final class PerformanceSampler: ObservableObject {
     private func sample() {
         sampleCount += 1
         let now = Date()
+        let monotonicNow = monotonicClock.nowNanoseconds()
         latestSampleDate = now
 
         let cpu = readCPU()
@@ -1052,17 +1112,24 @@ final class PerformanceSampler: ObservableObject {
 
         let diskIO = SystemMetricsReader.readDiskIOSnapshot()
         let diskRate = computeDiskRates(current: diskIO, now: now)
-        let freeDiskBytes = SystemMetricsReader.readFreeDiskBytes() ?? 0
+        // Volume capacity queries can wake cache-management services and cost more
+        // CPU than the live diagnosis itself. Disk capacity is not frame telemetry,
+        // so refresh it at most once per minute instead of on every sample.
+        if lastFreeDiskReadUptimeNanoseconds == nil ||
+            monotonicNow - (lastFreeDiskReadUptimeNanoseconds ?? 0) >= 60_000_000_000 {
+            cachedFreeDiskBytes = SystemMetricsReader.readFreeDiskBytes() ?? cachedFreeDiskBytes
+            lastFreeDiskReadUptimeNanoseconds = monotonicNow
+        }
+        let freeDiskBytes = cachedFreeDiskBytes
 
-        let udpSnapshot = xPlaneReceiver.snapshot(now: now)
+        let udpSnapshot = xPlaneReceiver.snapshot(now: now, monotonicNanoseconds: monotonicNow)
+        let receivedTelemetry = xPlaneReceiver.drainTelemetry()
         let udpStatus = udpSnapshot.status
         let telemetry = udpSnapshot.telemetry
 
-        var scannedProcesses: [ProcessSample]? = nil
-        if shouldRunProcessScan(at: now) {
-            lastProcessScanAttemptAt = now
-            scannedProcesses = processScanner.sampleProcesses()
-        }
+        // v2 intentionally avoids enumerating every process in the live loop.
+        // That scan delayed frame sampling and did not prove an X-Plane limiter.
+        let scannedProcesses: [ProcessSample]? = nil
 
         if let scannedProcesses {
             if scannedProcesses.isEmpty {
@@ -1092,11 +1159,77 @@ final class PerformanceSampler: ObservableObject {
             guard let lastProcessSampleAtState else { return false }
             return now.timeIntervalSince(lastProcessSampleAtState) <= max(processSamplingIntervalSeconds() * 1.5, 5.0)
         }()
-        let processDetected = isXPlaneProcessRunning(
-            processes: scannedProcesses ?? (processSampleFreshForDetection ? effectiveTopCPUProcesses : nil)
-        )
+        let processDetected: Bool
+        if udpStatus.state == .active {
+            // A valid packet is stronger and cheaper evidence than process discovery.
+            processDetected = true
+            cachedXPlaneProcessDetected = true
+        } else {
+            let lastCheck = lastXPlaneProcessCheckUptimeNanoseconds
+            let shouldCheckProcess = lastCheck == nil ||
+                monotonicNow - (lastCheck ?? 0) >= 5_000_000_000
+            if shouldCheckProcess {
+                cachedXPlaneProcessDetected = isXPlaneProcessRunning(
+                    processes: scannedProcesses ?? (processSampleFreshForDetection ? effectiveTopCPUProcesses : nil)
+                )
+                lastXPlaneProcessCheckUptimeNanoseconds = monotonicNow
+            }
+            processDetected = cachedXPlaneProcessDetected
+        }
+        if processDetected {
+            if xPlaneDetectedAtUptimeNanoseconds == nil {
+                xPlaneDetectedAtUptimeNanoseconds = monotonicNow
+            }
+        } else {
+            xPlaneDetectedAtUptimeNanoseconds = nil
+        }
         let simActive = processDetected || udpStatus.state == .active
         let liveState = telemetryState(for: udpStatus, simActive: simActive, now: now)
+
+        for telemetrySample in receivedTelemetry {
+            guard let fps = telemetrySample.fps,
+                  let frameTime = telemetrySample.frameTimeMS,
+                  let receivedUptime = telemetrySample.receivedUptimeNanoseconds else { continue }
+            _ = samplePipeline.append(
+                FrameSample(
+                    capturedAt: telemetrySample.lastPacketDate ?? now,
+                    monotonicNanoseconds: receivedUptime,
+                    fps: fps,
+                    frameTimeMilliseconds: frameTime,
+                    simulatorCPUTimeMilliseconds: telemetrySample.cpuFrameTimeMS,
+                    gpuTimeMilliseconds: telemetrySample.gpuFrameTimeMS,
+                    hostCPUPercent: cpu.user + cpu.system
+                )
+            )
+        }
+
+        let diagnosticSamples = samplePipeline.samples(
+            inLast: diagnosticEngine.observationWindowSeconds,
+            nowNanoseconds: monotonicNow
+        )
+        let diagnosis = diagnosticEngine.diagnose(
+            samples: diagnosticSamples,
+            telemetryIsStale: samplePipeline.isStale(nowNanoseconds: monotonicNow)
+        )
+        if diagnosticChangeBuffer.last?.bottleneck != diagnosis.bottleneck {
+            diagnosticChangeBuffer.append(
+                DiagnosticChange(
+                    timestamp: now,
+                    monotonicNanoseconds: monotonicNow,
+                    bottleneck: diagnosis.bottleneck,
+                    confidence: diagnosis.confidence
+                )
+            )
+            if diagnosticChangeBuffer.count > 200 {
+                diagnosticChangeBuffer.removeFirst(diagnosticChangeBuffer.count - 200)
+            }
+        }
+        let preciseConnectionPhase = connectionPhase(
+            processDetected: processDetected,
+            udpStatus: udpStatus,
+            nowNanoseconds: monotonicNow
+        )
+        let experimentState = evaluateExperiment(nowNanoseconds: monotonicNow)
 
 
         let swapDelta5Min = computeSwapDelta(windowSeconds: 300, now: now)
@@ -1110,7 +1243,7 @@ final class PerformanceSampler: ObservableObject {
 
         maybeCompleteRegulatorTestIfNeeded(now: now)
         let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus, simActive: simActive, now: now)
-        let shouldReadFileBridgeStatus = governorConfig.enabled || simActive || pendingRegulatorTest != nil
+        let shouldReadFileBridgeStatus = governorConfig.enabled || pendingRegulatorTest != nil
         let fileBridgeStatus = shouldReadFileBridgeStatus ? governorBridge.readFileBridgeStatus() : nil
         let controlState = deriveRegulatorControlState(now: now, fileBridgeStatus: fileBridgeStatus)
         maybeLogBridgeEvents(now: now, fileBridgeStatus: fileBridgeStatus)
@@ -1275,6 +1408,13 @@ final class PerformanceSampler: ObservableObject {
         if shouldPublishNow {
             latestPublishedAlertFlags = nextAlertFlags
             latestPublishedLiveState = liveState
+            let sessionSamples = samplePipeline.samples(
+                inLast: 600,
+                nowNanoseconds: monotonicNow
+            )
+            let publishedFrameSamples = peakPreservingSamples(sessionSamples, maxPoints: 600)
+            let publishedSessionStatistics = SamplePipeline.statistics(for: sessionSamples)
+            let publishedDiagnosticChanges = diagnosticChangeBuffer
 
             Task { @MainActor in
                 snapshot = PerformanceSnapshot(
@@ -1333,12 +1473,67 @@ final class PerformanceSampler: ObservableObject {
                 stutterEvents = stutterBuffer
                 stutterEpisodes = stutterEpisodeBuffer
                 sessionReport = lastBuiltSessionReport
+                liveDiagnosis = diagnosis
+                connectionPhase = preciseConnectionPhase
+                frameSamples = publishedFrameSamples
+                sessionFrameStatistics = publishedSessionStatistics
+                experimentComparison = experimentState.comparison
+                experimentIsActive = experimentState.isActive
+                experimentSecondsRemaining = experimentState.secondsRemaining
+                diagnosticChanges = publishedDiagnosticChanges
 
                 alertFlags = nextAlertFlags
             }
         }
 
         previousSwapUsedBytes = swapUsedBytes
+    }
+
+    private func peakPreservingSamples(_ samples: [FrameSample], maxPoints: Int) -> [FrameSample] {
+        guard samples.count > maxPoints, maxPoints > 0 else { return samples }
+        let bucketSize = Int(ceil(Double(samples.count) / Double(maxPoints)))
+        return stride(from: 0, to: samples.count, by: bucketSize).compactMap { start in
+            let end = min(start + bucketSize, samples.count)
+            return samples[start..<end].max { $0.frameTimeMilliseconds < $1.frameTimeMilliseconds }
+        }
+    }
+
+    private func connectionPhase(
+        processDetected: Bool,
+        udpStatus: XPlaneUDPStatus,
+        nowNanoseconds: UInt64
+    ) -> ConnectionPhase {
+        if udpStatus.issue == .portConflict { return .portConflict }
+        if udpStatus.issue == .permissionDenied { return .permissionDenied }
+        if udpStatus.issue == .malformedOrUnsupported { return .malformedOrUnsupported }
+        if udpStatus.issue == .connectionLost { return .connectionLost }
+        if udpStatus.state == .active {
+            return udpStatus.issue == .missingRequiredFields ? .missingDiagnosticFields : .collecting
+        }
+        guard processDetected else { return .xPlaneNotRunning }
+        if udpStatus.issue == .missingRequiredFields { return .missingDiagnosticFields }
+        if udpStatus.totalPackets == 0 {
+            let detectedAt = xPlaneDetectedAtUptimeNanoseconds ?? nowNanoseconds
+            let detectionAge = nowNanoseconds >= detectedAt ? nowNanoseconds - detectedAt : 0
+            return detectionAge < 6_000_000_000 ? .awaitingTelemetry : .incorrectDataOutput
+        }
+        return .awaitingTelemetry
+    }
+
+    private func evaluateExperiment(
+        nowNanoseconds: UInt64
+    ) -> (comparison: ExperimentComparison?, isActive: Bool, secondsRemaining: Int?) {
+        guard experimentTracker.isActive,
+              let startedAt = experimentTracker.startedAtNanoseconds else {
+            return (nil, false, nil)
+        }
+        let validationSamples = samplePipeline.samples.filter { $0.monotonicNanoseconds >= startedAt }
+        let comparison = experimentTracker.comparison(validationSamples: validationSamples)
+        let elapsed = nowNanoseconds >= startedAt
+            ? Double(nowNanoseconds - startedAt) / 1_000_000_000
+            : 0
+        let remaining = max(Int(ceil(30 - elapsed)), 0)
+        return (comparison, true, comparison == nil ? remaining : nil)
     }
 
     private func shouldRunProcessScan(at now: Date) -> Bool {

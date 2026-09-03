@@ -16,6 +16,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Run diagnostic core tests
+        run: swift test --parallel
+
       - name: Build CruiseControl (Debug, unsigned)
         run: |
           xcodebuild -project "CruiseControl.xcodeproj" \

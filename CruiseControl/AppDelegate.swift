@@ -36,27 +36,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let wasCleanShutdown = defaults.object(forKey: LifecycleKeys.cleanShutdown) as? Bool ?? false
-        let modifierRequestedSafeMode = NSEvent.modifierFlags.contains(.option)
         defaults.set(false, forKey: LifecycleKeys.cleanShutdown)
 
         NSApp.setActivationPolicy(.regular)
-        configureNotifications()
-        configureSparkleIfAvailable()
         proGate.refreshStoredLicense()
 
         #if DEBUG
         GovernorPolicyEngineSelfTests.run()
         LicenseDebugSelfTests.run()
         #endif
-
-        settingsStore.$samplingInterval
-            .combineLatest(settingsStore.$smoothingAlpha)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] interval, alpha in
-                self?.sampler.configureSampling(interval: interval.seconds, alpha: alpha)
-            }
-            .store(in: &cancellables)
 
         settingsStore.$xPlaneUDPListeningEnabled
             .combineLatest(settingsStore.$xPlaneUDPPort)
@@ -66,84 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             .store(in: &cancellables)
 
-        Publishers.Merge(
-            settingsStore.objectWillChange.map { _ in () },
-            featureStore.objectWillChange.map { _ in () }
-        )
-        .sink { [weak self] _ in
-            self?.scheduleRuntimeConfigApply()
-        }
-        .store(in: &cancellables)
-
-        sampler.$snapshot
-            .map { $0.xplaneTelemetry?.nearestAirportICAO ?? "" }
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.scheduleRuntimeConfigApply()
-            }
-            .store(in: &cancellables)
-
-        featureStore.$overlayEnabled
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] enabled in
-                self?.updateOverlayVisibility(enabled: enabled)
-            }
-            .store(in: &cancellables)
-
-        featureStore.$supportModeEnabled
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { enabled in
-                NSLog("CruiseControl Support Mode \(enabled ? "enabled" : "disabled").")
-            }
-            .store(in: &cancellables)
-
-        sampler.$isSimActive
-            .receive(on: RunLoop.main)
-            .sink { [weak self] simActive in
-                guard let self else { return }
-                defer { previousSimActive = simActive }
-
-                if !simActive {
-                    didSuggestSimProfile = false
-                    return
-                }
-
-                if featureStore.workloadProfile != .simMode,
-                   !didSuggestSimProfile {
-                    didSuggestSimProfile = true
-                    if settingsStore.sendWarningNotifications {
-                        enqueueWarningNotification(
-                            title: "CruiseControl: Sim Mode Available",
-                            body: "X-Plane is active. Consider switching workload profile to Sim Mode for faster sampling."
-                        )
-                    }
-                }
-
-                guard !previousSimActive else { return }
-                guard settingsStore.shouldAutoEnableForSelectedProfile(), !settingsStore.isSimModeEnabled else { return }
-
-                _ = settingsStore.enableSimMode(trigger: "Auto (X-Plane detected)")
-            }
-            .store(in: &cancellables)
-
-        sampler.$alertFlags
-            .receive(on: RunLoop.main)
-            .sink { [weak self] flags in
-                self?.handleAlertTransitions(flags)
-            }
-            .store(in: &cancellables)
-
-        sampler.configureSampling(interval: settingsStore.samplingInterval.seconds, alpha: settingsStore.smoothingAlpha)
+        // UDP packets are captured independently on the utility queue. A 2 Hz UI
+        // aggregation loop would only redraw more often; 0.5 Hz keeps the product
+        // responsive while minimizing interference with the simulator it measures.
+        sampler.configureSampling(interval: 2.0, alpha: settingsStore.smoothingAlpha)
         sampler.configureXPlaneUDP(enabled: settingsStore.xPlaneUDPListeningEnabled, port: settingsStore.xPlaneUDPPort)
-
-        if !wasCleanShutdown || modifierRequestedSafeMode || featureStore.safeModeEnabled {
-            featureStore.activateSafeMode()
-        }
-
-        applyRuntimeConfigs()
         sampler.start()
     }
 

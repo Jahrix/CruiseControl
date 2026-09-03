@@ -78,6 +78,16 @@ enum XPlaneUDPConnectionState: String, Codable {
     }
 }
 
+enum XPlaneUDPConnectionIssue: String, Codable {
+    case disabled
+    case awaitingPackets
+    case portConflict
+    case permissionDenied
+    case malformedOrUnsupported
+    case missingRequiredFields
+    case connectionLost
+}
+
 struct XPlaneUDPStatus: Codable {
     var state: XPlaneUDPConnectionState
     var listenHost: String
@@ -87,6 +97,8 @@ struct XPlaneUDPStatus: Codable {
     var packetsPerSecond: Double
     var totalPackets: UInt64
     var invalidPackets: UInt64
+    var droppedSamples: UInt64
+    var issue: XPlaneUDPConnectionIssue?
     var detail: String?
 
     static func idle(host: String = "127.0.0.1", port: Int = 49005) -> XPlaneUDPStatus {
@@ -99,6 +111,8 @@ struct XPlaneUDPStatus: Codable {
             packetsPerSecond: 0,
             totalPackets: 0,
             invalidPackets: 0,
+            droppedSamples: 0,
+            issue: .disabled,
             detail: "UDP listening is disabled."
         )
     }
@@ -114,6 +128,7 @@ struct SimTelemetrySnapshot: Codable {
     var altitudeMSLFeet: Double?
     var nearestAirportICAO: String?
     var lastPacketDate: Date?
+    var receivedUptimeNanoseconds: UInt64?
 }
 
 struct TelemetryCapabilities {

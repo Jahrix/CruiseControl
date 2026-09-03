@@ -1,135 +1,57 @@
-# CruiseControl DMG Release Workflow
+# CruiseControl release workflow
 
-This document shows the fastest path to produce a distributable DMG for CruiseControl.
+## Local development
 
-## Prerequisites
-
-- Full Xcode installed
-- `xcodebuild` available in your shell
-
-If `xcodebuild` fails because CommandLineTools is selected:
+Build, ad-hoc sign, install exactly `/Applications/CruiseControl.app`, remove quarantine only from that local bundle, verify, and launch:
 
 ```bash
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+./Scripts/build_install_run.sh
 ```
 
-## Build DMG (default local flow)
+This is the routine local workflow. It may request administrator approval for `/Applications`. Source changes require compilation; reopening the unchanged installed app only requires:
 
-From repo root:
+```bash
+open /Applications/CruiseControl.app
+```
+
+## Packaging inspection only
 
 ```bash
 ./Scripts/build_dmg.sh
 ```
 
-What this script does:
+This builds an unsigned Release app and DMG under `dist/dmg`. The result is useful for inspecting layout but is not suitable for distribution. Do not upload it as a trusted release and do not tell users to bypass Gatekeeper.
 
-1. Builds `CruiseControl.app` (Release, unsigned local build)
-2. Stages a DMG folder with:
-   - `CruiseControl.app`
-   - `Applications` symlink
-3. Creates a versioned DMG file:
-   - `dist/dmg/CruiseControl-<version>-<build>.dmg`
+## Public distribution
 
-Version/build comes from `CruiseControl.app/Contents/Info.plist`:
-- `CFBundleShortVersionString` -> `<version>`
-- `CFBundleVersion` -> `<build>`
+Public builds must follow the complete chain:
 
-## Optional Finder layout cosmetics
+1. Release build.
+2. Developer ID Application signing with hardened runtime and timestamp.
+3. App notarization and stapling.
+4. DMG creation and signing.
+5. DMG notarization and stapling.
+6. `codesign`, `stapler`, `spctl`, and `hdiutil` verification.
 
-To attempt icon positioning inside the DMG window:
+With a Keychain notary profile:
 
 ```bash
-DMG_COSMETIC=1 ./Scripts/build_dmg.sh
+DEVELOPER_ID_APP_CERT="Developer ID Application: Name (TEAMID)" \
+NOTARY_KEYCHAIN_PROFILE="cruisecontrol-notary" \
+./Scripts/notarize_dmg.sh
 ```
 
-If Finder scripting fails, DMG creation still succeeds.
+The tag workflow executes the same notarization script and refuses to publish when credentials are missing. Repository secrets required by `.github/workflows/release-macos.yml` are:
 
-## Verify DMG contents quickly
+- `DEVELOPER_ID_P12_BASE64`
+- `DEVELOPER_ID_P12_PASSWORD`
+- `DEVELOPER_ID_APP_CERT`
+- `NOTARY_APPLE_ID`
+- `NOTARY_TEAM_ID`
+- `NOTARY_APP_PASSWORD`
 
-```bash
-LATEST_DMG="$(ls -t dist/dmg/CruiseControl-*.dmg | head -n 1)"
-MOUNT_POINT="$(mktemp -d /tmp/cruisecontrol-dmg.XXXXXX)"
-hdiutil attach "$LATEST_DMG" -mountpoint "$MOUNT_POINT" -nobrowse
-ls -la "$MOUNT_POINT"
-hdiutil detach "$MOUNT_POINT"
-```
+After configuring those credentials, a `v*` tag runs tests, produces the signed/notarized/stapled DMG, verifies it, and only then creates the GitHub Release.
 
-You should see:
-- `CruiseControl.app`
-- `Applications -> /Applications`
+## Update limitation
 
-## Install test
-
-1. Open the generated DMG.
-2. Drag `CruiseControl.app` into `Applications`.
-3. Launch `/Applications/CruiseControl.app`.
-
-For unsigned local builds, macOS may warn on first run. Use right-click `Open` once.
-
-## Closed Beta Install Notes
-
-1. Download the DMG from GitHub Releases.
-2. Open the DMG and drag `CruiseControl.app` into `Applications`.
-3. Launch `/Applications/CruiseControl.app`.
-4. If macOS says the app is damaged:
-   - right-click `CruiseControl.app` and choose `Open`, or
-   - run:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/CruiseControl.app
-```
-
-For closed beta distribution, upload the DMG directly to GitHub Releases. Do not re-zip the `.app`.
-
-## CI build + release tags
-
-GitHub Actions covers two release paths:
-
-- Every pull request and every push to `main` runs an unsigned macOS Debug build.
-- Every tag push matching `v*` builds a versioned DMG via `Scripts/build_dmg.sh`.
-- The release workflow uploads the DMG as both a workflow artifact and a GitHub Release asset.
-- Tags containing `rc` are published as GitHub prereleases.
-
-To publish a release:
-
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
-
-Expected output from the release workflow:
-
-- `dist/dmg/CruiseControl-<version>-<build>.dmg`
-- A workflow artifact containing that DMG
-- A GitHub Release for the tag with the DMG attached
-
-## Publishing v1.1.3-rc4
-
-1. Merge to `main`
-2. `git tag v1.1.3-rc4`
-3. `git push origin v1.1.3-rc4`
-4. GitHub Actions will build the DMG and publish the prerelease automatically
-
-Closed beta Gatekeeper note:
-
-- Right-click `CruiseControl.app` and choose `Open` once, or run:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/CruiseControl.app
-```
-
-## Troubleshooting
-
-### DMG not generated
-
-- Confirm the app exists at `build/Build/Products/Release/CruiseControl.app`
-- Re-run `./Scripts/build_dmg.sh` and inspect the first failing command
-
-### App fails to open after copying to `/Applications`
-
-- Confirm path: `/Applications/CruiseControl.app`
-- For unsigned local testing only:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/CruiseControl.app
-```
+Sparkle is not linked and the checked-in feed metadata is placeholder-only. The app performs a manual HTTPS release check but does not silently install a download. Automatic updates remain blocked until a signed Sparkle appcast and artifact-signature verification are configured.

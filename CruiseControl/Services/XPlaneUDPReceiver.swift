@@ -2,6 +2,13 @@ import Foundation
 import Darwin
 
 final class XPlaneUDPReceiver {
+    // A DATA datagram may contain many 36-byte X-Plane records. Keep the full
+    // UDP payload so a valid packet is not mistaken for a truncated record.
+    private static let maximumDatagramSize = 65_535
+    private static let xPlaneHeaderByteCount = 5
+    private static let xPlaneRecordByteCount = 36
+    private static let rejectedPacketDiagnosticIntervalNanoseconds: UInt64 = 5_000_000_000
+
     private struct SocketError: Error {
         let op: String
         let code: Int32
@@ -27,8 +34,19 @@ final class XPlaneUDPReceiver {
 
     private var lastPacketDate: Date?
     private var lastValidPacketDate: Date?
+    private var lastPacketUptimeNanoseconds: UInt64?
+    private var lastValidPacketUptimeNanoseconds: UInt64?
     private var latestTelemetry: SimTelemetrySnapshot?
+    private var pendingTelemetry: [SimTelemetrySnapshot] = []
+    private let pendingTelemetryCapacity = 2_048
+    private var droppedSamples: UInt64 = 0
     private var lastDetail: String?
+    private var lastRejectedPacketDiagnosticUptimeNanoseconds: UInt64?
+    private let parser: TelemetryParsing
+
+    init(parser: TelemetryParsing = XPlaneTelemetryParser()) {
+        self.parser = parser
+    }
 
     func configure(enabled: Bool, host: String = "127.0.0.1", port: Int, queue: DispatchQueue) {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,9 +105,23 @@ final class XPlaneUDPReceiver {
         lastWindowDate = nil
         lastPacketDate = nil
         lastValidPacketDate = nil
+        lastPacketUptimeNanoseconds = nil
+        lastValidPacketUptimeNanoseconds = nil
         latestTelemetry = nil
+        pendingTelemetry.removeAll(keepingCapacity: true)
+        droppedSamples = 0
+        lastRejectedPacketDiagnosticUptimeNanoseconds = nil
     }
-    func snapshot(now: Date) -> (telemetry: SimTelemetrySnapshot?, status: XPlaneUDPStatus) {
+
+    func drainTelemetry() -> [SimTelemetrySnapshot] {
+        let drained = pendingTelemetry
+        pendingTelemetry.removeAll(keepingCapacity: true)
+        return drained
+    }
+    func snapshot(
+        now: Date,
+        monotonicNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> (telemetry: SimTelemetrySnapshot?, status: XPlaneUDPStatus) {
         if let lastWindowDate {
             let elapsed = now.timeIntervalSince(lastWindowDate)
             if elapsed >= 1 {
@@ -104,24 +136,43 @@ final class XPlaneUDPReceiver {
         let state: XPlaneUDPConnectionState
         let detail: String
 
+        let issue: XPlaneUDPConnectionIssue?
         if !listeningEnabled {
             state = .idle
             detail = "UDP listening is disabled."
+            issue = .disabled
         } else if socketFD < 0 {
             state = .misconfig
             detail = lastDetail ?? "Could not bind UDP listener. Check port availability and permissions."
-        } else if let lastValid = lastValidPacketDate, now.timeIntervalSince(lastValid) <= 4 {
+            if detail.localizedCaseInsensitiveContains("already in use") {
+                issue = .portConflict
+            } else if detail.localizedCaseInsensitiveContains("permission") {
+                issue = .permissionDenied
+            } else {
+                issue = .malformedOrUnsupported
+            }
+        } else if let lastValidUptime = lastValidPacketUptimeNanoseconds,
+                  monotonicAge(now: monotonicNanoseconds, then: lastValidUptime) <= 4 {
             state = .active
-            detail = "Packets are flowing."
+            if latestTelemetry?.cpuFrameTimeMS == nil || latestTelemetry?.gpuFrameTimeMS == nil {
+                detail = "Frame-rate packets are flowing, but CPU/GPU timing fields are unavailable."
+                issue = .missingRequiredFields
+            } else {
+                detail = "Frame-rate, CPU, and GPU timing packets are flowing."
+                issue = nil
+            }
         } else if totalPackets == 0 {
             state = .listening
             detail = "No UDP packets received. Confirm Data Output IP/port match."
+            issue = .awaitingPackets
         } else if lastValidPacketDate == nil {
             state = .misconfig
             detail = lastDetail ?? "Packets received but format/index mismatch."
+            issue = datasetMismatchPackets > 0 ? .missingRequiredFields : .malformedOrUnsupported
         } else {
             state = .listening
-            detail = "Listening, but no recent valid packets."
+            detail = "Telemetry stopped after a valid connection. Check whether X-Plane paused, closed, or changed Data Output."
+            issue = .connectionLost
         }
 
         let status = XPlaneUDPStatus(
@@ -133,13 +184,15 @@ final class XPlaneUDPReceiver {
             packetsPerSecond: packetsPerSecond,
             totalPackets: totalPackets,
             invalidPackets: invalidPackets,
+            droppedSamples: droppedSamples,
+            issue: issue,
             detail: detail
         )
 
         let telemetry: SimTelemetrySnapshot?
         if let latestTelemetry,
-           let lastValidPacketDate,
-           now.timeIntervalSince(lastValidPacketDate) <= 5 {
+           let lastValidUptime = lastValidPacketUptimeNanoseconds,
+           monotonicAge(now: monotonicNanoseconds, then: lastValidUptime) <= 5 {
             telemetry = latestTelemetry
         } else {
             telemetry = nil
@@ -247,21 +300,37 @@ final class XPlaneUDPReceiver {
             lastWindowDate = now
         }
 
-        while true {
-            var buffer = [UInt8](repeating: 0, count: 2048)
+        var processedPackets = 0
+        var buffer = [UInt8](repeating: 0, count: Self.maximumDatagramSize)
+        while processedPackets < 256 {
             let readCount = recv(socketFD, &buffer, buffer.count, 0)
 
             if readCount > 0 {
+                processedPackets += 1
+                let packetNow = Date()
+                let packetUptime = DispatchTime.now().uptimeNanoseconds
                 totalPackets += 1
                 packetsInWindow += 1
-                lastPacketDate = now
+                lastPacketDate = packetNow
+                lastPacketUptimeNanoseconds = packetUptime
 
-                let parseResult = parse(packet: Data(buffer.prefix(Int(readCount))), now: now)
+                let parseResult = parse(
+                    packet: Data(buffer.prefix(Int(readCount))),
+                    now: packetNow,
+                    monotonicNanoseconds: packetUptime
+                )
                 if parseResult.valid {
                     if let telemetry = parseResult.telemetry {
                         latestTelemetry = telemetry
+                        pendingTelemetry.append(telemetry)
+                        if pendingTelemetry.count > pendingTelemetryCapacity {
+                            let overflow = pendingTelemetry.count - pendingTelemetryCapacity
+                            pendingTelemetry.removeFirst(overflow)
+                            droppedSamples += UInt64(overflow)
+                        }
                     }
-                    lastValidPacketDate = now
+                    lastValidPacketDate = packetNow
+                    lastValidPacketUptimeNanoseconds = packetUptime
                 } else {
                     invalidPackets += 1
                     lastDetail = parseResult.detail
@@ -284,13 +353,22 @@ final class XPlaneUDPReceiver {
         }
     }
 
-    private func parse(packet: Data, now: Date) -> (valid: Bool, telemetry: SimTelemetrySnapshot?, detail: String?) {
-        guard packet.count >= 5 else {
-            return (false, nil, "Received tiny UDP packet (too small for X-Plane DATA format).")
-        }
-
-        guard packet[0] == 0x44, packet[1] == 0x41, packet[2] == 0x54, packet[3] == 0x41 else {
-            return (false, nil, "Packets received but not X-Plane DATA packets. Check Data Output settings.")
+    private func parse(
+        packet: Data,
+        now: Date,
+        monotonicNanoseconds: UInt64
+    ) -> (valid: Bool, telemetry: SimTelemetrySnapshot?, detail: String?) {
+        let parsed: ParsedXPlaneTelemetry
+        switch parser.parse(packet) {
+        case .success(let telemetry):
+            parsed = telemetry
+        case .failure(let error):
+            logRejectedPacketIfNeeded(packet: packet, error: error, monotonicNanoseconds: monotonicNanoseconds)
+            if error == .missingFrameRateDataSet {
+                datasetMismatchPackets += 1
+                return (false, nil, "X-Plane packets are arriving, but Data Set 0 (frame rate) is not enabled.")
+            }
+            return (false, nil, parseErrorDetail(error))
         }
 
         var offset = 5
@@ -312,66 +390,114 @@ final class XPlaneUDPReceiver {
             offset += recordSize
         }
 
-        guard !records.isEmpty else {
-            return (false, nil, "DATA packet had no readable records.")
-        }
-
-        let fps = readFPS(records: records)
-        let frameTime = readFrameTime(records: records, fps: fps)
         let altitude = readAltitude(records: records)
-
-        if fps == nil, frameTime == nil, altitude.aglFeet == nil, altitude.mslFeet == nil {
-            datasetMismatchPackets += 1
-            return (false, nil, "DATA packets are arriving but expected fields are missing. In X-Plane 11/12 Data Output, enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude).")
-        }
 
         let telemetry = SimTelemetrySnapshot(
             source: "X-Plane UDP Data Output",
-            fps: fps,
-            frameTimeMS: frameTime,
-            cpuFrameTimeMS: nil,
-            gpuFrameTimeMS: nil,
+            fps: parsed.fps,
+            frameTimeMS: parsed.frameTimeMilliseconds,
+            cpuFrameTimeMS: parsed.simulatorCPUTimeMilliseconds,
+            gpuFrameTimeMS: parsed.gpuTimeMilliseconds,
             altitudeAGLFeet: altitude.aglFeet,
             altitudeMSLFeet: altitude.mslFeet,
             nearestAirportICAO: nil,
-            lastPacketDate: now
+            lastPacketDate: now,
+            receivedUptimeNanoseconds: monotonicNanoseconds
         )
 
         return (true, telemetry, nil)
     }
 
-    private func readFPS(records: [Int32: [Float]]) -> Double? {
-        guard let frameRecord = records[0], !frameRecord.isEmpty else {
-            return nil
+    private func logRejectedPacketIfNeeded(
+        packet: Data,
+        error: TelemetryParseError,
+        monotonicNanoseconds: UInt64
+    ) {
+#if DEBUG
+        if let lastDiagnostic = lastRejectedPacketDiagnosticUptimeNanoseconds,
+           monotonicNanoseconds >= lastDiagnostic,
+           monotonicNanoseconds - lastDiagnostic < Self.rejectedPacketDiagnosticIntervalNanoseconds {
+            return
         }
+        lastRejectedPacketDiagnosticUptimeNanoseconds = monotonicNanoseconds
 
-        for candidateIndex in [0, 1] {
-            guard frameRecord.indices.contains(candidateIndex) else { continue }
-            let candidate = Double(frameRecord[candidateIndex])
-            if candidate.isFinite, candidate > 1, candidate < 400 {
-                return candidate
-            }
-        }
+        let prefix = Array(packet.prefix(16))
+        let detectedHeader = Array(packet.prefix(Self.xPlaneHeaderByteCount))
+        let payloadLength = max(packet.count - Self.xPlaneHeaderByteCount, 0)
+        let hasCompleteRecordLayout =
+            payloadLength >= Self.xPlaneRecordByteCount &&
+            payloadLength.isMultiple(of: Self.xPlaneRecordByteCount)
+        let recordIndices = recordIndices(in: packet)
 
-        return nil
+        NSLog("%@", """
+        [XPlaneUDPReceiver] Rejected telemetry packet (rate-limited to one every 5 seconds)
+          exact validation: \(validationDescription(for: error))
+          datagram bytes: \(packet.count)
+          first 16 bytes hex: \(hexString(prefix))
+          first 16 bytes ASCII: \(printableASCII(prefix))
+          detected header (first \(Self.xPlaneHeaderByteCount) bytes): hex=\(hexString(detectedHeader)) ASCII=\(printableASCII(detectedHeader))
+          payload length after \(Self.xPlaneHeaderByteCount)-byte header: \(payloadLength)
+          payload satisfies \(Self.xPlaneRecordByteCount)-byte record layout: \(hasCompleteRecordLayout)
+          record indices encountered: \(recordIndices.map(String.init).joined(separator: ", ").isEmpty ? "none" : recordIndices.map(String.init).joined(separator: ", "))
+        """)
+#endif
     }
 
-    private func readFrameTime(records: [Int32: [Float]], fps: Double?) -> Double? {
-        if let frameRecord = records[0], !frameRecord.isEmpty {
-            for candidateIndex in [2, 1, 3] {
-                guard frameRecord.indices.contains(candidateIndex) else { continue }
-                let secondsPerFrame = Double(frameRecord[candidateIndex])
-                if secondsPerFrame.isFinite, secondsPerFrame > 0.001, secondsPerFrame < 0.5 {
-                    return secondsPerFrame * 1_000.0
-                }
-            }
-        }
+    private func recordIndices(in packet: Data) -> [Int32] {
+        guard packet.count >= Self.xPlaneHeaderByteCount else { return [] }
 
-        if let fps, fps.isFinite, fps > 1 {
-            return 1_000.0 / fps
+        var indices: [Int32] = []
+        var offset = Self.xPlaneHeaderByteCount
+        while offset + Self.xPlaneRecordByteCount <= packet.count {
+            indices.append(Int32(bitPattern: readUInt32LE(packet, offset: offset)))
+            offset += Self.xPlaneRecordByteCount
         }
+        return indices
+    }
 
-        return nil
+    private func validationDescription(for error: TelemetryParseError) -> String {
+        switch error {
+        case .tooShort(let actualBytes):
+            return "tooShort: packet has \(actualBytes) bytes; parser requires the 5-byte DATA header plus one 36-byte record."
+        case .unsupportedHeader:
+            return "unsupportedHeader: first 4 bytes are not exactly DATA (44 41 54 41)."
+        case .truncatedRecord(let trailingBytes):
+            return "truncatedRecord: bytes after the 5-byte header are not divisible by 36; \(trailingBytes) trailing byte(s)."
+        case .missingFrameRateDataSet:
+            return "missingFrameRateDataSet: record layout is valid, but no complete record has index 0."
+        case .invalidFPS:
+            return "invalidFPS: Data Set 0 value[0] is non-finite or outside the accepted 1...500 FPS range."
+        }
+    }
+
+    private func hexString(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    private func printableASCII(_ bytes: [UInt8]) -> String {
+        String(bytes.map { byte in
+            (32...126).contains(byte) ? Character(UnicodeScalar(byte)) : "."
+        })
+    }
+
+    private func parseErrorDetail(_ error: TelemetryParseError) -> String {
+        switch error {
+        case .tooShort:
+            return "Received a truncated UDP packet; it is not a complete X-Plane DATA record."
+        case .unsupportedHeader:
+            return "Packets are arriving on this port, but they are not X-Plane DATA packets."
+        case .truncatedRecord:
+            return "Received a malformed X-Plane DATA packet with an incomplete record."
+        case .missingFrameRateDataSet:
+            return "Data Set 0 (frame rate) is not enabled."
+        case .invalidFPS:
+            return "Data Set 0 arrived with an invalid or impossible FPS value."
+        }
+    }
+
+    private func monotonicAge(now: UInt64, then: UInt64) -> TimeInterval {
+        guard now >= then else { return 0 }
+        return Double(now - then) / 1_000_000_000
     }
 
     private func readAltitude(records: [Int32: [Float]]) -> (aglFeet: Double?, mslFeet: Double?) {

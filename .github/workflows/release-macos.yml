@@ -15,20 +15,62 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Make DMG script executable
-        run: chmod +x Scripts/build_dmg.sh
-
-      - name: Build versioned DMG
-        id: build_dmg
-        shell: bash
+      - name: Require public-distribution credentials
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_APP_CERT }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          Scripts/build_dmg.sh
+          for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required signing/notarization secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="${RUNNER_TEMP}/cruisecontrol-developer-id.p12"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/cruisecontrol-signing.keychain-db"
+          printf '%s' "${CERTIFICATE_BASE64}" | base64 --decode > "${CERTIFICATE_PATH}"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security import "${CERTIFICATE_PATH}" -P "${CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security list-keychain -d user -s "${KEYCHAIN_PATH}"
+          security set-key-partition-list -S apple-tool:,apple: -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+
+      - name: Test and build signed, notarized DMG
+        id: build_dmg
+        shell: bash
+        env:
+          DEVELOPER_ID_APP_CERT: ${{ secrets.DEVELOPER_ID_APP_CERT }}
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.NOTARY_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          swift test --parallel
+          chmod +x Scripts/build_dmg.sh Scripts/notarize_dmg.sh
+          Scripts/notarize_dmg.sh
           DMG_PATH="$(ls -t dist/dmg/CruiseControl-*.dmg | head -n 1)"
           if [[ -z "${DMG_PATH}" || ! -f "${DMG_PATH}" ]]; then
             echo "DMG not found in dist/dmg" >&2
             exit 1
           fi
+          codesign --verify --verbose=2 "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
+          spctl -a -vvv -t open --context context:primary-signature "${DMG_PATH}"
+          hdiutil verify "${DMG_PATH}"
           echo "dmg_path=${DMG_PATH}" >> "${GITHUB_OUTPUT}"
           echo "dmg_name=$(basename "${DMG_PATH}")" >> "${GITHUB_OUTPUT}"
 

@@ -1,6 +1,6 @@
-# CruiseControl Optional Signing + Notarization
+# CruiseControl Signing + Notarization
 
-This flow is optional. Local beta builds can still ship/test without Apple signing.
+This flow is required for any build distributed to other users. Ad-hoc signing is only for trusted local development on the Mac that built the app.
 
 ## What this does
 
@@ -54,13 +54,13 @@ export APP_PASSWORD="app-specific-password"
 
 - `APP_PATH`: app bundle to sign/package (defaults to `build/Build/Products/Release/CruiseControl.app`)
 - `DMG_PATH`: specific DMG path to notarize/sign (defaults to newest `dist/dmg/CruiseControl-*.dmg`)
-- `REBUILD_APP=1`: force rebuilding the app before signing
+- `SKIP_APP_BUILD=1`: explicitly package an existing `APP_PATH` instead of rebuilding (use only in a controlled CI stage)
 
 ## If script exits early
 
-That is expected when credentials are missing. The script prints setup steps and exits cleanly.
+That is expected when credentials are missing. The script prints setup steps and fails before building or signing.
 
-Local unsigned DMG is always available through:
+An unsigned DMG can be produced for internal packaging inspection only. It is not a public release and does not provide a seamless Gatekeeper or update experience:
 
 ```bash
 ./Scripts/build_dmg.sh

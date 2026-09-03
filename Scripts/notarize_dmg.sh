@@ -8,6 +8,7 @@ PROJECT_PATH="${REPO_ROOT}/CruiseControl.xcodeproj"
 SCHEME="CruiseControl"
 DERIVED_DATA_PATH="${REPO_ROOT}/build"
 APP_PATH="${APP_PATH:-${DERIVED_DATA_PATH}/Build/Products/Release/CruiseControl.app}"
+ENTITLEMENTS_PATH="${REPO_ROOT}/CruiseControl/CruiseControl.entitlements"
 DMG_PATH="${DMG_PATH:-}"
 
 DEVELOPER_ID_APP_CERT="${DEVELOPER_ID_APP_CERT:-}"
@@ -91,7 +92,7 @@ if [[ ! -d "${PROJECT_PATH}" ]]; then
   exit 1
 fi
 
-if [[ ! -d "${APP_PATH}" || "${REBUILD_APP:-0}" == "1" ]]; then
+if [[ "${SKIP_APP_BUILD:-0}" != "1" ]]; then
   log_info "Building app (Release, unsigned)"
   xcodebuild -project "${PROJECT_PATH}" \
     -scheme "${SCHEME}" \
@@ -99,6 +100,8 @@ if [[ ! -d "${APP_PATH}" || "${REBUILD_APP:-0}" == "1" ]]; then
     -derivedDataPath "${DERIVED_DATA_PATH}" \
     CODE_SIGNING_ALLOWED=NO \
     build
+else
+  log_info "Skipping app build only because SKIP_APP_BUILD=1 was explicitly supplied"
 fi
 
 if [[ ! -d "${APP_PATH}" ]]; then
@@ -107,12 +110,13 @@ if [[ ! -d "${APP_PATH}" ]]; then
 fi
 
 log_info "Signing app bundle"
-codesign --force --deep --options runtime --timestamp --sign "${DEVELOPER_ID_APP_CERT}" "${APP_PATH}"
+codesign --force --options runtime --timestamp --entitlements "${ENTITLEMENTS_PATH}" --sign "${DEVELOPER_ID_APP_CERT}" "${APP_PATH}"
 codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 spctl -a -vvv -t exec "${APP_PATH}" || log_warn "Gatekeeper assessment failed before notarization; continuing to submit for notarization."
 
-APP_ZIP_PATH="$(mktemp -u "${TMPDIR:-/tmp}/CruiseControl-notary.XXXXXX.zip")"
-trap 'rm -f "${APP_ZIP_PATH}"' EXIT
+NOTARY_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/CruiseControl-notary.XXXXXX")"
+APP_ZIP_PATH="${NOTARY_TEMP_DIR}/CruiseControl.zip"
+trap 'rm -rf "${NOTARY_TEMP_DIR}"' EXIT
 
 log_info "Packaging signed app for notarization"
 ditto -c -k --keepParent "${APP_PATH}" "${APP_ZIP_PATH}"
