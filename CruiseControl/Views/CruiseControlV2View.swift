@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 enum V2Section: String, CaseIterable, Identifiable {
     case home
+    case performanceLab
     case live
     case session
     case setup
@@ -13,6 +14,7 @@ enum V2Section: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .home: return "Home"
+        case .performanceLab: return "Performance Lab"
         case .live: return "Live Diagnosis"
         case .session: return "Session"
         case .setup: return "Setup"
@@ -21,6 +23,7 @@ enum V2Section: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .home: return "house"
+        case .performanceLab: return "waveform.path.ecg"
         case .live: return "gauge.with.dots.needle.67percent"
         case .session: return "chart.xyaxis.line"
         case .setup: return "cable.connector"
@@ -47,6 +50,7 @@ struct CruiseControlV2View: View {
         } detail: {
             switch selected ?? .home {
             case .home: HomeDashboardView()
+            case .performanceLab: PerformanceLabView()
             case .live: LiveDiagnosisView()
             case .session: SessionDiagnosisView()
             case .setup: SetupDiagnosisView()
@@ -72,6 +76,245 @@ struct CruiseControlV2View: View {
         }
         .padding(12)
         .background(.bar)
+    }
+}
+
+private struct PerformanceLabView: View {
+    @EnvironmentObject private var sampler: PerformanceSampler
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                pageHeader("Performance Lab", subtitle: "Frame pacing, stutters, and the evidence behind the current diagnosis")
+
+                stabilitySummary
+                timeline
+                limiter
+                evidence
+            }
+            .padding(28)
+            .frame(maxWidth: 1_050, alignment: .leading)
+        }
+        .navigationTitle("Performance Lab")
+    }
+
+    private var isFresh: Bool {
+        switch sampler.connectionPhase {
+        case .collecting, .missingDiagnosticFields:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var stabilitySummary: some View {
+        GroupBox("Recent stability") {
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: stabilitySymbol)
+                    .font(.title2)
+                    .foregroundStyle(stabilityColor)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(stabilityTitle).font(.headline)
+                    Text(stabilityDetail).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let stats = sampler.liveDiagnosis.statistics {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(String(format: "%.1f ms median", stats.medianMilliseconds)).monospacedDigit()
+                        Text("\(stats.spikeCount) spikes · \(Int(stats.spikeFrequency * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private var timeline: some View {
+        PerformanceLabTimeline(
+            samples: visibleSamples,
+            stutters: visibleStutters,
+            telemetryIsStale: sampler.connectionPhase == .connectionLost
+        )
+    }
+
+    private var limiter: some View {
+        GroupBox("Likely limiter") {
+            VStack(alignment: .leading, spacing: 8) {
+                if isFresh {
+                    Text(sampler.liveDiagnosis.bottleneck == .insufficientEvidence ? "Insufficient evidence" : sampler.liveDiagnosis.bottleneck.title)
+                        .font(.headline)
+                    Text(sampler.liveDiagnosis.explanation)
+                    Text("\(sampler.liveDiagnosis.confidence.rawValue.capitalized) confidence")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Insufficient evidence").font(.headline)
+                    Text("Fresh X-Plane telemetry is required before CruiseControl can identify a likely limiter.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var evidence: some View {
+        GroupBox("Evidence") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(isFresh ? sampler.liveDiagnosis.evidence : "The displayed timeline is historical until a fresh telemetry packet arrives.")
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                HStack(spacing: 28) {
+                    technicalValue("Samples", value: "\(visibleSamples.count)")
+                    technicalValue("Stutter events", value: "\(visibleStutters.count)")
+                    technicalValue("Episodes", value: "\(sampler.stutterEpisodes.count)")
+                    technicalValue("Telemetry", value: isFresh ? "Fresh" : "Stale / unavailable")
+                }
+
+                if sampler.stutterCauseSummaries.isEmpty {
+                    Text("No recurring stutter cause has been recorded yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recorded stutter causes").font(.caption.weight(.semibold))
+                        ForEach(sampler.stutterCauseSummaries.prefix(3)) { summary in
+                            Text("\(summary.cause.displayName): \(summary.count) event\(summary.count == 1 ? "" : "s") · \(Int(summary.averageConfidence * 100))% confidence")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var visibleSamples: [FrameSample] { Array(sampler.frameSamples.suffix(600)) }
+
+    private var visibleStutters: [StutterEvent] {
+        guard let start = visibleSamples.first?.capturedAt else { return [] }
+        return sampler.stutterEvents.filter { $0.timestamp >= start }
+    }
+
+    private var stabilityTitle: String {
+        guard isFresh else { return sampler.connectionPhase == .connectionLost ? "Telemetry is stale" : "Waiting for telemetry" }
+        guard let stats = sampler.liveDiagnosis.statistics else { return "Collecting a stability window" }
+        return stats.spikeFrequency >= 0.05 || !visibleStutters.isEmpty ? "Frame pacing is unstable" : "Frame pacing is stable"
+    }
+
+    private var stabilityDetail: String {
+        guard isFresh else { return "CruiseControl will resume analysis when valid X-Plane telemetry returns." }
+        guard sampler.liveDiagnosis.statistics != nil else { return "Keep the same aircraft and view while CruiseControl gathers enough samples." }
+        return visibleStutters.isEmpty ? "No recorded stutter markers are present in the visible timeline." : "Orange markers show existing recorded stutter events in the visible timeline."
+    }
+
+    private var stabilitySymbol: String {
+        isFresh ? (stabilityTitle.contains("unstable") ? "exclamationmark.triangle.fill" : "checkmark.circle.fill") : "clock.badge.exclamationmark"
+    }
+
+    private var stabilityColor: Color {
+        isFresh ? (stabilityTitle.contains("unstable") ? .orange : .green) : .secondary
+    }
+
+    private func technicalValue(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
+        }
+    }
+}
+
+private struct PerformanceLabTimeline: View {
+    let samples: [FrameSample]
+    let stutters: [StutterEvent]
+    let telemetryIsStale: Bool
+
+    var body: some View {
+        GroupBox("Frame-time and FPS timeline") {
+            if samples.isEmpty {
+                ContentUnavailableView(
+                    telemetryIsStale ? "Telemetry is stale" : "No frame-time samples",
+                    systemImage: "chart.xyaxis.line",
+                    description: Text(telemetryIsStale
+                        ? "CruiseControl will not use stale samples to make a live performance claim."
+                        : "Start X-Plane and configure Data Output in Setup to begin the timeline.")
+                )
+                .frame(height: 340)
+            } else {
+                VStack(alignment: .leading, spacing: 16) {
+                    frameTimeChart
+                    fpsChart
+                    legend
+                }
+                .padding(8)
+            }
+        }
+    }
+
+    private var frameTimeChart: some View {
+        Chart {
+            ForEach(samples) { sample in
+                LineMark(
+                    x: .value("Time", sample.capturedAt),
+                    y: .value("Frame time", sample.frameTimeMilliseconds)
+                )
+                .foregroundStyle(.blue)
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+            }
+            ForEach(stutters) { event in
+                RuleMark(x: .value("Stutter", event.timestamp))
+                    .foregroundStyle(.orange.opacity(0.75))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+        }
+        .chartYScale(domain: 0...frameTimeMaximum)
+        .chartYAxisLabel("Frame time (ms)")
+        .frame(height: 210)
+        .accessibilityLabel("Frame-time timeline with stutter markers")
+    }
+
+    private var fpsChart: some View {
+        Chart(samples) { sample in
+            LineMark(
+                x: .value("Time", sample.capturedAt),
+                y: .value("FPS", sample.fps)
+            )
+            .foregroundStyle(.green)
+            .lineStyle(StrokeStyle(lineWidth: 1.5))
+        }
+        .chartYScale(domain: 0...fpsMaximum)
+        .chartYAxisLabel("FPS")
+        .frame(height: 150)
+        .accessibilityLabel("Frames-per-second timeline")
+    }
+
+    private var legend: some View {
+        HStack(spacing: 14) {
+            Label("Frame time", systemImage: "line.diagonal").foregroundStyle(.blue)
+            Label("FPS", systemImage: "line.diagonal").foregroundStyle(.green)
+            Label("Stutter marker", systemImage: "line.vertical").foregroundStyle(.orange)
+            Spacer()
+            Text("\(stutters.count) recorded marker\(stutters.count == 1 ? "" : "s") in view")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+    }
+
+    private var frameTimeMaximum: Double {
+        let values = samples.map(\.frameTimeMilliseconds).sorted()
+        let p99 = values[min(Int(Double(values.count - 1) * 0.99), values.count - 1)]
+        return max(50, min(250, ceil(p99 * 1.25 / 10) * 10))
+    }
+
+    private var fpsMaximum: Double {
+        max(60, min(500, ceil((samples.map(\.fps).max() ?? 60) / 10) * 10))
     }
 }
 
@@ -235,7 +478,6 @@ private struct LiveDiagnosisView: View {
 
                 metrics
                 diagnosisCard
-                experimentCard
             }
             .padding(28)
             .frame(maxWidth: 980, alignment: .leading)
@@ -291,44 +533,6 @@ private struct LiveDiagnosisView: View {
             Text("Most likely limiter")
         }
         .accessibilityElement(children: .contain)
-    }
-
-    private var experimentCard: some View {
-        GroupBox("Before / after") {
-            VStack(alignment: .leading, spacing: 12) {
-                if let comparison = sampler.experimentComparison {
-                    Text(comparison.improved ? "The change improved frame time." : "No meaningful improvement yet.")
-                        .font(.headline)
-                    Text(String(
-                        format: "Median: %.1f ms before → %.1f ms after (%+.1f ms, %+.0f%%).",
-                        comparison.baselineMedianMilliseconds,
-                        comparison.validationMedianMilliseconds,
-                        comparison.changeMilliseconds,
-                        comparison.changePercent
-                    ))
-                    Button("Reset comparison") { sampler.resetDiagnosisExperiment() }
-                } else if sampler.experimentIsActive {
-                    Text("Keep the same aircraft and camera view while validation runs.")
-                    if let seconds = sampler.experimentSecondsRemaining {
-                        ProgressView(value: Double(30 - seconds), total: 30) {
-                            Text("\(seconds) seconds remaining")
-                        }
-                    }
-                    Button("Cancel comparison") { sampler.resetDiagnosisExperiment() }
-                } else {
-                    Text("Apply only the recommended change, return to the same view, then measure it against the current baseline.")
-                        .foregroundStyle(.secondary)
-                    Button("Start 30-second comparison") {
-                        _ = sampler.startDiagnosisExperiment()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: [.command])
-                    .disabled(sampler.liveDiagnosis.statistics?.sampleCount ?? 0 < 10)
-                }
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 
     private var latest: FrameSample? {
