@@ -8,6 +8,7 @@ enum V2Section: String, CaseIterable, Identifiable {
     case performanceLab
     case live
     case session
+    case benchmark
     case setup
 
     var id: String { rawValue }
@@ -17,6 +18,7 @@ enum V2Section: String, CaseIterable, Identifiable {
         case .performanceLab: return "Performance Lab"
         case .live: return "Live Diagnosis"
         case .session: return "Session"
+        case .benchmark: return "Benchmark"
         case .setup: return "Setup"
         }
     }
@@ -26,6 +28,7 @@ enum V2Section: String, CaseIterable, Identifiable {
         case .performanceLab: return "waveform.path.ecg"
         case .live: return "gauge.with.dots.needle.67percent"
         case .session: return "chart.xyaxis.line"
+        case .benchmark: return "stopwatch"
         case .setup: return "cable.connector"
         }
     }
@@ -53,6 +56,7 @@ struct CruiseControlV2View: View {
             case .performanceLab: PerformanceLabView()
             case .live: LiveDiagnosisView()
             case .session: SessionDiagnosisView()
+            case .benchmark: BenchmarkView()
             case .setup: SetupDiagnosisView()
             }
         }
@@ -924,6 +928,154 @@ private struct SessionDiagnosisView: View {
 private extension String {
     func ifEmpty(_ fallback: String) -> String {
         isEmpty ? fallback : self
+    }
+}
+
+private struct BenchmarkView: View {
+    @EnvironmentObject private var sampler: PerformanceSampler
+    @EnvironmentObject private var benchmarkStore: BenchmarkStore
+    @State private var name = "X-Plane comparison"
+    @State private var selectedPairID: BenchmarkPair.ID?
+    @State private var resultMessage: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .firstTextBaseline) {
+                    pageHeader("Benchmark", subtitle: "Measure one manual change against the same X-Plane view")
+                    Spacer()
+                    if sampler.benchmarkIsCapturing || sampler.benchmarkNeedsComparison {
+                        Button("Discard draft", role: .destructive) { sampler.discardManualBenchmark() }
+                    }
+                }
+
+                captureControls
+                savedPairs
+                pairDetail
+                if let resultMessage {
+                    Text(resultMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: 1050, alignment: .leading)
+        }
+        .navigationTitle("Benchmark")
+    }
+
+    private var captureControls: some View {
+        GroupBox("Manual capture") {
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Benchmark name", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(sampler.benchmarkIsCapturing || sampler.benchmarkNeedsComparison)
+                Text(sampler.benchmarkStatusMessage)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    if sampler.benchmarkIsCapturing {
+                        Button("Stop capture") { resultMessage = sampler.stopManualBenchmark().message }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button(sampler.benchmarkNeedsComparison ? "Start comparison" : "Start baseline") {
+                            resultMessage = sampler.startManualBenchmark(named: name).message
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Text("CruiseControl does not change X-Plane settings or control the aircraft.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private var savedPairs: some View {
+        GroupBox("Saved benchmarks") {
+            if benchmarkStore.pairs.isEmpty {
+                ContentUnavailableView("No saved benchmarks", systemImage: "stopwatch", description: Text("Capture a baseline, make one manual change, then capture the comparison."))
+                    .padding(8)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(benchmarkStore.pairs) { pair in
+                        Button { selectedPairID = pair.id } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(pair.name).font(.subheadline.weight(.semibold))
+                                    Text(pair.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(fpsDeltaText(pair.averageFPSDelta))
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .background(selectedPairID == pair.id ? Color.accentColor.opacity(0.12) : .clear)
+                        if pair.id != benchmarkStore.pairs.last?.id { Divider() }
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+        }
+        .onAppear { selectedPairID = selectedPairID ?? benchmarkStore.pairs.first?.id }
+        .onChange(of: benchmarkStore.pairs.map(\.id)) { _, ids in
+            if let selectedPairID, ids.contains(selectedPairID) { return }
+            selectedPairID = ids.first
+        }
+    }
+
+    @ViewBuilder
+    private var pairDetail: some View {
+        if let pair = selectedPair {
+            GroupBox("Benchmark result") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 30) {
+                        comparisonMetric("Average FPS", baseline: number(pair.baseline.averageFPS), comparison: number(pair.comparison.averageFPS), delta: fpsDeltaText(pair.averageFPSDelta))
+                        comparisonMetric("Median frame time", baseline: frameTimeText(pair.baseline.medianFrameTimeMilliseconds), comparison: frameTimeText(pair.comparison.medianFrameTimeMilliseconds), delta: milliseconds(pair.medianFrameTimeDelta))
+                        comparisonMetric("Lowest FPS", baseline: number(pair.baseline.lowestFPS), comparison: number(pair.comparison.lowestFPS), delta: fpsDeltaText(pair.comparison.lowestFPS - pair.baseline.lowestFPS))
+                        comparisonMetric("Stutters", baseline: "\(pair.baseline.stutterCount)", comparison: "\(pair.comparison.stutterCount)", delta: signed(pair.stutterDelta))
+                    }
+                    Text(pair.compatibility.summary)
+                        .font(.caption)
+                        .foregroundStyle(compatibilityColor(pair))
+                    Text("Baseline: \(contextText(pair.baseline)) · Comparison: \(contextText(pair.comparison))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Delete benchmark", role: .destructive) { benchmarkStore.delete(pair) }
+                        .controlSize(.small)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var selectedPair: BenchmarkPair? {
+        guard let selectedPairID else { return nil }
+        return benchmarkStore.pairs.first { $0.id == selectedPairID }
+    }
+
+    private func comparisonMetric(_ title: String, baseline: String, comparison: String, delta: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text("\(baseline) → \(comparison)").font(.headline).monospacedDigit()
+            Text(delta).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func number(_ value: Double) -> String { String(format: "%.1f", value) }
+    private func frameTimeText(_ value: Double) -> String { String(format: "%.1f ms", value) }
+    private func milliseconds(_ value: Double) -> String { String(format: "%+.1f ms", value) }
+    private func signed(_ value: Int) -> String { String(format: "%+d", value) }
+    private func fpsDeltaText(_ value: Double) -> String { String(format: "%+.1f FPS", value) }
+    private func contextText(_ run: BenchmarkRun) -> String {
+        "\(run.flightContext.aircraftDisplayName) · \(run.flightContext.nearestAirportICAO ?? "airport unknown")"
+    }
+    private func compatibilityColor(_ pair: BenchmarkPair) -> Color {
+        if case .questionable = pair.compatibility { return .orange }
+        return .secondary
     }
 }
 

@@ -331,6 +331,60 @@ final class SessionHistoryTests: XCTestCase {
     }
 }
 
+final class BenchmarkModelsTests: XCTestCase {
+    func testCalculatesDeltasForComparableRuns() {
+        let baseline = makeRun(fps: 30, frameTime: 33, stutters: 4, airport: "KMCO")
+        let comparison = makeRun(fps: 36, frameTime: 27, stutters: 1, airport: "KMCO")
+        let pair = BenchmarkPair(name: "Objects one step lower", baseline: baseline, comparison: comparison)
+
+        XCTAssertEqual(pair.averageFPSDelta, 6, accuracy: 0.001)
+        XCTAssertEqual(pair.medianFrameTimeDelta, -6, accuracy: 0.001)
+        XCTAssertEqual(pair.stutterDelta, -3)
+        XCTAssertEqual(pair.compatibility, .comparable)
+    }
+
+    func testFlagsDifferentReliableContextAsQuestionable() {
+        let baseline = makeRun(fps: 30, frameTime: 33, stutters: 4, airport: "KMCO", aircraft: "B738")
+        let comparison = makeRun(fps: 30, frameTime: 33, stutters: 4, airport: "KJFK", aircraft: "A339")
+        let pair = BenchmarkPair(name: "Mismatch", baseline: baseline, comparison: comparison)
+
+        guard case .questionable(let reasons) = pair.compatibility else {
+            return XCTFail("Expected a context mismatch")
+        }
+        XCTAssertEqual(reasons, ["Aircraft identifiers differ.", "Airport ICAO codes differ."])
+    }
+
+    func testRoundTripsVersionedBenchmarkHistory() throws {
+        let pair = BenchmarkPair(
+            name: "Round trip",
+            createdAt: Date(timeIntervalSince1970: 2_000),
+            baseline: makeRun(fps: 30, frameTime: 33, stutters: 1, airport: "KMCO"),
+            comparison: makeRun(fps: 31, frameTime: 32, stutters: 0, airport: "KMCO")
+        )
+        let decoded = try BenchmarkHistoryPersistence.decode(BenchmarkHistoryPersistence.encode(.init(pairs: [pair])))
+
+        XCTAssertEqual(decoded.schemaVersion, BenchmarkHistoryDocument.currentSchemaVersion)
+        XCTAssertEqual(decoded.pairs, [pair])
+    }
+
+    private func makeRun(fps: Double, frameTime: Double, stutters: Int, airport: String, aircraft: String = "B738") -> BenchmarkRun {
+        let start = Date(timeIntervalSince1970: 1_000)
+        return BenchmarkRun(
+            startedAt: start,
+            endedAt: start.addingTimeInterval(30),
+            flightContext: .normalized(simulatorVersionRaw: "XP11", aircraftIdentifier: aircraft, aircraftName: nil, nearestAirportICAO: airport, altitudeAGLFeet: 0, altitudeMSLFeet: 0, isOnGround: true),
+            settingsSnapshot: ["workload_profile": "generalPerformance"],
+            sampleCount: 600,
+            averageFPS: fps,
+            lowestFPS: fps - 5,
+            medianFrameTimeMilliseconds: frameTime,
+            p95FrameTimeMilliseconds: frameTime + 5,
+            spikeFraction: 0.02,
+            stutterCount: stutters
+        )
+    }
+}
+
 final class DiagnosticEngineTests: XCTestCase {
     func testClassifiesSimulatorCPUOnlyWithTimingEvidence() {
         let samples = timedSamples(cpu: 25, gpu: 12, frame: 27)

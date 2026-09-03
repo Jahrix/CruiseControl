@@ -154,6 +154,9 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var experimentIsActive = false
     @Published private(set) var experimentSecondsRemaining: Int?
     @Published private(set) var diagnosticChanges: [DiagnosticChange] = []
+    @Published private(set) var benchmarkIsCapturing = false
+    @Published private(set) var benchmarkNeedsComparison = false
+    @Published private(set) var benchmarkStatusMessage = "Capture a baseline with the same aircraft and view you plan to compare."
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
 
@@ -200,6 +203,7 @@ final class PerformanceSampler: ObservableObject {
     private var lastBuiltSessionReport: SessionReport?
     private var demoMockModeEnabled: Bool = false
     private weak var sessionHistoryStore: SessionHistoryStore?
+    private weak var benchmarkStore: BenchmarkStore?
 
     private var udpListeningEnabled: Bool = true
     private var xPlaneUDPPort: Int = 49_005
@@ -250,6 +254,18 @@ final class PerformanceSampler: ObservableObject {
 
     private var currentTelemetrySession: ActiveTelemetrySession?
     private var lastSessionSnapshotState: SessionSnapshot?
+
+    private struct ActiveBenchmarkCapture {
+        let startedAt: Date
+        let startedAtNanoseconds: UInt64
+        let name: String
+        let flightContext: FlightContext
+        let settingsSnapshot: [String: String]
+        let isComparison: Bool
+    }
+
+    private var activeBenchmarkCapture: ActiveBenchmarkCapture?
+    private var pendingBenchmarkBaseline: BenchmarkRun?
 
     private var stutterHeuristics: StutterHeuristicConfig = .default
     private var stutterBuffer: [StutterEvent] = []
@@ -425,6 +441,11 @@ final class PerformanceSampler: ObservableObject {
         sessionHistoryStore = store
     }
 
+    @MainActor
+    func configureBenchmarkStore(store: BenchmarkStore) {
+        benchmarkStore = store
+    }
+
     func start() {
         guard timer == nil else { return }
 
@@ -535,6 +556,110 @@ final class PerformanceSampler: ObservableObject {
         experimentComparison = nil
         experimentIsActive = false
         experimentSecondsRemaining = nil
+    }
+
+    @MainActor
+    func startManualBenchmark(named name: String) -> ActionOutcome {
+        let startedAt = Date()
+        let startedAtNanoseconds = monotonicClock.nowNanoseconds()
+        let settingsSnapshot = knownBenchmarkSettings()
+        let captureStarted = queue.sync { () -> Bool in
+            guard activeBenchmarkCapture == nil else { return false }
+            let isComparison = pendingBenchmarkBaseline != nil
+            activeBenchmarkCapture = ActiveBenchmarkCapture(
+                startedAt: startedAt,
+                startedAtNanoseconds: startedAtNanoseconds,
+                name: name,
+                flightContext: flightContext,
+                settingsSnapshot: settingsSnapshot,
+                isComparison: isComparison
+            )
+            return true
+        }
+        guard captureStarted else {
+            return ActionOutcome(success: false, message: "A benchmark capture is already running.")
+        }
+        benchmarkIsCapturing = true
+        benchmarkStatusMessage = pendingBenchmarkBaseline == nil
+            ? "Capturing baseline. Keep the same X-Plane view for at least 20 seconds, then stop capture."
+            : "Capturing comparison. Keep the same X-Plane view for at least 20 seconds, then stop capture."
+        return ActionOutcome(success: true, message: benchmarkStatusMessage)
+    }
+
+    @MainActor
+    func stopManualBenchmark() -> ActionOutcome {
+        let stoppedAt = Date()
+        let stoppedAtNanoseconds = monotonicClock.nowNanoseconds()
+        let result = queue.sync { () -> (run: BenchmarkRun?, capture: ActiveBenchmarkCapture?, message: String) in
+            guard let capture = activeBenchmarkCapture else {
+                return (nil, nil, "No benchmark capture is running.")
+            }
+            let samples = samplePipeline.samples.filter { $0.monotonicNanoseconds >= capture.startedAtNanoseconds }
+            guard let statistics = SamplePipeline.statistics(for: samples),
+                  statistics.sampleCount >= 15,
+                  statistics.durationSeconds >= 20 else {
+                return (nil, capture, "Keep this capture running for at least 20 seconds with valid telemetry.")
+            }
+
+            let averageFPS = samples.reduce(0) { $0 + $1.fps } / Double(samples.count)
+            let lowestFPS = samples.map(\.fps).min() ?? averageFPS
+            let stutterCount = stutterEpisodeBuffer.filter {
+                $0.endAt >= capture.startedAt && $0.startAt <= stoppedAt
+            }.count
+            let run = BenchmarkRun(
+                startedAt: capture.startedAt,
+                endedAt: stoppedAt,
+                flightContext: capture.flightContext,
+                settingsSnapshot: capture.settingsSnapshot,
+                sampleCount: statistics.sampleCount,
+                averageFPS: averageFPS,
+                lowestFPS: lowestFPS,
+                medianFrameTimeMilliseconds: statistics.medianMilliseconds,
+                p95FrameTimeMilliseconds: statistics.p95Milliseconds,
+                spikeFraction: statistics.spikeFrequency,
+                stutterCount: stutterCount
+            )
+            activeBenchmarkCapture = nil
+            return (run, capture, "")
+        }
+
+        guard let run = result.run, let capture = result.capture else {
+            return ActionOutcome(success: false, message: result.message)
+        }
+        benchmarkIsCapturing = false
+        if capture.isComparison, let baseline = queue.sync(execute: { pendingBenchmarkBaseline }) {
+            queue.sync { pendingBenchmarkBaseline = nil }
+            let pair = BenchmarkPair(name: capture.name, baseline: baseline, comparison: run)
+            benchmarkNeedsComparison = false
+            benchmarkStatusMessage = pair.compatibility.summary
+            benchmarkStore?.append(pair)
+            return ActionOutcome(success: true, message: "Saved benchmark pair: \(pair.name). \(pair.compatibility.summary)")
+        }
+
+        queue.sync { pendingBenchmarkBaseline = run }
+        benchmarkNeedsComparison = true
+        benchmarkStatusMessage = "Baseline captured. Make your manual change, return to the same view, then capture the comparison."
+        return ActionOutcome(success: true, message: benchmarkStatusMessage)
+    }
+
+    @MainActor
+    func discardManualBenchmark() {
+        queue.sync {
+            activeBenchmarkCapture = nil
+            pendingBenchmarkBaseline = nil
+        }
+        benchmarkIsCapturing = false
+        benchmarkNeedsComparison = false
+        benchmarkStatusMessage = "Benchmark draft discarded. Capture a new baseline when ready."
+    }
+
+    @MainActor
+    private func knownBenchmarkSettings() -> [String: String] {
+        var snapshot = ["workload_profile": workloadProfile.rawValue]
+        if let lod = regulatorProofState.appliedLOD {
+            snapshot["reported_lod"] = String(format: "%.3f", lod)
+        }
+        return snapshot
     }
 
     @MainActor
