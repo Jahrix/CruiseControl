@@ -193,10 +193,10 @@ struct SafeSettingsWriteGateway {
         let previousValue = capability.currentValue
 
         guard capability.supports(runtime.simulatorVersion) else {
-            return receipt(request, previousValue: previousValue, outcome: .rejectedUnsupportedSimulator, rollback: capability.rollback, message: "(request.settingID.rawValue) is not supported by the connected simulator.", now: now)
+            return receipt(request, previousValue: previousValue, outcome: .rejectedUnsupportedSimulator, rollback: capability.rollback, message: "\(request.settingID.rawValue) is not supported by the connected simulator.", now: now)
         }
         guard capability.writability == .writable else {
-            return receipt(request, previousValue: previousValue, outcome: .rejectedNotWritable, rollback: capability.rollback, message: "(request.settingID.rawValue) has not passed runtime writability verification.", now: now)
+            return receipt(request, previousValue: previousValue, outcome: .rejectedNotWritable, rollback: capability.rollback, message: "\(request.settingID.rawValue) has not passed runtime writability verification.", now: now)
         }
         guard capability.allowedValues.contains(request.value) else {
             return receipt(request, previousValue: previousValue, outcome: .rejectedInvalidValue, rollback: capability.rollback, message: "The requested value is outside the allowlisted range.", now: now)
@@ -204,7 +204,7 @@ struct SafeSettingsWriteGateway {
 
         do {
             try writer.write(request.value, for: capability)
-            return receipt(request, previousValue: previousValue, outcome: .applied, rollback: capability.rollback, message: "Applied through the verified (request.settingID.rawValue) capability.", now: now)
+            return receipt(request, previousValue: previousValue, outcome: .applied, rollback: capability.rollback, message: "Applied through the verified \(request.settingID.rawValue) capability.", now: now)
         } catch {
             return receipt(request, previousValue: previousValue, outcome: .failed, rollback: capability.rollback, message: error.localizedDescription, now: now)
         }
