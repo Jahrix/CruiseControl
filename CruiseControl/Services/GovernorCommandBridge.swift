@@ -15,6 +15,7 @@ struct GovernorFileBridgeStatus {
     var currentLOD: Double?
     var targetLOD: Double?
     var tier: String?
+    var lodWriteSupported: Bool?
     // Optional read-only context keys emitted by a compatible companion bridge.
     // Missing keys are expected with older bridge scripts.
     var simulatorVersion: String?
@@ -260,6 +261,7 @@ final class GovernorCommandBridge {
             currentLOD: map["current_lod"].flatMap(Double.init),
             targetLOD: map["target_lod"].flatMap(Double.init),
             tier: map["tier"],
+            lodWriteSupported: map["lod_write_supported"].flatMap(parseBool),
             simulatorVersion: map["simulator_version"] ?? map["xplane_version"],
             aircraftIdentifier: map["aircraft_identifier"] ?? map["aircraft_icao"],
             aircraftName: map["aircraft_name"],
@@ -268,6 +270,33 @@ final class GovernorCommandBridge {
             lastUpdateDate: updateFromEpoch ?? modified,
             fileModifiedDate: modified,
             rawText: content?.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    /// Converts only bridge-reported state into the typed capability snapshot.
+    /// A missing or older companion script never grants write permission.
+    func readSafeSettingsRuntime() -> SafeSettingsRuntime {
+        guard let status = readFileBridgeStatus() else {
+            return .unavailable
+        }
+
+        let simulatorVersion: XPlaneSimulatorVersion
+        switch status.simulatorVersion?.uppercased() {
+        case "XP11": simulatorVersion = .xp11
+        case "XP12": simulatorVersion = .xp12
+        default: simulatorVersion = .unknown
+        }
+
+        var currentValues: [SafeSettingID: SafeSettingValue] = [:]
+        if let currentLOD = status.currentLOD, currentLOD.isFinite {
+            currentValues[.lodBias] = .number(currentLOD)
+        }
+
+        let writableSettings: Set<SafeSettingID> = status.lodWriteSupported == true ? [.lodBias] : []
+        return SafeSettingsRuntime(
+            simulatorVersion: simulatorVersion,
+            currentValues: currentValues,
+            writableSettings: writableSettings
         )
     }
 

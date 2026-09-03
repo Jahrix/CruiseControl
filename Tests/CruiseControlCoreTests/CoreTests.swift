@@ -1,6 +1,103 @@
 import XCTest
 @testable import CruiseControlCore
 
+final class SafeSettingsCapabilityTests: XCTestCase {
+    func testLODRegistryDescribesSupportedBridgeCapability() {
+        let runtime = SafeSettingsRuntime(
+            simulatorVersion: .xp12,
+            currentValues: [.lodBias: .number(1.25)],
+            writableSettings: [.lodBias]
+        )
+
+        let capability = SafeSettingsCapabilityRegistry.capability(for: .lodBias, runtime: runtime)
+
+        XCTAssertTrue(capability.supports(.xp11))
+        XCTAssertTrue(capability.supports(.xp12))
+        XCTAssertEqual(capability.currentValue, .number(1.25))
+        XCTAssertEqual(capability.readability, .readable)
+        XCTAssertEqual(capability.writability, .writable)
+        XCTAssertEqual(capability.writeMechanism, .bridgeCommand("SET_LOD"))
+        XCTAssertEqual(capability.changeTiming, .live)
+        XCTAssertEqual(capability.rollback, .restorePreviousValue)
+    }
+
+    func testGatewayRejectsUnverifiedAndOutOfRangeWritesWithoutCallingWriter() {
+        let writer = RecordingSafeSettingsWriter()
+        let gateway = SafeSettingsWriteGateway()
+        let unverifiedRuntime = SafeSettingsRuntime(
+            simulatorVersion: .xp12,
+            currentValues: [.lodBias: .number(1)],
+            writableSettings: []
+        )
+
+        let unverified = gateway.execute(
+            SafeSettingsWriteRequest(settingID: .lodBias, value: .number(1.1)),
+            runtime: unverifiedRuntime,
+            writer: writer
+        )
+        XCTAssertEqual(unverified.outcome, .rejectedNotWritable)
+        XCTAssertTrue(writer.values.isEmpty)
+
+        let verifiedRuntime = SafeSettingsRuntime(
+            simulatorVersion: .xp12,
+            currentValues: [.lodBias: .number(1)],
+            writableSettings: [.lodBias]
+        )
+        let invalid = gateway.execute(
+            SafeSettingsWriteRequest(settingID: .lodBias, value: .number(3.1)),
+            runtime: verifiedRuntime,
+            writer: writer
+        )
+        XCTAssertEqual(invalid.outcome, .rejectedInvalidValue)
+        XCTAssertTrue(writer.values.isEmpty)
+    }
+
+    func testGatewayProducesReceiptAndAllowsOnlyVerifiedSupportedWrite() {
+        let writer = RecordingSafeSettingsWriter()
+        let runtime = SafeSettingsRuntime(
+            simulatorVersion: .xp11,
+            currentValues: [.lodBias: .number(1.3)],
+            writableSettings: [.lodBias]
+        )
+
+        let receipt = SafeSettingsWriteGateway().execute(
+            SafeSettingsWriteRequest(settingID: .lodBias, value: .number(1.1)),
+            runtime: runtime,
+            writer: writer,
+            now: Date(timeIntervalSince1970: 1)
+        )
+
+        XCTAssertEqual(receipt.outcome, .applied)
+        XCTAssertEqual(receipt.previousValue, .number(1.3))
+        XCTAssertEqual(receipt.rollback, .restorePreviousValue)
+        XCTAssertEqual(writer.values, [.number(1.1)])
+    }
+
+    func testPreferenceBackupCanRestoreOriginalFile() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        let preference = root.appendingPathComponent("preferences.txt")
+        try "original".write(to: preference, atomically: true, encoding: .utf8)
+
+        let store = SafeSettingsPreferenceBackupStore(fileManager: fileManager)
+        let backup = try store.backup(fileURL: preference, into: root.appendingPathComponent("Backups", isDirectory: true))
+        try "changed".write(to: preference, atomically: true, encoding: .utf8)
+        try store.restore(backupURL: backup, to: preference)
+
+        XCTAssertEqual(try String(contentsOf: preference, encoding: .utf8), "original")
+    }
+
+    private final class RecordingSafeSettingsWriter: SafeSettingsWriter {
+        var values: [SafeSettingValue] = []
+
+        func write(_ value: SafeSettingValue, for capability: SafeSettingsCapability) throws {
+            values.append(value)
+        }
+    }
+}
+
 final class TelemetryParserTests: XCTestCase {
     private let parser = XPlaneTelemetryParser()
 

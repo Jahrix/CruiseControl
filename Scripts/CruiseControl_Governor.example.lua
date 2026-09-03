@@ -149,6 +149,11 @@ local function write_status()
     file:write("enabled=" .. (governor_enabled and "1" or "0") .. "\n")
     if last_applied_lod ~= nil then file:write(string.format("current_lod=%.3f\n", last_applied_lod)) end
     if last_requested_lod ~= nil then file:write(string.format("target_lod=%.3f\n", last_requested_lod)) end
+    -- Reading a dataref is not proof that it is writable. The current
+    -- companion deliberately does not probe by changing a simulator setting,
+    -- so a future verified bridge must explicitly publish true before
+    -- CruiseControl can authorize a write.
+    file:write("lod_write_supported=unknown\n")
     file:write("tier=MANUAL\n")
     file:write("last_update_epoch=" .. tostring(os.time()) .. "\n")
 
