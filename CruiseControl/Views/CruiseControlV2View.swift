@@ -307,7 +307,7 @@ private struct PerformanceLabTimeline: View {
         HStack(spacing: 14) {
             Label("Frame time", systemImage: "line.diagonal").foregroundStyle(.blue)
             Label("FPS", systemImage: "line.diagonal").foregroundStyle(.green)
-            Label("Stutter marker", systemImage: "line.vertical").foregroundStyle(.orange)
+            Label("Stutter marker", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             Spacer()
             Text("\(stutters.count) recorded marker\(stutters.count == 1 ? "" : "s") in view")
                 .foregroundStyle(.secondary)
