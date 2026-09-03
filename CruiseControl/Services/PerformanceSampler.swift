@@ -199,6 +199,7 @@ final class PerformanceSampler: ObservableObject {
     private var latestPublishedLiveState: TelemetryLiveState = .offline
     private var lastBuiltSessionReport: SessionReport?
     private var demoMockModeEnabled: Bool = false
+    private weak var sessionHistoryStore: SessionHistoryStore?
 
     private var udpListeningEnabled: Bool = true
     private var xPlaneUDPPort: Int = 49_005
@@ -239,6 +240,12 @@ final class PerformanceSampler: ObservableObject {
         var ackOkCount: Int
         var ackTimeoutCount: Int
         var previousAckWasHealthy: Bool?
+        var flightContext: FlightContext
+        var frameSampleCount: Int
+        var fpsTotal: Double
+        var frameTimeTotal: Double
+        var lowestFPS: Double?
+        var spikeCount: Int
     }
 
     private var currentTelemetrySession: ActiveTelemetrySession?
@@ -411,6 +418,11 @@ final class PerformanceSampler: ObservableObject {
 
     func configureDemoMockMode(enabled: Bool) {
         demoMockModeEnabled = enabled
+    }
+
+    @MainActor
+    func configureSessionHistory(store: SessionHistoryStore) {
+        sessionHistoryStore = store
     }
 
     func start() {
@@ -1187,21 +1199,22 @@ final class PerformanceSampler: ObservableObject {
         let simActive = processDetected || udpStatus.state == .active
         let liveState = telemetryState(for: udpStatus, simActive: simActive, now: now)
 
+        var receivedFrameSamples: [FrameSample] = []
         for telemetrySample in receivedTelemetry {
             guard let fps = telemetrySample.fps,
                   let frameTime = telemetrySample.frameTimeMS,
                   let receivedUptime = telemetrySample.receivedUptimeNanoseconds else { continue }
-            _ = samplePipeline.append(
-                FrameSample(
-                    capturedAt: telemetrySample.lastPacketDate ?? now,
-                    monotonicNanoseconds: receivedUptime,
-                    fps: fps,
-                    frameTimeMilliseconds: frameTime,
-                    simulatorCPUTimeMilliseconds: telemetrySample.cpuFrameTimeMS,
-                    gpuTimeMilliseconds: telemetrySample.gpuFrameTimeMS,
-                    hostCPUPercent: cpu.user + cpu.system
-                )
+            let frameSample = FrameSample(
+                capturedAt: telemetrySample.lastPacketDate ?? now,
+                monotonicNanoseconds: receivedUptime,
+                fps: fps,
+                frameTimeMilliseconds: frameTime,
+                simulatorCPUTimeMilliseconds: telemetrySample.cpuFrameTimeMS,
+                gpuTimeMilliseconds: telemetrySample.gpuFrameTimeMS,
+                hostCPUPercent: cpu.user + cpu.system
             )
+            _ = samplePipeline.append(frameSample)
+            receivedFrameSamples.append(frameSample)
         }
 
         let diagnosticSamples = samplePipeline.samples(
@@ -1266,6 +1279,8 @@ final class PerformanceSampler: ObservableObject {
             now: now,
             liveState: liveState,
             udpStatus: udpStatus,
+            flightContext: currentFlightContext,
+            receivedFrameSamples: receivedFrameSamples,
             proofState: proofState,
             controlState: controlState,
             ackState: governorResult.ackState,
@@ -1586,6 +1601,8 @@ final class PerformanceSampler: ObservableObject {
         now: Date,
         liveState: TelemetryLiveState,
         udpStatus: XPlaneUDPStatus,
+        flightContext: FlightContext,
+        receivedFrameSamples: [FrameSample],
         proofState: RegulatorProofState,
         controlState: RegulatorControlState,
         ackState: GovernorAckState,
@@ -1601,7 +1618,13 @@ final class PerformanceSampler: ObservableObject {
                 lastLiveSnapshot: nil,
                 ackOkCount: 0,
                 ackTimeoutCount: 0,
-                previousAckWasHealthy: nil
+                previousAckWasHealthy: nil,
+                flightContext: flightContext,
+                frameSampleCount: 0,
+                fpsTotal: 0,
+                frameTimeTotal: 0,
+                lowestFPS: nil,
+                spikeCount: 0
             )
         }
 
@@ -1615,6 +1638,16 @@ final class PerformanceSampler: ObservableObject {
                 activeSession.ackTimeoutCount += 1
             }
             activeSession.previousAckWasHealthy = ackHealthy
+            activeSession.flightContext = flightContext
+            for frameSample in receivedFrameSamples {
+                activeSession.frameSampleCount += 1
+                activeSession.fpsTotal += frameSample.fps
+                activeSession.frameTimeTotal += frameSample.frameTimeMilliseconds
+                activeSession.lowestFPS = min(activeSession.lowestFPS ?? frameSample.fps, frameSample.fps)
+                if frameSample.frameTimeMilliseconds >= stutterHeuristics.frameTimeSpikeMS {
+                    activeSession.spikeCount += 1
+                }
+            }
             activeSession.lastLiveSnapshot = buildSessionSnapshot(
                 now: now,
                 sessionStartAt: activeSession.sessionStartAt,
@@ -1629,15 +1662,60 @@ final class PerformanceSampler: ObservableObject {
             currentTelemetrySession = activeSession
         }
 
-        let transitionFromLive = previousTelemetryState == .live
-        let shouldFreeze = transitionFromLive && (liveState == .stale || liveState == .offline)
+        // Packet loss moves through `.listening` before becoming `.stale`.
+        // Finalize based on the active session rather than requiring a direct
+        // `.live -> .stale` transition, otherwise a normal Data Output stop is
+        // never persisted.
+        let shouldFreeze = currentTelemetrySession != nil && (liveState == .stale || liveState == .offline)
         if shouldFreeze, let session = currentTelemetrySession, var frozen = session.lastLiveSnapshot {
             frozen.sessionEndAt = now
             lastSessionSnapshotState = frozen
+            persistCompletedSession(session, endedAt: now)
             currentTelemetrySession = nil
         }
 
         previousTelemetryState = liveState
+    }
+
+    private func persistCompletedSession(_ session: ActiveTelemetrySession, endedAt: Date) {
+        let actions = actionReceiptBuffer
+            .filter { $0.timestamp >= session.sessionStartAt && $0.timestamp <= endedAt }
+            .map {
+                FlightSessionRecord.ActionSummary(
+                    id: $0.id,
+                    timestamp: $0.timestamp,
+                    kind: actionDisplayName(for: $0.kind),
+                    succeeded: $0.outcome,
+                    message: $0.message
+                )
+            }
+        let averageFPS = session.frameSampleCount > 0
+            ? session.fpsTotal / Double(session.frameSampleCount)
+            : nil
+        let averageFrameTime = session.frameSampleCount > 0
+            ? session.frameTimeTotal / Double(session.frameSampleCount)
+            : nil
+        let stutterCount = stutterEpisodeBuffer.filter {
+            $0.endAt >= session.sessionStartAt && $0.startAt <= endedAt
+        }.count
+        let record = FlightSessionRecord(
+            startedAt: session.sessionStartAt,
+            endedAt: endedAt,
+            flightContext: session.flightContext,
+            averageFPS: averageFPS,
+            stability: .init(
+                sampleCount: session.frameSampleCount,
+                averageFrameTimeMilliseconds: averageFrameTime,
+                lowestFPS: session.lowestFPS,
+                spikeCount: session.spikeCount
+            ),
+            stutterCount: stutterCount,
+            actions: actions
+        )
+
+        Task { @MainActor [weak self] in
+            self?.sessionHistoryStore?.append(record)
+        }
     }
 
     private func buildSessionSnapshot(

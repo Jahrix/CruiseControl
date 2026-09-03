@@ -247,6 +247,90 @@ final class FlightContextTests: XCTestCase {
     }
 }
 
+final class SessionHistoryTests: XCTestCase {
+    func testRoundTripsVersionedCompactSessionHistory() throws {
+        let record = makeRecord()
+        let encoded = try SessionHistoryPersistence.encode(.init(records: [record]))
+        let decoded = try SessionHistoryPersistence.decode(encoded)
+
+        XCTAssertEqual(decoded.schemaVersion, SessionHistoryDocument.currentSchemaVersion)
+        XCTAssertEqual(decoded.records, [record])
+        XCTAssertFalse(String(data: encoded, encoding: .utf8)?.contains("frameSamples") ?? true)
+    }
+
+    func testMigratesLegacyBareRecordArray() throws {
+        let record = makeRecord()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let legacyData = try encoder.encode([record])
+
+        let migrated = try SessionHistoryPersistence.decode(legacyData)
+        XCTAssertEqual(migrated.schemaVersion, SessionHistoryDocument.currentSchemaVersion)
+        XCTAssertEqual(migrated.records, [record])
+    }
+
+    func testRejectsFutureSessionHistorySchema() {
+        let data = Data(#"{"schemaVersion":2,"records":[]}"#.utf8)
+        XCTAssertThrowsError(try SessionHistoryPersistence.decode(data)) { error in
+            XCTAssertEqual(error as? SessionHistoryPersistence.Error, .unsupportedSchema(2))
+        }
+    }
+
+    func testBoundsStoredActionDetails() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let actions = (0..<20).map {
+            FlightSessionRecord.ActionSummary(
+                timestamp: startedAt.addingTimeInterval(TimeInterval($0)),
+                kind: "Action \($0)",
+                succeeded: true,
+                message: "Recorded action"
+            )
+        }
+        let record = FlightSessionRecord(
+            startedAt: startedAt,
+            endedAt: startedAt.addingTimeInterval(30),
+            flightContext: .unknown,
+            averageFPS: 30,
+            stability: .init(sampleCount: 20, averageFrameTimeMilliseconds: 33, lowestFPS: 20, spikeCount: 1),
+            stutterCount: 1,
+            actions: actions
+        )
+
+        XCTAssertEqual(record.actions.count, 12)
+        XCTAssertEqual(record.actions.first?.kind, "Action 8")
+    }
+
+    private func makeRecord() -> FlightSessionRecord {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        return FlightSessionRecord(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            startedAt: startedAt,
+            endedAt: startedAt.addingTimeInterval(90),
+            flightContext: .normalized(
+                simulatorVersionRaw: "XP12",
+                aircraftIdentifier: "A339",
+                aircraftName: "Airbus A330-900",
+                nearestAirportICAO: "KJFK",
+                altitudeAGLFeet: 35,
+                altitudeMSLFeet: 10,
+                isOnGround: true
+            ),
+            averageFPS: 42.5,
+            stability: .init(sampleCount: 1_800, averageFrameTimeMilliseconds: 23.5, lowestFPS: 27, spikeCount: 12),
+            stutterCount: 3,
+            actions: [
+                .init(
+                    id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+                    timestamp: startedAt.addingTimeInterval(20),
+                    kind: "Close background app",
+                    succeeded: true,
+                    message: "Closed successfully"
+                )
+            ]
+        )
+    }
+}
+
 final class DiagnosticEngineTests: XCTestCase {
     func testClassifiesSimulatorCPUOnlyWithTimingEvidence() {
         let samples = timedSamples(cpu: 25, gpu: 12, frame: 27)

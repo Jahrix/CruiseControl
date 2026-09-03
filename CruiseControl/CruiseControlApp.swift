@@ -11,6 +11,7 @@ struct CruiseControlApp: App {
                 .environmentObject(appDelegate.settingsStore)
                 .environmentObject(appDelegate.featureStore)
                 .environmentObject(appDelegate.proGate)
+                .environmentObject(appDelegate.sessionHistoryStore)
                 .frame(minWidth: 900, minHeight: 650)
         }
 

@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let settingsStore = SettingsStore()
     let featureStore = V112FeatureStore()
     let proGate = ProGate()
+    let sessionHistoryStore = SessionHistoryStore()
     lazy var sampler = PerformanceSampler()
 
     #if canImport(Sparkle)
@@ -59,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // responsive while minimizing interference with the simulator it measures.
         sampler.configureSampling(interval: 2.0, alpha: settingsStore.smoothingAlpha)
         sampler.configureXPlaneUDP(enabled: settingsStore.xPlaneUDPListeningEnabled, port: settingsStore.xPlaneUDPPort)
+        sampler.configureSessionHistory(store: sessionHistoryStore)
         sampler.start()
     }
 

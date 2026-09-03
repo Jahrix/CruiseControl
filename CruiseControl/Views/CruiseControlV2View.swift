@@ -590,18 +590,25 @@ private struct LiveDiagnosisView: View {
 
 private struct SessionDiagnosisView: View {
     @EnvironmentObject private var sampler: PerformanceSampler
+    @EnvironmentObject private var sessionHistory: SessionHistoryStore
     @State private var exportResult: String?
+    @State private var selectedRecordID: FlightSessionRecord.ID?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .firstTextBaseline) {
-                    pageHeader("Session", subtitle: "Frame time, spikes, and diagnosis changes")
+                    pageHeader("Sessions", subtitle: "Saved flight summaries and current live evidence")
                     Spacer()
-                    Button("Export report…") { exportReport() }
-                        .keyboardShortcut("e", modifiers: [.command, .shift])
+                    Menu("Export…") {
+                        Button("Session history…") { exportHistory() }
+                        Button("Live report…") { exportReport() }
+                    }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
                 }
 
+                savedSessions
+                savedSessionDetail
                 graph
                 summary
                 statistics
@@ -613,7 +620,106 @@ private struct SessionDiagnosisView: View {
             .padding(28)
             .frame(maxWidth: 1050, alignment: .leading)
         }
-        .navigationTitle("Session")
+        .navigationTitle("Sessions")
+    }
+
+    private var savedSessions: some View {
+        GroupBox("Saved sessions") {
+            if sessionHistory.records.isEmpty {
+                ContentUnavailableView(
+                    "No completed sessions yet",
+                    systemImage: "clock.arrow.circlepath",
+                    description: Text("CruiseControl saves a compact summary when live telemetry becomes stale or stops.")
+                )
+                .padding(8)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(sessionHistory.records) { record in
+                        Button {
+                            selectedRecordID = record.id
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(record.flightContext.aircraftDisplayName)
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(sessionContextText(record))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 3) {
+                                    Text(record.endedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(record.averageFPS.map { String(format: "%.1f FPS", $0) } ?? "FPS unavailable")
+                                        .font(.caption.weight(.semibold))
+                                }
+                            }
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .background(selectedRecordID == record.id ? Color.accentColor.opacity(0.12) : .clear)
+                        if record.id != sessionHistory.records.last?.id { Divider() }
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+        }
+        .onAppear {
+            if selectedRecordID == nil {
+                selectedRecordID = sessionHistory.records.first?.id
+            }
+        }
+        .onChange(of: sessionHistory.records.map(\.id)) { _, ids in
+            if let selectedRecordID, ids.contains(selectedRecordID) { return }
+            selectedRecordID = ids.first
+        }
+    }
+
+    @ViewBuilder
+    private var savedSessionDetail: some View {
+        if let record = selectedRecord {
+            GroupBox("Selected session") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 28) {
+                        savedStat("Duration", durationText(record.durationSeconds))
+                        savedStat("Average FPS", record.averageFPS.map { String(format: "%.1f", $0) } ?? "—")
+                        savedStat("Lowest FPS", record.stability.lowestFPS.map { String(format: "%.1f", $0) } ?? "—")
+                        savedStat("Stutters", "\(record.stutterCount)")
+                        savedStat("Frame pacing", framePacingText(record))
+                    }
+                    Text("\(record.flightContext.simulatorVersion.displayName) · \(sessionContextText(record))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let comparison = comparisonRecord(for: record) {
+                        Text(comparisonText(record, comparison))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !record.actions.isEmpty {
+                        Text("Recorded actions: \(record.actions.map(\.kind).joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    Button("Delete selected session", role: .destructive) {
+                        sessionHistory.delete(record)
+                    }
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var selectedRecord: FlightSessionRecord? {
+        guard let selectedRecordID else { return nil }
+        return sessionHistory.records.first { $0.id == selectedRecordID }
     }
 
     private var summary: some View {
@@ -715,6 +821,46 @@ private struct SessionDiagnosisView: View {
         }
     }
 
+    private func savedStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline).monospacedDigit()
+        }
+    }
+
+    private func sessionContextText(_ record: FlightSessionRecord) -> String {
+        [record.flightContext.nearestAirportICAO, record.flightContext.phaseOfFlightDetail]
+            .compactMap { $0 }
+            .filter { $0 != "Not available yet" }
+            .joined(separator: " · ")
+            .ifEmpty("Context not available")
+    }
+
+    private func durationText(_ duration: TimeInterval) -> String {
+        let totalSeconds = Int(duration.rounded())
+        return totalSeconds >= 3600
+            ? String(format: "%dh %02dm", totalSeconds / 3600, (totalSeconds % 3600) / 60)
+            : String(format: "%dm %02ds", totalSeconds / 60, totalSeconds % 60)
+    }
+
+    private func framePacingText(_ record: FlightSessionRecord) -> String {
+        guard let fraction = record.stability.spikeFraction else { return "—" }
+        return String(format: "%.1f%% spikes", fraction * 100)
+    }
+
+    private func comparisonRecord(for record: FlightSessionRecord) -> FlightSessionRecord? {
+        sessionHistory.records.first { $0.id != record.id }
+    }
+
+    private func comparisonText(_ record: FlightSessionRecord, _ comparison: FlightSessionRecord) -> String {
+        guard let fps = record.averageFPS, let baselineFPS = comparison.averageFPS else {
+            return "Comparison: FPS evidence is unavailable for one of these sessions."
+        }
+        let delta = fps - baselineFPS
+        let direction = delta >= 0 ? "higher" : "lower"
+        return String(format: "Compared with the most recent other session: %.1f FPS %@ (%+.1f FPS).", abs(delta), direction, delta)
+    }
+
     @MainActor
     private func exportReport() {
         let panel = NSSavePanel()
@@ -757,6 +903,27 @@ private struct SessionDiagnosisView: View {
         } catch {
             exportResult = "Export failed: \(error.localizedDescription)"
         }
+    }
+
+    @MainActor
+    private func exportHistory() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "CruiseControl-session-history.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try sessionHistory.exportData().write(to: url, options: .atomic)
+            exportResult = "Exported \(sessionHistory.records.count) saved session(s) to \(url.lastPathComponent)."
+        } catch {
+            exportResult = "Export failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+private extension String {
+    func ifEmpty(_ fallback: String) -> String {
+        isEmpty ? fallback : self
     }
 }
 

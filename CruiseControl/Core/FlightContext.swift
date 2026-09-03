@@ -3,8 +3,8 @@ import Foundation
 /// Read-only flight context assembled from fresh X-Plane telemetry and the
 /// optional CruiseControl companion bridge. Values are deliberately absent when
 /// neither source can provide them reliably.
-public struct FlightContext: Equatable, Sendable {
-    public enum SimulatorVersion: String, Equatable, Sendable {
+public struct FlightContext: Codable, Equatable, Sendable {
+    public enum SimulatorVersion: String, Codable, Equatable, Sendable {
         case xp11
         case xp12
         case unknown
