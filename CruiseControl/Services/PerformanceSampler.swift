@@ -157,6 +157,7 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var benchmarkIsCapturing = false
     @Published private(set) var benchmarkNeedsComparison = false
     @Published private(set) var benchmarkStatusMessage = "Capture a baseline with the same aircraft and view you plan to compare."
+    @Published private(set) var optimizationRecommendation = OptimizationRecommendation(id: "collect-evidence", title: "No action needed yet", reason: "Waiting for X-Plane telemetry.", evidence: "No measurements have been received.", confidence: .low, visualImpact: .none, performanceDirection: .validateOnly, restartRequired: false, canApplySafely: false)
     private let processScanner = ProcessScanner()
     private let queue = DispatchQueue(label: "CruiseControl.PerformanceSampler", qos: .utility)
 
@@ -168,6 +169,7 @@ final class PerformanceSampler: ObservableObject {
     private let governorBridge = GovernorCommandBridge()
     private let monotonicClock: MonotonicClock = SystemMonotonicClock()
     private let diagnosticEngine = DiagnosticEngine()
+    private let recommendationEngine = RecommendationEngine()
     private var samplePipeline = SamplePipeline(capacity: 75_000, staleAfterSeconds: 4)
     private var experimentTracker = ExperimentTracker()
     private var diagnosticChangeBuffer: [DiagnosticChange] = []
@@ -1391,6 +1393,11 @@ final class PerformanceSampler: ObservableObject {
             bridgeStatus: fileBridgeStatus,
             now: now
         )
+        let currentRecommendation = recommendationEngine.recommend(
+            diagnosis: diagnosis,
+            flightContext: currentFlightContext,
+            telemetryIsFresh: liveState == .live
+        )
         let controlState = deriveRegulatorControlState(now: now, fileBridgeStatus: fileBridgeStatus)
         maybeLogBridgeEvents(now: now, fileBridgeStatus: fileBridgeStatus)
         let proofState = buildRegulatorProofState(
@@ -1622,6 +1629,7 @@ final class PerformanceSampler: ObservableObject {
                 stutterEpisodes = stutterEpisodeBuffer
                 sessionReport = lastBuiltSessionReport
                 liveDiagnosis = diagnosis
+                optimizationRecommendation = currentRecommendation
                 connectionPhase = preciseConnectionPhase
                 frameSamples = publishedFrameSamples
                 flightContext = currentFlightContext

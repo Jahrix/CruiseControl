@@ -385,6 +385,27 @@ final class BenchmarkModelsTests: XCTestCase {
     }
 }
 
+final class RecommendationEngineTests: XCTestCase {
+    private let engine = RecommendationEngine()
+
+    func testRecommendsWorldObjectsForSimulatorMainThreadEvidence() {
+        let recommendation = engine.recommend(diagnosis: diagnosis(.simulatorMainThread, confidence: .high), flightContext: .normalized(simulatorVersionRaw: "XP11", aircraftIdentifier: "B738", aircraftName: nil, nearestAirportICAO: "KMCO", altitudeAGLFeet: 0, altitudeMSLFeet: 0, isOnGround: true), telemetryIsFresh: true)
+        XCTAssertEqual(recommendation.id, "world-objects")
+        XCTAssertEqual(recommendation.visualImpact, .medium)
+        XCTAssertFalse(recommendation.canApplySafely)
+    }
+
+    func testReturnsNoActionWhenEvidenceIsStale() {
+        let recommendation = engine.recommend(diagnosis: diagnosis(.gpu, confidence: .high), flightContext: .unknown, telemetryIsFresh: false)
+        XCTAssertEqual(recommendation.id, "collect-evidence")
+        XCTAssertEqual(recommendation.performanceDirection, .validateOnly)
+    }
+
+    private func diagnosis(_ bottleneck: Bottleneck, confidence: DiagnosticConfidence) -> DiagnosticResult {
+        DiagnosticResult(bottleneck: bottleneck, confidence: confidence, explanation: "Explanation", evidence: "Evidence", recommendation: "Hold the same view.", validation: "Validate", revert: "Revert", statistics: nil)
+    }
+}
+
 final class DiagnosticEngineTests: XCTestCase {
     func testClassifiesSimulatorCPUOnlyWithTimingEvidence() {
         let samples = timedSamples(cpu: 25, gpu: 12, frame: 27)

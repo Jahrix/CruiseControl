@@ -9,6 +9,7 @@ enum V2Section: String, CaseIterable, Identifiable {
     case live
     case session
     case benchmark
+    case optimize
     case setup
 
     var id: String { rawValue }
@@ -19,6 +20,7 @@ enum V2Section: String, CaseIterable, Identifiable {
         case .live: return "Live Diagnosis"
         case .session: return "Session"
         case .benchmark: return "Benchmark"
+        case .optimize: return "Optimize"
         case .setup: return "Setup"
         }
     }
@@ -29,6 +31,7 @@ enum V2Section: String, CaseIterable, Identifiable {
         case .live: return "gauge.with.dots.needle.67percent"
         case .session: return "chart.xyaxis.line"
         case .benchmark: return "stopwatch"
+        case .optimize: return "slider.horizontal.3"
         case .setup: return "cable.connector"
         }
     }
@@ -57,6 +60,7 @@ struct CruiseControlV2View: View {
             case .live: LiveDiagnosisView()
             case .session: SessionDiagnosisView()
             case .benchmark: BenchmarkView()
+            case .optimize: OptimizeView()
             case .setup: SetupDiagnosisView()
             }
         }
@@ -1076,6 +1080,52 @@ private struct BenchmarkView: View {
     private func compatibilityColor(_ pair: BenchmarkPair) -> Color {
         if case .questionable = pair.compatibility { return .orange }
         return .secondary
+    }
+}
+
+private struct OptimizeView: View {
+    @EnvironmentObject private var sampler: PerformanceSampler
+
+    var body: some View {
+        let recommendation = sampler.optimizationRecommendation
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                pageHeader("Optimize", subtitle: "One evidence-based next step; CruiseControl will not change settings for you")
+                GroupBox("Recommended next step") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(recommendation.title).font(.title3.weight(.semibold))
+                        Text(recommendation.reason)
+                        Text(recommendation.evidence).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                GroupBox("What this means") {
+                    HStack(spacing: 28) {
+                        detail("Confidence", recommendation.confidence.rawValue.capitalized)
+                        detail("Visual impact", recommendation.visualImpact.rawValue.capitalized)
+                        detail("Performance", recommendation.performanceDirection == .likelyImproves ? "Likely improves" : "Validate manually")
+                        detail("Restart", recommendation.restartRequired ? "Required" : "Not expected")
+                    }
+                    .padding(8)
+                }
+                GroupBox("Apply status") {
+                    Text(recommendation.canApplySafely ? "CruiseControl can apply this safely." : "Read-only recommendation. Change it manually in X-Plane or macOS, then use Benchmark to verify the result.")
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: 1050, alignment: .leading)
+        }
+        .navigationTitle("Optimize")
+    }
+
+    private func detail(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline)
+        }
     }
 }
 
