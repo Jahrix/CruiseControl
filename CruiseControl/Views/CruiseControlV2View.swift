@@ -343,13 +343,16 @@ private struct HomeDashboardView: View {
                         Text("UDP \(sampler.snapshot.udpStatus.listenHost):\(sampler.snapshot.udpStatus.listenPort) · \(packetRate) packets/sec")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Text("Simulator: \(sampler.flightContext.simulatorVersion.displayName) · Flight state: \(sampler.flightContext.phaseOfFlightDetail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 HStack(alignment: .top, spacing: 14) {
-                    contextCard(title: "Aircraft", value: "Not available yet", detail: "Aircraft identity is not included in the current telemetry feed.")
+                    contextCard(title: "Aircraft", value: sampler.flightContext.aircraftDisplayName, detail: aircraftDetail)
                     contextCard(title: "Airport", value: airportLabel, detail: airportDetail)
                     contextCard(title: "Optimization mode", value: optimizationMode, detail: "Automatic mode is not available in this build.")
                 }
@@ -400,20 +403,23 @@ private struct HomeDashboardView: View {
         return sampler.liveDiagnosis.explanation
     }
 
-    private var airportResolution: (icao: String?, source: AirportResolutionSource) {
-        featureStore.resolvedAirportICAO(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
-    }
-
     private var airportLabel: String {
-        airportResolution.icao ?? "Not available yet"
+        sampler.flightContext.nearestAirportICAO ?? "Not available yet"
     }
 
     private var airportDetail: String {
-        switch airportResolution.source {
-        case .telemetry: return "From X-Plane telemetry."
-        case .manual: return "From the selected airport profile."
-        case .none: return "Airport identification has not arrived yet."
+        sampler.flightContext.nearestAirportICAO == nil
+            ? "No reliable airport identifier has arrived yet."
+            : "From X-Plane telemetry or a fresh companion bridge update."
+    }
+
+    private var aircraftDetail: String {
+        if let identifier = sampler.flightContext.aircraftIdentifier {
+            return "Identifier: \(identifier)"
         }
+        return sampler.flightContext.aircraftName == nil
+            ? "Aircraft identity has not arrived yet."
+            : "Name from a fresh companion bridge update."
     }
 
     private var optimizationMode: String {

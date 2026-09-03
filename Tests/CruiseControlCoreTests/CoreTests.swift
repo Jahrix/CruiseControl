@@ -183,6 +183,70 @@ final class ConnectionMonitorTests: XCTestCase {
     }
 }
 
+final class FlightContextTests: XCTestCase {
+    func testUnknownContextHasNoInferredValues() {
+        let context = FlightContext.normalized(
+            simulatorVersionRaw: nil,
+            aircraftIdentifier: nil,
+            aircraftName: "   ",
+            nearestAirportICAO: nil,
+            altitudeAGLFeet: nil,
+            altitudeMSLFeet: nil,
+            isOnGround: nil
+        )
+
+        XCTAssertEqual(context.simulatorVersion, .unknown)
+        XCTAssertNil(context.aircraftIdentifier)
+        XCTAssertNil(context.aircraftName)
+        XCTAssertNil(context.nearestAirportICAO)
+        XCTAssertNil(context.altitudeAGLFeet)
+        XCTAssertNil(context.altitudeMSLFeet)
+        XCTAssertNil(context.isOnGround)
+        XCTAssertEqual(context.aircraftDisplayName, "Not available yet")
+        XCTAssertEqual(context.phaseOfFlightDetail, "Not available yet")
+    }
+
+    func testNormalizesReliableBridgeAndTelemetryValues() {
+        let context = FlightContext.normalized(
+            simulatorVersionRaw: "X-Plane 12.1",
+            aircraftIdentifier: "  B738  ",
+            aircraftName: "  Boeing 737-800  ",
+            nearestAirportICAO: " kjfk ",
+            altitudeAGLFeet: 42.4,
+            altitudeMSLFeet: 13,
+            isOnGround: true
+        )
+
+        XCTAssertEqual(context.simulatorVersion, .xp12)
+        XCTAssertEqual(context.aircraftIdentifier, "B738")
+        XCTAssertEqual(context.aircraftName, "Boeing 737-800")
+        XCTAssertEqual(context.aircraftDisplayName, "Boeing 737-800")
+        XCTAssertEqual(context.nearestAirportICAO, "KJFK")
+        XCTAssertEqual(context.altitudeAGLFeet, 42.4)
+        XCTAssertEqual(context.altitudeMSLFeet, 13)
+        XCTAssertEqual(context.isOnGround, true)
+        XCTAssertEqual(context.phaseOfFlightDetail, "42 ft AGL · On ground")
+    }
+
+    func testRejectsMalformedContextValuesRatherThanGuessing() {
+        let context = FlightContext.normalized(
+            simulatorVersionRaw: "X-Plane 13",
+            aircraftIdentifier: "",
+            aircraftName: nil,
+            nearestAirportICAO: "near-airport",
+            altitudeAGLFeet: .infinity,
+            altitudeMSLFeet: 100_000,
+            isOnGround: nil
+        )
+
+        XCTAssertEqual(context.simulatorVersion, .unknown)
+        XCTAssertNil(context.nearestAirportICAO)
+        XCTAssertNil(context.altitudeAGLFeet)
+        XCTAssertNil(context.altitudeMSLFeet)
+        XCTAssertNil(context.isOnGround)
+    }
+}
+
 final class DiagnosticEngineTests: XCTestCase {
     func testClassifiesSimulatorCPUOnlyWithTimingEvidence() {
         let samples = timedSamples(cpu: 25, gpu: 12, frame: 27)

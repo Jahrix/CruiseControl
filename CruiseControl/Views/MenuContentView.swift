@@ -2160,7 +2160,8 @@ struct MenuContentView: View {
             "Open your X-Plane folder, then go to:",
             "Resources/plugins/FlyWithLua/Scripts/",
             "",
-            "If FlyWithLua is not installed yet, install it first and then place the CruiseControl bridge script in that Scripts folder."
+            "If FlyWithLua is not installed yet, install it first and then place the CruiseControl bridge script in that Scripts folder.",
+            "Use Scripts/CruiseControl_Governor.example.lua from the CruiseControl repository, renamed to CruiseControl_Governor.lua, to publish read-only aircraft and airport context."
         ].joined(separator: "\n")
     }
 
@@ -2570,7 +2571,7 @@ struct MenuContentView: View {
                     Text("Install to: X-Plane 11/12/Resources/plugins/FlyWithLua/Scripts/")
                     Text("Companion regulator bridge listens on \(settings.governorCommandHost):\(String(settings.governorCommandPort)) and applies sim/private/controls/reno/LOD_bias_rat.")
                     Text("ACK protocol: PING/PONG, ACK ENABLE, ACK DISABLE, ACK SET_LOD <value>, ERR <message>.")
-                    Text("If LuaSocket is missing, CruiseControl writes fallback commands to ~/Library/Application Support/CruiseControl/lod_target.txt and lod_mode.txt.")
+                    Text("If LuaSocket is missing, CruiseControl writes fallback commands inside its app-container bridge folder.")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -4459,7 +4460,7 @@ struct MenuContentView: View {
                 title: "Couldn’t open bridge folder",
                 detail: detail,
                 trySteps: [
-                    "Create ~/Library/Application Support/CruiseControl if it is missing.",
+                    "Open CruiseControl while X-Plane is active so it creates its app-container bridge folder.",
                     "Check Finder permissions for your home Library folder.",
                     "Retry Open Bridge Folder."
                 ]

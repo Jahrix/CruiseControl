@@ -148,6 +148,7 @@ final class PerformanceSampler: ObservableObject {
     )
     @Published private(set) var connectionPhase: ConnectionPhase = .xPlaneNotRunning
     @Published private(set) var frameSamples: [FrameSample] = []
+    @Published private(set) var flightContext: FlightContext = .unknown
     @Published private(set) var sessionFrameStatistics: FrameStatistics?
     @Published private(set) var experimentComparison: ExperimentComparison?
     @Published private(set) var experimentIsActive = false
@@ -1243,8 +1244,15 @@ final class PerformanceSampler: ObservableObject {
 
         maybeCompleteRegulatorTestIfNeeded(now: now)
         let governorResult = evaluateGovernor(telemetry: telemetry, udpStatus: udpStatus, simActive: simActive, now: now)
-        let shouldReadFileBridgeStatus = governorConfig.enabled || pendingRegulatorTest != nil
+        // The bridge status is the supported optional source for flight identity
+        // and simulator context. Reading it never changes simulator settings.
+        let shouldReadFileBridgeStatus = governorConfig.enabled || pendingRegulatorTest != nil || simActive
         let fileBridgeStatus = shouldReadFileBridgeStatus ? governorBridge.readFileBridgeStatus() : nil
+        let currentFlightContext = resolveFlightContext(
+            telemetry: telemetry,
+            bridgeStatus: fileBridgeStatus,
+            now: now
+        )
         let controlState = deriveRegulatorControlState(now: now, fileBridgeStatus: fileBridgeStatus)
         maybeLogBridgeEvents(now: now, fileBridgeStatus: fileBridgeStatus)
         let proofState = buildRegulatorProofState(
@@ -1476,6 +1484,7 @@ final class PerformanceSampler: ObservableObject {
                 liveDiagnosis = diagnosis
                 connectionPhase = preciseConnectionPhase
                 frameSamples = publishedFrameSamples
+                flightContext = currentFlightContext
                 sessionFrameStatistics = publishedSessionStatistics
                 experimentComparison = experimentState.comparison
                 experimentIsActive = experimentState.isActive
@@ -2283,6 +2292,30 @@ final class PerformanceSampler: ObservableObject {
         }
 
         return ActionOutcome(success: false, message: "Unable to open bridge folder: \(folderURL.path)")
+    }
+
+    private func resolveFlightContext(
+        telemetry: SimTelemetrySnapshot?,
+        bridgeStatus: GovernorFileBridgeStatus?,
+        now: Date
+    ) -> FlightContext {
+        let bridgeIsFresh: Bool
+        if let updatedAt = bridgeStatus?.lastUpdateDate {
+            let age = now.timeIntervalSince(updatedAt)
+            bridgeIsFresh = (0...5).contains(age)
+        } else {
+            bridgeIsFresh = false
+        }
+
+        return FlightContext.normalized(
+            simulatorVersionRaw: bridgeIsFresh ? bridgeStatus?.simulatorVersion : nil,
+            aircraftIdentifier: bridgeIsFresh ? bridgeStatus?.aircraftIdentifier : nil,
+            aircraftName: bridgeIsFresh ? bridgeStatus?.aircraftName : nil,
+            nearestAirportICAO: telemetry?.nearestAirportICAO ?? (bridgeIsFresh ? bridgeStatus?.nearestAirportICAO : nil),
+            altitudeAGLFeet: telemetry?.altitudeAGLFeet,
+            altitudeMSLFeet: telemetry?.altitudeMSLFeet,
+            isOnGround: bridgeIsFresh ? bridgeStatus?.isOnGround : nil
+        )
     }
 
     private func isXPlaneProcessRunning(processes: [ProcessSample]?) -> Bool {

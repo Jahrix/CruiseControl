@@ -15,6 +15,13 @@ struct GovernorFileBridgeStatus {
     var currentLOD: Double?
     var targetLOD: Double?
     var tier: String?
+    // Optional read-only context keys emitted by a compatible companion bridge.
+    // Missing keys are expected with older bridge scripts.
+    var simulatorVersion: String?
+    var aircraftIdentifier: String?
+    var aircraftName: String?
+    var nearestAirportICAO: String?
+    var isOnGround: Bool?
     var lastUpdateDate: Date?
     var fileModifiedDate: Date?
     var rawText: String?
@@ -217,6 +224,10 @@ final class GovernorCommandBridge {
     }
 
     func readFileBridgeStatus() -> GovernorFileBridgeStatus? {
+        // The companion may start before CruiseControl has sent a command.
+        // Create the app-owned folder so its read-only status writer has a
+        // stable, sandbox-compatible destination.
+        _ = ensureBridgeFolderExists()
         let statusURL = Self.statusFileURL()
         guard fileManager.fileExists(atPath: statusURL.path) else {
             return nil
@@ -249,6 +260,11 @@ final class GovernorCommandBridge {
             currentLOD: map["current_lod"].flatMap(Double.init),
             targetLOD: map["target_lod"].flatMap(Double.init),
             tier: map["tier"],
+            simulatorVersion: map["simulator_version"] ?? map["xplane_version"],
+            aircraftIdentifier: map["aircraft_identifier"] ?? map["aircraft_icao"],
+            aircraftName: map["aircraft_name"],
+            nearestAirportICAO: map["nearest_airport_icao"] ?? map["airport_icao"],
+            isOnGround: map["on_ground"].flatMap(parseBool),
             lastUpdateDate: updateFromEpoch ?? modified,
             fileModifiedDate: modified,
             rawText: content?.trimmingCharacters(in: .whitespacesAndNewlines)

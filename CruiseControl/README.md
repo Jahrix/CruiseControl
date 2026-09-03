@@ -22,7 +22,7 @@ The Connection Wizard and in-app setup sheet use this exact checklist:
 4. Set Port to `49005` (or the port shown in CruiseControl)
 5. Enable Data Set 0 (frame-rate) and Data Set 20 (position/altitude)
 
-FlyWithLua bridge scripts go in `Resources/plugins/FlyWithLua/Scripts/` inside your X-Plane install folder.
+FlyWithLua bridge scripts go in `Resources/plugins/FlyWithLua/Scripts/` inside your X-Plane install folder. To publish read-only FlightContext fields, copy `Scripts/CruiseControl_Governor.example.lua` from this repository there as `CruiseControl_Governor.lua`, then restart X-Plane. With the sandboxed app, the bridge folder is `~/Library/Containers/jahrix.CruiseControl/Data/Library/Application Support/CruiseControl/`; CruiseControl creates it while X-Plane is active.
 
 ## Diagnostics export v2 payload
 
