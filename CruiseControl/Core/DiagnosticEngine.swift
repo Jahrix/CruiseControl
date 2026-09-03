@@ -83,7 +83,7 @@ public struct DiagnosticEngine: Sendable {
                 confidence: stats.sampleCount >= 40 ? .high : .medium,
                 explanation: "Typical frames are faster than the recurring slow spikes.",
                 evidence: String(format: "Over %.0f seconds (%d samples), median frame time was %.1f ms, p95 was %.1f ms, and %.0f%% of frames were spikes.", stats.durationSeconds, stats.sampleCount, stats.medianMilliseconds, p95, stats.spikeFrequency * 100),
-                recommendation: "Pause one background sync or recording tool, keep the same view, then run a 30-second comparison.",
+                recommendation: "Close one unnecessary background app, keep the same X-Plane view, and watch whether frame pacing improves.",
                 validation: "Success means spike frequency is cut in half without worsening median frame time.",
                 revert: "Resume the paused tool if spike frequency does not improve.",
                 stats: stats

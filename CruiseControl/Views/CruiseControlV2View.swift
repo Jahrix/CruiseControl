@@ -4,6 +4,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum V2Section: String, CaseIterable, Identifiable {
+    case home
     case live
     case session
     case setup
@@ -11,6 +12,7 @@ enum V2Section: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .home: return "Home"
         case .live: return "Live Diagnosis"
         case .session: return "Session"
         case .setup: return "Setup"
@@ -18,6 +20,7 @@ enum V2Section: String, CaseIterable, Identifiable {
     }
     var symbol: String {
         switch self {
+        case .home: return "house"
         case .live: return "gauge.with.dots.needle.67percent"
         case .session: return "chart.xyaxis.line"
         case .setup: return "cable.connector"
@@ -28,7 +31,7 @@ enum V2Section: String, CaseIterable, Identifiable {
 struct CruiseControlV2View: View {
     @EnvironmentObject private var sampler: PerformanceSampler
     @EnvironmentObject private var settings: SettingsStore
-    @State private var selected: V2Section? = .live
+    @State private var selected: V2Section? = .home
 
     var body: some View {
         NavigationSplitView {
@@ -42,7 +45,8 @@ struct CruiseControlV2View: View {
                 connectionFooter
             }
         } detail: {
-            switch selected ?? .live {
+            switch selected ?? .home {
+            case .home: HomeDashboardView()
             case .live: LiveDiagnosisView()
             case .session: SessionDiagnosisView()
             case .setup: SetupDiagnosisView()
@@ -68,6 +72,152 @@ struct CruiseControlV2View: View {
         }
         .padding(12)
         .background(.bar)
+    }
+}
+
+private struct HomeDashboardView: View {
+    @EnvironmentObject private var sampler: PerformanceSampler
+    @EnvironmentObject private var settings: SettingsStore
+    @EnvironmentObject private var featureStore: V112FeatureStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                pageHeader("Home", subtitle: "Your X-Plane performance at a glance")
+
+                HStack(spacing: 14) {
+                    metricCard(title: "Current FPS", value: latest.map { String(format: "%.1f", $0.fps) } ?? "Not available yet", detail: freshnessDetail)
+                    metricCard(title: "Frame time", value: latest.map { String(format: "%.1f ms", $0.frameTimeMilliseconds) } ?? "Not available yet", detail: freshnessDetail)
+                    metricCard(title: "Stability", value: stabilityTitle, detail: stabilityDetail)
+                }
+
+                GroupBox("Connection") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(sampler.connectionPhase.title)
+                            .font(.headline)
+                        Text(sampler.snapshot.udpStatus.detail ?? "Waiting for a connection update.")
+                            .foregroundStyle(.secondary)
+                        Text("UDP \(sampler.snapshot.udpStatus.listenHost):\(sampler.snapshot.udpStatus.listenPort) · \(packetRate) packets/sec")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    contextCard(title: "Aircraft", value: "Not available yet", detail: "Aircraft identity is not included in the current telemetry feed.")
+                    contextCard(title: "Airport", value: airportLabel, detail: airportDetail)
+                    contextCard(title: "Optimization mode", value: optimizationMode, detail: "Automatic mode is not available in this build.")
+                }
+
+                GroupBox("Recommended next step") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(recommendationTitle)
+                            .font(.headline)
+                        Text(recommendationDetail)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: 980, alignment: .leading)
+        }
+        .navigationTitle("Home")
+    }
+
+    private var latest: FrameSample? {
+        guard isFresh else { return nil }
+        return sampler.frameSamples.last
+    }
+
+    private var isFresh: Bool {
+        switch sampler.connectionPhase {
+        case .collecting, .missingDiagnosticFields:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var freshnessDetail: String {
+        isFresh ? "Live X-Plane telemetry" : sampler.connectionPhase.title
+    }
+
+    private var stabilityTitle: String {
+        guard isFresh else { return sampler.connectionPhase == .connectionLost ? "Telemetry stale" : "Not available yet" }
+        guard sampler.liveDiagnosis.statistics != nil else { return "Collecting trend" }
+        return sampler.liveDiagnosis.bottleneck == .instability ? "Unstable pacing" : "Stable evidence"
+    }
+
+    private var stabilityDetail: String {
+        guard isFresh else { return "Fresh telemetry is required before judging stability." }
+        return sampler.liveDiagnosis.explanation
+    }
+
+    private var airportResolution: (icao: String?, source: AirportResolutionSource) {
+        featureStore.resolvedAirportICAO(telemetryICAO: sampler.snapshot.xplaneTelemetry?.nearestAirportICAO)
+    }
+
+    private var airportLabel: String {
+        airportResolution.icao ?? "Not available yet"
+    }
+
+    private var airportDetail: String {
+        switch airportResolution.source {
+        case .telemetry: return "From X-Plane telemetry."
+        case .manual: return "From the selected airport profile."
+        case .none: return "Airport identification has not arrived yet."
+        }
+    }
+
+    private var optimizationMode: String {
+        settings.governorModeEnabled ? "Assisted" : "Manual"
+    }
+
+    private var packetRate: String {
+        String(format: "%.1f", sampler.snapshot.udpStatus.packetsPerSecond)
+    }
+
+    private var recommendationTitle: String {
+        if !isFresh { return "Restore fresh X-Plane telemetry" }
+        if sampler.liveDiagnosis.bottleneck == .insufficientEvidence,
+           sampler.liveDiagnosis.statistics != nil {
+            return "No action needed"
+        }
+        return sampler.liveDiagnosis.bottleneck.title
+    }
+
+    private var recommendationDetail: String {
+        if !isFresh { return "Wait for a fresh X-Plane packet before acting on performance data." }
+        if recommendationTitle == "No action needed" {
+            return "No sustained bottleneck pattern is established in the current evidence window."
+        }
+        return sampler.liveDiagnosis.recommendation
+    }
+
+    private func metricCard(title: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title2.weight(.semibold)).monospacedDigit()
+            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 122, alignment: .leading)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func contextCard(title: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline)
+            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 104, alignment: .leading)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
