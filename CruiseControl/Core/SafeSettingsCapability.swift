@@ -4,6 +4,8 @@ import Foundation
 /// Additional settings must be added here before they can be considered for a write.
 enum SafeSettingID: String, Codable, CaseIterable, Hashable {
     case lodBias
+    /// A one-time, user-initiated proof transaction; never an ordinary LOD change.
+    case lodVerification
 }
 
 enum XPlaneSimulatorVersion: String, Codable, CaseIterable {
@@ -93,11 +95,12 @@ struct SafeSettingsRuntime: Equatable {
     /// Values in this set are supplied only after the bridge has verified the
     /// corresponding dataref or command can be written in this X-Plane session.
     var writableSettings: Set<SafeSettingID>
+    var lodVerificationCandidate: Bool = false
 
     static let unavailable = SafeSettingsRuntime(
         simulatorVersion: .unknown,
         currentValues: [:],
-        writableSettings: []
+        writableSettings: [], lodVerificationCandidate: false
     )
 }
 
@@ -124,7 +127,7 @@ enum SafeSettingsCapabilityRegistry {
         for id: SafeSettingID,
         runtime: SafeSettingsRuntime
     ) -> SafeSettingsCapability {
-        let currentValue = runtime.currentValues[id]
+        let currentValue = runtime.currentValues[.lodBias]
         let writability: SafeSettingWritability
         if runtime.writableSettings.contains(id) {
             writability = .writable
@@ -144,6 +147,18 @@ enum SafeSettingsCapabilityRegistry {
                 writability: writability,
                 allowedValues: .numericRange(0.20...3.00),
                 writeMechanism: .bridgeCommand("SET_LOD"),
+                changeTiming: .live,
+                rollback: .restorePreviousValue
+            )
+        case .lodVerification:
+            return SafeSettingsCapability(
+                id: .lodVerification,
+                supportedSimulatorVersions: [.xp11, .xp12],
+                currentValue: currentValue,
+                readability: currentValue == nil ? .unavailable : .readable,
+                writability: runtime.lodVerificationCandidate ? .writable : .runtimeVerificationRequired,
+                allowedValues: .choices(["verify"]),
+                writeMechanism: .bridgeCommand("VERIFY_LOD"),
                 changeTiming: .live,
                 rollback: .restorePreviousValue
             )

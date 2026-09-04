@@ -73,6 +73,32 @@ final class SafeSettingsCapabilityTests: XCTestCase {
         XCTAssertEqual(writer.values, [.number(1.1)])
     }
 
+    func testGatewayAllowsOnlyExplicitCandidateBridgeVerification() {
+        let writer = RecordingSafeSettingsWriter()
+        let runtime = SafeSettingsRuntime(
+            simulatorVersion: .xp11,
+            currentValues: [.lodBias: .number(1.2)],
+            writableSettings: [],
+            lodVerificationCandidate: true
+        )
+
+        let verification = SafeSettingsWriteGateway().execute(
+            SafeSettingsWriteRequest(settingID: .lodVerification, value: .choice("verify")),
+            runtime: runtime,
+            writer: writer
+        )
+        XCTAssertEqual(verification.outcome, .applied)
+        XCTAssertEqual(writer.values, [.choice("verify")])
+
+        let lodWrite = SafeSettingsWriteGateway().execute(
+            SafeSettingsWriteRequest(settingID: .lodBias, value: .number(1.1)),
+            runtime: runtime,
+            writer: writer
+        )
+        XCTAssertEqual(lodWrite.outcome, .rejectedNotWritable)
+        XCTAssertEqual(writer.values, [.choice("verify")])
+    }
+
     func testPreferenceBackupCanRestoreOriginalFile() throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -95,6 +121,138 @@ final class SafeSettingsCapabilityTests: XCTestCase {
         func write(_ value: SafeSettingValue, for capability: SafeSettingsCapability) throws {
             values.append(value)
         }
+    }
+}
+
+final class GovernorLODWriteVerificationTests: XCTestCase {
+    func testRequiresNonceCorrelatedFreshMatchingReadback() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let readback = makeReadback(lod: 1.35, requestID: "write-1", updatedAt: now)
+
+        XCTAssertNil(LODWriteVerification.failure(
+            requestedLOD: 1.35,
+            requestID: "write-1",
+            readback: readback,
+            now: now
+        ))
+    }
+
+    func testRejectsMissingNonceStaleAndMismatchedReadback() {
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertEqual(
+            LODWriteVerification.failure(
+                requestedLOD: 1.35,
+                requestID: "write-1",
+                readback: makeReadback(lod: 1.35, requestID: nil, updatedAt: now),
+                now: now
+            ),
+            .missingReadback
+        )
+        XCTAssertEqual(
+            LODWriteVerification.failure(
+                requestedLOD: 1.35,
+                requestID: "write-1",
+                readback: makeReadback(lod: 1.35, requestID: "write-1", updatedAt: now.addingTimeInterval(-6)),
+                now: now
+            ),
+            .staleReadback
+        )
+        XCTAssertEqual(
+            LODWriteVerification.failure(
+                requestedLOD: 1.35,
+                requestID: "write-1",
+                readback: makeReadback(lod: 1.20, requestID: "write-1", updatedAt: now),
+                now: now
+            ),
+            .readbackMismatch
+        )
+    }
+
+    private func makeReadback(lod: Double, requestID: String?, updatedAt: Date) -> LODWriteReadback {
+        LODWriteReadback(currentLOD: lod, requestID: requestID, observedAt: updatedAt)
+    }
+}
+
+final class XPLMBridgeProtocolTests: XCTestCase {
+    func testCandidateRemainsUnverifiedUntilPersistenceAndRestorationComplete() {
+        var state = candidate()
+        (state, _) = XPLMBridgeProtocol.beginVerification(nonce: "verify", sequence: 1, current: 1.0, state: state)
+        XCTAssertEqual(state.state, .verifyingPersistence)
+        for _ in 0..<3 { (state, _) = XPLMBridgeProtocol.observe(1.01, state: state) }
+        XCTAssertEqual(state.state, .verifyingRestoration)
+        var terminal: XPLMBridgeEvent?
+        for _ in 0..<3 { (state, terminal) = XPLMBridgeProtocol.observe(1.0, state: state) }
+        XCTAssertEqual(terminal, .verified)
+        XCTAssertEqual(state.verifiedIdentity, state.identity)
+    }
+
+    func testPersistenceAndRestorationFailuresFailClosed() {
+        var state = candidate()
+        (state, _) = XPLMBridgeProtocol.beginVerification(nonce: "one", sequence: 1, current: 1.0, state: state)
+        let failure = XPLMBridgeProtocol.observe(1.2, state: state)
+        state = failure.0
+        let event = failure.1
+        XCTAssertEqual(event, .rejected("persistence verification failed"))
+        XCTAssertEqual(state.state, .lockedOut)
+
+        state = candidate()
+        (state, _) = XPLMBridgeProtocol.beginVerification(nonce: "two", sequence: 1, current: 1.0, state: state)
+        for _ in 0..<3 { (state, _) = XPLMBridgeProtocol.observe(1.01, state: state) }
+        let restorationFailure = XPLMBridgeProtocol.observe(1.2, state: state)
+        state = restorationFailure.0
+        let restoreEvent = restorationFailure.1
+        XCTAssertEqual(restoreEvent, .rejected("persistence verification failed"))
+        XCTAssertEqual(state.state, .lockedOut)
+    }
+
+    func testSessionAndBuildChangesInvalidateVerification() {
+        var state = verified()
+        state.identity.pluginSessionID = "new-session"
+        XCTAssertNotEqual(state.verifiedIdentity, state.identity)
+        XCTAssertEqual(XPLMBridgeProtocol.beginWrite(nonce: "n", sequence: 2, requested: 1.1, current: 1.0, leaseUntil: Date(), state: state).1, .rejected("capability is not verified for this session"))
+        state.identity.simulatorBuild = "XP12-120100"
+        XCTAssertNotEqual(state.verifiedIdentity, state.identity)
+    }
+
+    func testRejectsDuplicateNonceAndSequenceMismatch() {
+        var state = verified()
+        state.lastTerminalNonce = "used"
+        state.lastSequence = 4
+        XCTAssertEqual(XPLMBridgeProtocol.beginWrite(nonce: "used", sequence: 5, requested: 1.1, current: 1.0, leaseUntil: Date(), state: state).1, .rejected("nonce or sequence is not new"))
+        XCTAssertEqual(XPLMBridgeProtocol.beginWrite(nonce: "new", sequence: 4, requested: 1.1, current: 1.0, leaseUntil: Date(), state: state).1, .rejected("nonce or sequence is not new"))
+    }
+
+    func testFailedNormalWritePersistenceRequiresRecovery() {
+        var state = verified()
+        (state, _) = XPLMBridgeProtocol.beginWrite(nonce: "write", sequence: 1, requested: 1.1, current: 1.0, leaseUntil: Date().addingTimeInterval(5), state: state)
+        let failure = XPLMBridgeProtocol.observe(1.0, state: state)
+        state = failure.0
+        let event = failure.1
+        XCTAssertEqual(event, .recoveryRequired)
+        XCTAssertEqual(state.state, .recoveryRequired)
+    }
+
+    func testLeaseExpiryRequestsRestoration() {
+        var state = verified()
+        state.activationOriginal = 1.0
+        state.leaseExpiresAt = Date(timeIntervalSince1970: 1)
+        let expiry = XPLMBridgeProtocol.leaseExpired(now: Date(timeIntervalSince1970: 2), state: state)
+        state = expiry.0
+        let event = expiry.1
+        XCTAssertEqual(event, .accepted)
+        XCTAssertEqual(state.state, .restoring)
+    }
+
+    private func candidate() -> XPLMBridgeState {
+        XPLMBridgeProtocol.discover(candidate: true, state: .unavailable(build: "XP12-120000", session: "session"))
+    }
+
+    private func verified() -> XPLMBridgeState {
+        var state = candidate()
+        state.state = .verifiedIdle
+        state.verifiedIdentity = state.identity
+        return state
     }
 }
 
@@ -173,6 +331,132 @@ final class AssistedOptimizationPlanTests: XCTestCase {
         enum Failure: Error { case unavailable }
         func write(_ value: SafeSettingValue, for capability: SafeSettingsCapability) throws { throw Failure.unavailable }
     }
+}
+
+final class AdaptiveLODControllerTests: XCTestCase {
+    func testUnknownCapabilityAndStaleTelemetryFailClosed() {
+        var input = input(now: 10)
+        input.runtime.writableSettings = []
+        XCTAssertEqual(decision(input), .hold(reason: "LOD writability has not been verified."))
+
+        input.runtime.writableSettings = [.lodBias]
+        input.telemetryIsFresh = false
+        XCTAssertEqual(decision(input), .hold(reason: "Telemetry is stale."))
+    }
+
+    func testUnknownSimulatorAndBridgeFailureFailClosed() {
+        var unknownSimulator = input(now: 10)
+        unknownSimulator.runtime.simulatorVersion = .unknown
+        XCTAssertEqual(decision(unknownSimulator), .hold(reason: "Simulator version is unknown."))
+
+        var bridgeFailure = input(now: 10)
+        bridgeFailure.bridgeIsReachable = false
+        XCTAssertEqual(decision(bridgeFailure), .hold(reason: "Bridge status is unavailable or stale."))
+    }
+
+    func testPhaseBoundaryNoiseDoesNotOscillateBeforeDwell() {
+        var state = AdaptiveLODState.idle
+        var first = input(now: 0, agl: 1_450)
+        first.movingAverageFrameTimeMilliseconds = 40
+        state = AdaptiveLODController.step(input: first, state: state, configuration: config).state
+        XCTAssertEqual(state.phase, .ground)
+
+        for (time, agl) in [(2.0, 1_550.0), (4.0, 1_480.0), (6.0, 1_560.0)] {
+            var noisy = input(now: time, agl: agl)
+            noisy.movingAverageFrameTimeMilliseconds = 40
+            state = AdaptiveLODController.step(input: noisy, state: state, configuration: config).state
+            XCTAssertEqual(state.phase, .ground)
+        }
+    }
+
+    func testPerformancePressureUsesBoundedFastDegradeThenCooldown() {
+        var state = AdaptiveLODState.idle
+        state.phase = .ground
+        state.phaseEnteredAt = date(0)
+        var pressure = input(now: 3, agl: 0)
+        pressure.movingAverageFrameTimeMilliseconds = 50
+        state = AdaptiveLODController.step(input: pressure, state: state, configuration: config).state
+        pressure.now = date(6)
+        let requested = AdaptiveLODController.step(input: pressure, state: state, configuration: config)
+        XCTAssertEqual(requested.decision, .request(target: 1.35, reason: "Sustained frame-time pressure", evidenceAge: 0))
+
+        pressure.now = date(7)
+        pressure.observedLOD = 1.35
+        XCTAssertEqual(AdaptiveLODController.step(input: pressure, state: requested.state, configuration: config).decision, .hold(reason: "Adjustment cooldown is active."))
+    }
+
+    func testRecoveryRequiresLongerDwellAndMovesOneStepTowardPhaseTarget() {
+        var state = AdaptiveLODState.idle
+        state.phase = .ground
+        state.phaseEnteredAt = date(0)
+        var recovery = input(now: 5, agl: 0)
+        recovery.observedLOD = 1.50
+        recovery.movingAverageFrameTimeMilliseconds = 30
+        state = AdaptiveLODController.step(input: recovery, state: state, configuration: config).state
+        recovery.now = date(16)
+        XCTAssertEqual(
+            AdaptiveLODController.step(input: recovery, state: state, configuration: config).decision,
+            .request(target: 1.45, reason: "Sustained frame-time recovery", evidenceAge: 0)
+        )
+    }
+
+    func testPendingReadbackBlocksThenTimesOutWithoutAnotherWrite() {
+        var state = AdaptiveLODState.idle
+        state.phase = .ground
+        state.phaseEnteredAt = date(0)
+        state.originalLOD = 1.3
+        state.pendingTarget = 1.35
+        state.pendingSince = date(0)
+        var pending = input(now: 2, agl: 0)
+        XCTAssertEqual(AdaptiveLODController.step(input: pending, state: state, configuration: config).decision, .hold(reason: "Waiting for verified LOD readback."))
+        pending.now = date(6)
+        XCTAssertEqual(AdaptiveLODController.step(input: pending, state: state, configuration: config).decision, .hold(reason: "LOD write verification timed out; no further adjustment was made."))
+    }
+
+    func testDisableRequestsOriginalRestorationOnlyWhenCapabilityIsVerified() {
+        var state = AdaptiveLODState.idle
+        state.originalLOD = 1.2
+        var disabling = input(now: 1)
+        disabling.enabled = false
+        XCTAssertEqual(AdaptiveLODController.step(input: disabling, state: state, configuration: config).decision, .restore(target: 1.2, reason: "Adaptive LOD disabled", evidenceAge: 0))
+
+        disabling.runtime.writableSettings = []
+        XCTAssertEqual(AdaptiveLODController.step(input: disabling, state: state, configuration: config).decision, .hold(reason: "Adaptive LOD disabled; original LOD restoration could not be verified."))
+    }
+
+    private var config: AdaptiveLODConfiguration {
+        var value = AdaptiveLODConfiguration.default
+        value.minimumPhaseDwell = 0
+        value.degradationDwell = 2
+        value.restorationDwell = 10
+        value.degradationCooldown = 2
+        value.restorationCooldown = 10
+        value.minimumPerformanceSamples = 20
+        return value
+    }
+
+    private func input(now: TimeInterval, agl: Double? = 0) -> AdaptiveLODInput {
+        AdaptiveLODInput(
+            now: date(now),
+            enabled: true,
+            telemetryIsFresh: true,
+            bridgeIsFresh: true,
+            bridgeIsReachable: true,
+            readbackIsFresh: true,
+            runtime: SafeSettingsRuntime(simulatorVersion: .xp12, currentValues: [.lodBias: .number(1.3)], writableSettings: [.lodBias]),
+            observedLOD: 1.3,
+            altitudeAGLFeet: agl,
+            isOnGround: agl == 0,
+            movingAverageFrameTimeMilliseconds: 40,
+            movingAverageSampleCount: 20
+        )
+    }
+
+    private func decision(_ input: AdaptiveLODInput) -> AdaptiveLODDecision {
+        AdaptiveLODController.step(input: input, state: .idle, configuration: config).decision
+    }
+
+    private func date(_ seconds: TimeInterval) -> Date { Date(timeIntervalSince1970: seconds) }
 }
 
 final class TelemetryParserTests: XCTestCase {

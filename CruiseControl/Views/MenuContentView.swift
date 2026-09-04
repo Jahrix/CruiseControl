@@ -960,6 +960,22 @@ struct MenuContentView: View {
                         .font(.subheadline)
                         .foregroundStyle(settings.governorModeEnabled ? .green : .secondary)
 
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Adaptive LOD bridge")
+                            .font(.headline)
+                        Text(sampler.adaptiveLODVerificationMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Verify Adaptive LOD Bridge") {
+                            processActionResult = sampler.verifyAdaptiveLODBridge().message
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!sampler.adaptiveLODVerificationCanStart)
+                        Text("Verification is a bounded proof for this exact simulator build and plugin session. It does not enable a normal LOD change by itself.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     if let detail = sampler.snapshot.udpStatus.detail {
                         Text(detail)
                             .font(.caption)
@@ -2224,9 +2240,9 @@ struct MenuContentView: View {
                 swapThrashChip
             }
 
-            dashboardCard(title: "LOD Regulator") {
+            dashboardCard(title: "Adaptive LOD") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Enable LOD Regulator", isOn: $settings.governorModeEnabled)
+                    Toggle("Enable Adaptive LOD", isOn: $settings.governorModeEnabled)
 
                     HStack(spacing: 12) {
                         metricPill(label: "AGL", value: sampler.governorActiveAGLFeet.map { String(format: "%.0f ft", $0) } ?? "AGL unavailable")
@@ -2313,6 +2329,10 @@ struct MenuContentView: View {
                             Text("Altitude thresholds (feet AGL)")
                                 .font(.headline)
                             Toggle("Use MSL if AGL unavailable", isOn: $settings.governorUseMSLFallbackWhenAGLUnavailable)
+                                .disabled(true)
+                            Text("Adaptive LOD pauses when authoritative AGL is unavailable; MSL is not used for flight phase.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             sliderRow(label: "GROUND upper (ft)", value: $settings.governorGroundMaxAGLFeet, range: 500...5000, step: 100)
                             sliderRow(label: "CRUISE lower (ft)", value: $settings.governorCruiseMinAGLFeet, range: 6000...45000, step: 250)
 

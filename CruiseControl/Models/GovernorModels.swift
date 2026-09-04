@@ -138,12 +138,8 @@ enum GovernorPolicyEngine {
         if let agl = telemetry.altitudeAGLFeet, agl >= 0 {
             return (agl, .aglTelemetry)
         }
-
-        if useMSLFallbackWhenAGLUnavailable, let msl = telemetry.altitudeMSLFeet, msl >= 0 {
-            // Conservative fallback when AGL isn't directly available.
-            return (max(msl - 1_000, 0), .mslHeuristic)
-        }
-
+        // MSL cannot safely establish phase at high-elevation airports.
+        // Adaptive LOD fails closed until an authoritative AGL source arrives.
         return (nil, .unavailable)
     }
 

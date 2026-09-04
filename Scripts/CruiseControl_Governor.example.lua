@@ -16,7 +16,6 @@ local home = os.getenv("HOME") or ""
 -- CruiseControl is sandboxed, so its supported bridge folder is inside its
 -- application container rather than the shared Application Support directory.
 local bridge_folder = home .. "/Library/Containers/jahrix.CruiseControl/Data/Library/Application Support/CruiseControl"
-local TARGET_FILE_PATH = bridge_folder .. "/lod_target.txt"
 local MODE_FILE_PATH = bridge_folder .. "/lod_mode.txt"
 local STATUS_FILE_PATH = bridge_folder .. "/lod_status.txt"
 
@@ -29,8 +28,8 @@ local udp_enabled = false
 local governor_enabled = false
 local last_applied_lod = nil
 local last_requested_lod = nil
+local last_lod_write_id = nil
 local last_status_epoch = 0
-local last_target_file_value = nil
 local last_mode_file_value = nil
 
 local function safely_get(dataref)
@@ -55,7 +54,14 @@ local function write_lod(value)
         logMsg("[CruiseControl_Governor] Failed to set LOD dataref: " .. tostring(err))
         return false
     end
-    return true
+    -- FlyWithLua's set() returning normally is not a write guarantee. Read
+    -- the exact dataref again before reporting a successful bridge write.
+    local observed = read_lod()
+    if observed == nil or math.abs(observed - value) > 0.01 then
+        logMsg("[CruiseControl_Governor] LOD write did not produce a matching readback.")
+        return nil
+    end
+    return observed
 end
 
 local original_lod = read_lod()
@@ -64,22 +70,28 @@ if original_lod == nil then
 end
 last_applied_lod = original_lod
 
-local function apply_lod(value)
+local function apply_lod(value, request_id)
     if original_lod == nil then return nil end
 
     local clamped = clamp(value, CLAMP_MIN, CLAMP_MAX)
-    if not write_lod(clamped) then return nil end
+    local observed = write_lod(clamped)
+    if observed == nil then return nil end
 
-    last_applied_lod = clamped
+    last_applied_lod = observed
     last_requested_lod = clamped
+    last_lod_write_id = request_id
     governor_enabled = true
-    return clamped
+    return observed
 end
 
 local function restore_original_lod()
     if original_lod ~= nil then
-        write_lod(original_lod)
-        last_applied_lod = original_lod
+        local observed = write_lod(original_lod)
+        if observed ~= nil then
+            last_applied_lod = observed
+        else
+            logMsg("[CruiseControl_Governor] Could not verify original LOD restoration.")
+        end
     end
     governor_enabled = false
 end
@@ -147,8 +159,11 @@ local function write_status()
     if file == nil then return end
 
     file:write("enabled=" .. (governor_enabled and "1" or "0") .. "\n")
-    if last_applied_lod ~= nil then file:write(string.format("current_lod=%.3f\n", last_applied_lod)) end
+    -- Status is an observation, never a restatement of the requested value.
+    local observed_lod = read_lod()
+    if observed_lod ~= nil then file:write(string.format("current_lod=%.3f\n", observed_lod)) end
     if last_requested_lod ~= nil then file:write(string.format("target_lod=%.3f\n", last_requested_lod)) end
+    if last_lod_write_id ~= nil then file:write("last_lod_write_id=" .. last_lod_write_id .. "\n") end
     -- Reading a dataref is not proof that it is writable. The current
     -- companion deliberately does not probe by changing a simulator setting,
     -- so a future verified bridge must explicitly publish true before
@@ -186,12 +201,16 @@ local function handle_command(raw)
         return "ACK DISABLE"
     end
 
-    local requested = string.match(message, "^SET_LOD%s+(.+)$")
+    -- SET_LOD must carry a caller nonce. The nonce is emitted to status only
+    -- after a matching dataref readback, so CruiseControl can reject stale
+    -- status from a prior write.
+    local requested, request_id = string.match(message, "^SET_LOD%s+([^%s]+)%s+([^%s]+)$")
     local value = requested and tonumber(requested) or nil
-    if value ~= nil then
-        local applied = apply_lod(value)
+    if value ~= nil and request_id ~= nil then
+        local applied = apply_lod(value, request_id)
         if applied == nil then return "ERR failed to apply LOD" end
-        return string.format("ACK SET_LOD %.3f", applied)
+        write_status()
+        return string.format("ACK SET_LOD %.3f %s", applied, request_id)
     end
 
     return "ERR unknown command"
@@ -220,15 +239,10 @@ local function poll_file_bridge()
     if mode ~= nil and mode ~= last_mode_file_value then
         last_mode_file_value = mode
         if mode == "ENABLED=1" then handle_command("ENABLE") end
-        if mode == "ENABLED=0" then handle_command("DISABLE") end
     end
 
-    local target = read_first_line(TARGET_FILE_PATH)
-    if target ~= nil and target ~= last_target_file_value then
-        last_target_file_value = target
-        local value = tonumber(target)
-        if value ~= nil then handle_command("SET_LOD " .. target) end
-    end
+    -- File commands cannot provide a value-bearing ACK and fresh correlated
+    -- readback. They remain intentionally unable to change LOD.
 end
 
 if socket_ok then

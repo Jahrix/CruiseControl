@@ -119,6 +119,13 @@ final class PerformanceSampler: ObservableObject {
     @Published private(set) var regulatorLODChanging: Bool = false
     @Published private(set) var regulatorProofState: RegulatorProofState = .empty
     @Published private(set) var regulatorWhyNotChanging: [String] = []
+    @Published private(set) var adaptiveLODVerificationMessage: String = "Not verified"
+    @Published private(set) var adaptiveLODVerificationCanStart = false
+    // Verification is scoped to a native plugin session and exact simulator
+    // build. Retain only that identity so a changed status is presented as an
+    // invalidation instead of quietly appearing usable.
+    private var verifiedAdaptiveLODPluginSession: String?
+    private var verifiedAdaptiveLODSimulatorBuild: String?
     @Published private(set) var telemetryLiveState: TelemetryLiveState = .offline
     @Published private(set) var lastSessionSnapshot: SessionSnapshot?
     @Published private(set) var regulatorTierEvents: [RegulatorActionLog] = []
@@ -212,6 +219,8 @@ final class PerformanceSampler: ObservableObject {
 
     private var governorConfig: GovernorPolicyConfig = .default
     private var governorPreviouslyEnabled = false
+    private var adaptiveLODState: AdaptiveLODState = .idle
+    private var adaptiveLODReceipts: [AdaptiveLODAdjustmentReceipt] = []
 
     private var governorLockedTier: GovernorTier?
     private var governorLockedTierSince: Date?
@@ -368,15 +377,76 @@ final class PerformanceSampler: ObservableObject {
     }
 
     func configureGovernor(config: GovernorPolicyConfig) {
+        let wasEnabled = governorConfig.enabled
         governorConfig = config
-
-        if !config.enabled, governorPreviouslyEnabled {
-            _ = governorBridge.sendDisable(host: config.commandHost, port: config.commandPort)
-            governorPreviouslyEnabled = false
+        // Disabling is handled by AdaptiveLODController on the next sampling
+        // pass so an original LOD can be restored through the safe gateway.
+        // Never send a legacy direct DISABLE command here.
+        if wasEnabled, !config.enabled {
+            restoreAdaptiveLODIfPossible(reason: "Adaptive LOD disabled", at: Date())
         }
+    }
 
-        if !config.enabled {
-            resetGovernorRuntimeState()
+    @MainActor
+    func verifyAdaptiveLODBridge() -> ActionOutcome {
+        let now = Date()
+        let runtime = governorBridge.readSafeSettingsRuntime()
+        let receipt = SafeSettingsWriteGateway().execute(
+            SafeSettingsWriteRequest(settingID: .lodVerification, value: .choice("verify")),
+            runtime: runtime,
+            writer: GovernorSafeSettingsWriter(bridge: governorBridge, host: governorConfig.commandHost, port: governorConfig.commandPort, now: now),
+            now: now
+        )
+        refreshAdaptiveLODVerificationPresentation(now: now)
+        let message: String
+        switch receipt.outcome {
+        case .applied: message = "Adaptive LOD bridge verified for this simulator build and plugin session."
+        case .rejectedNotWritable: message = "Adaptive LOD bridge verification needs a fresh native candidate."
+        default: message = receipt.message
+        }
+        adaptiveLODVerificationMessage = message
+        return ActionOutcome(success: receipt.outcome == .applied, message: message)
+    }
+
+    private func refreshAdaptiveLODVerificationPresentation(now: Date) {
+        guard let status = governorBridge.readFileBridgeStatus() else {
+            adaptiveLODVerificationMessage = "Not verified — native bridge status is unavailable."
+            adaptiveLODVerificationCanStart = false
+            return
+        }
+        let date = status.lastUpdateDate ?? status.fileModifiedDate
+        guard let date, now.timeIntervalSince(date) >= 0, now.timeIntervalSince(date) <= 5 else {
+            adaptiveLODVerificationMessage = "Verification expired or invalidated — bridge status is stale."
+            adaptiveLODVerificationCanStart = false
+            return
+        }
+        if status.lodWriteSupported == true, let session = status.pluginSessionID, let build = status.simulatorBuild {
+            verifiedAdaptiveLODPluginSession = session
+            verifiedAdaptiveLODSimulatorBuild = build
+            adaptiveLODVerificationMessage = "Verified for \(build), plugin session \(session)."
+            adaptiveLODVerificationCanStart = false
+        } else if let verifiedSession = verifiedAdaptiveLODPluginSession,
+                  let verifiedBuild = verifiedAdaptiveLODSimulatorBuild,
+                  status.pluginSessionID != verifiedSession || status.simulatorBuild != verifiedBuild {
+            adaptiveLODVerificationMessage = "Verification expired or invalidated — the simulator build or plugin session changed."
+            adaptiveLODVerificationCanStart = status.lodVerificationCandidate == true
+        } else if status.transactionState == "verifying_persistence" || status.transactionState == "verifying_restoration" {
+            adaptiveLODVerificationMessage = "Verification in progress."
+            adaptiveLODVerificationCanStart = false
+        } else if status.lodVerificationCandidate == true,
+                  status.pluginSessionID?.isEmpty == false,
+                  status.simulatorBuild?.isEmpty == false {
+            adaptiveLODVerificationMessage = "Candidate detected — verification has not run."
+            adaptiveLODVerificationCanStart = true
+        } else if status.lodVerificationCandidate == true {
+            adaptiveLODVerificationMessage = "Candidate detected, but native bridge identity is incomplete."
+            adaptiveLODVerificationCanStart = false
+        } else if status.transactionState == "locked_out" || status.transactionState == "recovery_required" {
+            adaptiveLODVerificationMessage = "Verification failed — Adaptive LOD remains unavailable."
+            adaptiveLODVerificationCanStart = false
+        } else {
+            adaptiveLODVerificationMessage = "Not verified."
+            adaptiveLODVerificationCanStart = false
         }
     }
 
@@ -456,14 +526,11 @@ final class PerformanceSampler: ObservableObject {
     }
 
     func stop() {
+        restoreAdaptiveLODIfPossible(reason: "Adaptive LOD stopped", at: Date())
         timer?.cancel()
         timer = nil
         xPlaneReceiver.stop()
-
-        if governorPreviouslyEnabled {
-            _ = governorBridge.sendDisable(host: governorConfig.commandHost, port: governorConfig.commandPort)
-            governorPreviouslyEnabled = false
-        }
+        governorPreviouslyEnabled = false
     }
 
     deinit {
@@ -1617,6 +1684,7 @@ final class PerformanceSampler: ObservableObject {
                 governorLastACKDate = governorResult.lastACKDate
                 regulatorControlState = controlState
                 regulatorFileBridgeStatus = fileBridgeStatus
+                refreshAdaptiveLODVerificationPresentation(now: now)
                 regulatorLODChanging = lodChanging
                 regulatorProofState = proofState
                 regulatorWhyNotChanging = proofState.reasons
@@ -1904,7 +1972,218 @@ final class PerformanceSampler: ObservableObject {
         }
     }
 
+    private func restoreAdaptiveLODIfPossible(reason: String, at now: Date) {
+        let bridgeStatus = governorBridge.readFileBridgeStatus()
+        let evidenceDate = bridgeStatus?.lastUpdateDate ?? bridgeStatus?.fileModifiedDate
+        let bridgeIsFresh = evidenceDate.map { now.timeIntervalSince($0) <= 5 } ?? false
+        let runtime = governorBridge.readSafeSettingsRuntime()
+        let input = AdaptiveLODInput(
+            now: now,
+            enabled: false,
+            telemetryIsFresh: false,
+            bridgeIsFresh: bridgeIsFresh,
+            bridgeIsReachable: bridgeStatus != nil,
+            readbackIsFresh: bridgeIsFresh && bridgeStatus?.currentLOD != nil,
+            runtime: runtime,
+            observedLOD: bridgeStatus?.currentLOD,
+            altitudeAGLFeet: nil,
+            isOnGround: nil,
+            movingAverageFrameTimeMilliseconds: nil,
+            movingAverageSampleCount: 0
+        )
+        let step = AdaptiveLODController.step(input: input, state: adaptiveLODState, configuration: adaptiveLODConfiguration(from: governorConfig))
+        adaptiveLODState = step.state
+
+        guard case let .restore(target, restorationReason, evidenceAge) = step.decision else {
+            if case let .hold(holdReason) = step.decision, adaptiveLODState.originalLOD != nil {
+                logRegulatorAction("\(reason): \(holdReason)", at: now)
+            }
+            return
+        }
+
+        let safeReceipt = SafeSettingsWriteGateway().execute(
+            SafeSettingsWriteRequest(settingID: .lodBias, value: .number(target)),
+            runtime: runtime,
+            writer: GovernorSafeSettingsWriter(bridge: governorBridge, host: governorConfig.commandHost, port: governorConfig.commandPort, now: now),
+            now: now
+        )
+        appendAdaptiveLODReceipt(target: target, evidenceAge: evidenceAge, reason: restorationReason, safeReceipt: safeReceipt, at: now)
+        if safeReceipt.outcome == .applied {
+            adaptiveLODState = AdaptiveLODController.markRestored(adaptiveLODState)
+            logRegulatorAction("\(reason): original LOD restoration requested.", at: now)
+        } else {
+            logRegulatorAction("\(reason): original LOD restoration failed — \(safeReceipt.message)", at: now)
+        }
+    }
+
     private func evaluateGovernor(
+        telemetry: SimTelemetrySnapshot?,
+        udpStatus: XPlaneUDPStatus,
+        simActive: Bool,
+        now: Date
+    ) -> GovernorEvaluationResult {
+        let bridgeStatus = governorBridge.readFileBridgeStatus()
+        let bridgeEvidenceDate = bridgeStatus?.lastUpdateDate ?? bridgeStatus?.fileModifiedDate
+        let bridgeIsFresh = bridgeEvidenceDate.map { now.timeIntervalSince($0) <= 5 } ?? false
+        let runtime = governorBridge.readSafeSettingsRuntime()
+        let samples = samplePipeline.samples(inLast: 20, nowNanoseconds: monotonicClock.nowNanoseconds())
+        let averageFrameTime = samples.isEmpty ? nil : samples.map(\.frameTimeMilliseconds).reduce(0, +) / Double(samples.count)
+        let telemetryIsFresh = simActive && udpStatus.state == .active && !samplePipeline.isStale(nowNanoseconds: monotonicClock.nowNanoseconds())
+        let adaptiveConfig = adaptiveLODConfiguration(from: governorConfig)
+        let input = AdaptiveLODInput(
+            now: now,
+            enabled: governorConfig.enabled,
+            telemetryIsFresh: telemetryIsFresh,
+            bridgeIsFresh: bridgeIsFresh,
+            bridgeIsReachable: bridgeStatus != nil,
+            readbackIsFresh: bridgeIsFresh && bridgeStatus?.currentLOD != nil,
+            runtime: runtime,
+            observedLOD: bridgeStatus?.currentLOD,
+            altitudeAGLFeet: telemetry?.altitudeAGLFeet,
+            isOnGround: bridgeIsFresh ? bridgeStatus?.isOnGround : nil,
+            movingAverageFrameTimeMilliseconds: averageFrameTime,
+            movingAverageSampleCount: samples.count
+        )
+        let step = AdaptiveLODController.step(input: input, state: adaptiveLODState, configuration: adaptiveConfig)
+        adaptiveLODState = step.state
+
+        var reasons: [String] = []
+        var statusLine = "Adaptive LOD: Paused"
+        var pauseReason: String?
+        var targetLOD: Double?
+        var lastCommand: String?
+        var lastACK: String?
+        var lastACKDate: Date?
+        var ackState: GovernorAckState = .paused
+
+        switch step.decision {
+        case let .hold(reason):
+            reasons.append(reason)
+            pauseReason = reason
+            statusLine = "Adaptive LOD: Paused — \(reason)"
+        case let .request(target, reason, evidenceAge):
+            targetLOD = target
+            let safeReceipt = SafeSettingsWriteGateway().execute(
+                SafeSettingsWriteRequest(settingID: .lodBias, value: .number(target)),
+                runtime: runtime,
+                writer: GovernorSafeSettingsWriter(bridge: governorBridge, host: governorConfig.commandHost, port: governorConfig.commandPort, now: now),
+                now: now
+            )
+            appendAdaptiveLODReceipt(target: target, evidenceAge: evidenceAge, reason: reason, safeReceipt: safeReceipt, at: now)
+            lastCommand = governorBridge.lastCommand
+            lastACK = governorBridge.lastAckMessage
+            lastACKDate = governorBridge.lastAckAt
+            ackState = safeReceipt.outcome == .applied ? .ackOK : .noAck
+            reasons.append(reason)
+            reasons.append(safeReceipt.message)
+            statusLine = safeReceipt.outcome == .applied
+                ? "Adaptive LOD: Requested \(String(format: "%.2f", target)); waiting for readback"
+                : "Adaptive LOD: Paused — \(safeReceipt.message)"
+            pauseReason = safeReceipt.outcome == .applied ? nil : safeReceipt.message
+        case let .restore(target, reason, evidenceAge):
+            targetLOD = target
+            let safeReceipt = SafeSettingsWriteGateway().execute(
+                SafeSettingsWriteRequest(settingID: .lodBias, value: .number(target)),
+                runtime: runtime,
+                writer: GovernorSafeSettingsWriter(bridge: governorBridge, host: governorConfig.commandHost, port: governorConfig.commandPort, now: now),
+                now: now
+            )
+            appendAdaptiveLODReceipt(target: target, evidenceAge: evidenceAge, reason: reason, safeReceipt: safeReceipt, at: now)
+            if safeReceipt.outcome == .applied {
+                adaptiveLODState = AdaptiveLODController.markRestored(adaptiveLODState)
+            }
+            lastCommand = governorBridge.lastCommand
+            lastACK = governorBridge.lastAckMessage
+            lastACKDate = governorBridge.lastAckAt
+            ackState = safeReceipt.outcome == .applied ? .ackOK : .noAck
+            reasons.append(reason)
+            reasons.append(safeReceipt.message)
+            statusLine = safeReceipt.outcome == .applied
+                ? "Adaptive LOD: Original LOD restoration requested"
+                : "Adaptive LOD: Restoration failed — \(safeReceipt.message)"
+            pauseReason = safeReceipt.outcome == .applied ? nil : safeReceipt.message
+        }
+
+        let tier = adaptiveLODState.phase.map(governorTier)
+        if targetLOD == nil, let phase = adaptiveLODState.phase { targetLOD = adaptiveConfig.target(for: phase) }
+        let decision = tier.flatMap { tier in
+            targetLOD.map {
+                GovernorDecision(
+                    tier: tier,
+                    resolvedAGLFeet: telemetry?.altitudeAGLFeet ?? 0,
+                    resolvedAltitudeSource: telemetry?.altitudeAGLFeet == nil ? .unavailable : .aglTelemetry,
+                    targetLOD: $0,
+                    thresholdsText: "Authoritative AGL required; ±\(Int(adaptiveConfig.phaseHysteresisFeet))ft hysteresis"
+                )
+            }
+        }
+
+        return GovernorEvaluationResult(
+            decision: decision,
+            statusLine: statusLine,
+            currentTier: tier,
+            currentTargetLOD: targetLOD,
+            smoothedLOD: targetLOD,
+            activeAGLFeet: telemetry?.altitudeAGLFeet,
+            lastSentLOD: governorBridge.lastSentLOD,
+            commandStatus: statusLine,
+            ackState: ackState,
+            lastCommand: lastCommand,
+            lastACK: lastACK,
+            lastACKDate: lastACKDate,
+            pauseReason: pauseReason,
+            reasons: reasons,
+            rampInProgress: adaptiveLODState.pendingTarget != nil
+        )
+    }
+
+    private func adaptiveLODConfiguration(from config: GovernorPolicyConfig) -> AdaptiveLODConfiguration {
+        var value = AdaptiveLODConfiguration.default
+        value.groundTarget = config.targetLODGround
+        value.transitionTarget = config.targetLODClimbDescent
+        value.cruiseTarget = config.targetLODCruise
+        value.minimumLOD = config.clampedMinLOD
+        value.maximumLOD = config.clampedMaxLOD
+        value.maximumStep = config.minimumCommandDelta
+        value.groundUpperAGLFeet = config.clampedGroundMax
+        value.cruiseLowerAGLFeet = config.clampedCruiseMin
+        value.minimumPhaseDwell = config.minimumTierHoldSeconds
+        value.degradationCooldown = max(config.minimumCommandIntervalSeconds, 1)
+        return value
+    }
+
+    private func governorTier(for phase: AdaptiveLODPhase) -> GovernorTier {
+        switch phase {
+        case .ground: return .ground
+        case .transition: return .transition
+        case .cruise: return .cruise
+        }
+    }
+
+    private func appendAdaptiveLODReceipt(
+        target: Double,
+        evidenceAge: TimeInterval,
+        reason: String,
+        safeReceipt: SafeSettingsReceipt,
+        at timestamp: Date
+    ) {
+        let receipt = AdaptiveLODAdjustmentReceipt(
+            id: UUID(),
+            timestamp: timestamp,
+            targetLOD: target,
+            appliedLOD: safeReceipt.outcome == .applied ? target : nil,
+            evidenceAge: evidenceAge,
+            reason: reason,
+            succeeded: safeReceipt.outcome == .applied,
+            safeSettingsReceipt: safeReceipt
+        )
+        adaptiveLODReceipts.append(receipt)
+        if adaptiveLODReceipts.count > 120 {
+            adaptiveLODReceipts.removeFirst(adaptiveLODReceipts.count - 120)
+        }
+    }
+
+    private func evaluateLegacyGovernor(
         telemetry: SimTelemetrySnapshot?,
         udpStatus: XPlaneUDPStatus,
         simActive: Bool,
@@ -2386,79 +2665,16 @@ final class PerformanceSampler: ObservableObject {
 
     @MainActor
     func runRegulatorTimedTest(lodValue: Double, modeLabel: String, durationSeconds: TimeInterval = 10.0) -> ActionOutcome {
-        if pendingRegulatorTest != nil {
-            return ActionOutcome(success: false, message: "A regulator test is already running.")
-        }
-
-        let clampedLOD = governorConfig.clampLOD(lodValue)
-        let host = governorConfig.commandHost
-        let port = governorConfig.commandPort
-        let now = Date()
-        let fallbackRestoreLOD = governorConfig.enabled ? (governorCurrentTierTargetLODInternal ?? governorSmoothedLODInternal ?? governorCurrentTargetLOD ?? 1.0) : 1.0
-
-        let result = queue.sync {
-            governorBridge.sendTestLOD(lod: clampedLOD, host: host, port: port, now: now)
-        }
-
-        governorLastSentLOD = clampedLOD
-        governorCommandStatus = result.statusText
-        governorAckState = result.ackState
-        governorLastCommandText = governorBridge.lastCommand
-        governorLastCommandDate = governorBridge.lastCommandAt
-        governorLastACKText = governorBridge.lastAckMessage
-        governorLastACKDate = governorBridge.lastAckAt
-
-        guard result.sent else {
-            let detail = result.error ?? "Unknown send failure."
-            logRegulatorAction("Test start failed: \(detail)", at: now)
-            return ActionOutcome(success: false, message: "Test command failed: \(detail)")
-        }
-
-        pendingRegulatorTest = RegulatorTestSession(
-            startedAt: now,
-            endsAt: now.addingTimeInterval(max(durationSeconds, 1.0)),
-            fallbackRestoreLOD: fallbackRestoreLOD,
-            modeLabel: modeLabel
-        )
-
-        let displayLOD = String(format: "%.2f", clampedLOD)
-        let restoreDisplay = String(format: "%.2f", governorConfig.clampLOD(fallbackRestoreLOD))
-        logRegulatorAction("Test started (\(modeLabel)): LOD \(displayLOD) for \(Int(durationSeconds))s. Auto-restore live target (fallback \(restoreDisplay)).", at: now)
-        logTierEvent("Test \(modeLabel) -> \(displayLOD) for \(Int(durationSeconds))s", at: now)
-
-        regulatorTestActive = true
-        regulatorTestCountdownSeconds = Int(durationSeconds)
-
-        return ActionOutcome(success: true, message: "Test running for \(Int(durationSeconds))s: \(modeLabel), LOD \(displayLOD).")
+        let message = "Manual LOD tests are disabled until the bridge verifies writable capability."
+        logRegulatorAction(message)
+        return ActionOutcome(success: false, message: message)
     }
 
     @MainActor
     func sendGovernorTestCommand(lodValue: Double) -> ActionOutcome {
-        let clampedLOD = governorConfig.clampLOD(lodValue)
-        let host = governorConfig.commandHost
-        let port = governorConfig.commandPort
-        let now = Date()
-
-        let result = queue.sync {
-            governorBridge.sendTestLOD(lod: clampedLOD, host: host, port: port, now: now)
-        }
-
-        governorLastSentLOD = clampedLOD
-        governorCommandStatus = result.statusText
-        governorAckState = result.ackState
-        governorLastCommandText = governorBridge.lastCommand
-        governorLastCommandDate = governorBridge.lastCommandAt
-        governorLastACKText = governorBridge.lastAckMessage
-        governorLastACKDate = governorBridge.lastAckAt
-
-        if result.sent {
-            logRegulatorAction("Manual test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)).", at: now)
-            return ActionOutcome(success: true, message: "Manual test command sent: SET_LOD \(String(format: "%.2f", clampedLOD)) to \(host):\(port).")
-        }
-
-        let detail = result.error ?? "Unknown send failure."
-        logRegulatorAction("Manual test failed: \(detail)", at: now)
-        return ActionOutcome(success: false, message: "Test command failed: \(detail)")
+        let message = "Manual LOD tests are disabled until the bridge verifies writable capability."
+        logRegulatorAction(message)
+        return ActionOutcome(success: false, message: message)
     }
 
     @MainActor
