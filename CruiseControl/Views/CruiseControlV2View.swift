@@ -1085,6 +1085,9 @@ private struct BenchmarkView: View {
 
 private struct OptimizeView: View {
     @EnvironmentObject private var sampler: PerformanceSampler
+    @State private var plan: AssistedOptimizationPlan?
+    @State private var approvedActionIDs: Set<String> = []
+    @State private var executionResult: AssistedPlanExecutionResult?
 
     var body: some View {
         let recommendation = sampler.optimizationRecommendation
@@ -1114,6 +1117,51 @@ private struct OptimizeView: View {
                         .foregroundStyle(.secondary)
                         .padding(8)
                 }
+                GroupBox("Assisted plan") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let plan {
+                            Text("Review the selected steps before taking action.")
+                                .foregroundStyle(.secondary)
+                            ForEach(plan.actions) { action in
+                                Toggle(isOn: approvalBinding(for: action.id)) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(action.title).font(.headline)
+                                        Text(action.reason).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                            Button("Approve selected steps") {
+                                executionResult = AssistedOptimizationPlanExecutor().execute(
+                                    plan: plan,
+                                    approvedActionIDs: approvedActionIDs,
+                                    runtime: .unavailable,
+                                    writer: nil
+                                )
+                            }
+                            .disabled(approvedActionIDs.isEmpty)
+
+                            if let executionResult, let receipt = executionResult.receipts.first(where: { $0.outcome != .skipped }) {
+                                Text(receipt.message).font(.caption).foregroundStyle(.secondary)
+                                if receipt.outcome == .manualActionRequired {
+                                    Text("After the manual change, use Benchmark with the same X-Plane view to verify it.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        } else {
+                            Text("Create a plan to review the current recommendation. CruiseControl only applies settings that a bridge has verified as writable.")
+                                .foregroundStyle(.secondary)
+                            Button("Create review plan") {
+                                let generated = AssistedOptimizationPlanEngine.makePlan(for: recommendation)
+                                plan = generated
+                                approvedActionIDs = Set(generated.actions.map(\.id))
+                                executionResult = nil
+                            }
+                        }
+                    }
+                    .padding(8)
+                }
             }
             .padding(28)
             .frame(maxWidth: 1050, alignment: .leading)
@@ -1126,6 +1174,16 @@ private struct OptimizeView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.headline)
         }
+    }
+
+    private func approvalBinding(for actionID: String) -> Binding<Bool> {
+        Binding(
+            get: { approvedActionIDs.contains(actionID) },
+            set: { approved in
+                if approved { approvedActionIDs.insert(actionID) }
+                else { approvedActionIDs.remove(actionID) }
+            }
+        )
     }
 }
 

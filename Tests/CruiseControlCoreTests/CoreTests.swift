@@ -98,6 +98,83 @@ final class SafeSettingsCapabilityTests: XCTestCase {
     }
 }
 
+final class AssistedOptimizationPlanTests: XCTestCase {
+    func testCancellationCreatesNoReceiptsAndCannotWrite() {
+        let writer = RecordingWriter()
+        let result = AssistedOptimizationPlanExecutor().execute(
+            plan: settingPlan(),
+            approvedActionIDs: [],
+            runtime: writableRuntime,
+            writer: writer
+        )
+
+        XCTAssertEqual(result.status, .cancelled)
+        XCTAssertTrue(result.receipts.isEmpty)
+        XCTAssertTrue(writer.values.isEmpty)
+    }
+
+    func testPartialApprovalWritesOnlySelectedCapability() {
+        let writer = RecordingWriter()
+        let result = AssistedOptimizationPlanExecutor().execute(
+            plan: AssistedOptimizationPlan(recommendationID: "test", evidence: "test", actions: [settingAction(id: "one", value: 1.1), settingAction(id: "two", value: 1.2)]),
+            approvedActionIDs: ["two"],
+            runtime: writableRuntime,
+            writer: writer
+        )
+
+        XCTAssertEqual(writer.values, [.number(1.2)])
+        XCTAssertEqual(result.receipts.first { $0.actionID == "one" }?.outcome, .skipped)
+        XCTAssertEqual(result.receipts.first { $0.actionID == "two" }?.outcome, .applied)
+    }
+
+    func testFailedWriteKeepsRollbackMetadataInReceipt() {
+        let result = AssistedOptimizationPlanExecutor().execute(
+            plan: settingPlan(),
+            approvedActionIDs: ["lod"],
+            runtime: writableRuntime,
+            writer: FailingWriter()
+        )
+
+        let settingReceipt = result.receipts.first?.settingReceipt
+        XCTAssertEqual(result.receipts.first?.outcome, .failed)
+        XCTAssertEqual(settingReceipt?.rollback, .restorePreviousValue)
+        XCTAssertEqual(settingReceipt?.previousValue, .number(1.3))
+    }
+
+    func testRestartRequiredActionIsQueuedWithoutWriting() {
+        let writer = RecordingWriter()
+        let restart = AssistedPlanAction(id: "restart", title: "Restart setting", reason: "test", kind: .setting(SafeSettingsWriteRequest(settingID: .lodBias, value: .number(1.1))), restartRequired: true)
+        let plan = AssistedOptimizationPlan(recommendationID: "test", evidence: "test", actions: [restart])
+
+        let result = AssistedOptimizationPlanExecutor().execute(plan: plan, approvedActionIDs: ["restart"], runtime: writableRuntime, writer: writer)
+
+        XCTAssertEqual(result.receipts.first?.outcome, .queuedForRestart)
+        XCTAssertTrue(writer.values.isEmpty)
+    }
+
+    private var writableRuntime: SafeSettingsRuntime {
+        SafeSettingsRuntime(simulatorVersion: .xp12, currentValues: [.lodBias: .number(1.3)], writableSettings: [.lodBias])
+    }
+
+    private func settingPlan() -> AssistedOptimizationPlan {
+        AssistedOptimizationPlan(recommendationID: "test", evidence: "test", actions: [settingAction(id: "lod", value: 1.1)])
+    }
+
+    private func settingAction(id: String, value: Double) -> AssistedPlanAction {
+        AssistedPlanAction(id: id, title: "LOD", reason: "test", kind: .setting(SafeSettingsWriteRequest(settingID: .lodBias, value: .number(value))), restartRequired: false)
+    }
+
+    private final class RecordingWriter: SafeSettingsWriter {
+        var values: [SafeSettingValue] = []
+        func write(_ value: SafeSettingValue, for capability: SafeSettingsCapability) throws { values.append(value) }
+    }
+
+    private final class FailingWriter: SafeSettingsWriter {
+        enum Failure: Error { case unavailable }
+        func write(_ value: SafeSettingValue, for capability: SafeSettingsCapability) throws { throw Failure.unavailable }
+    }
+}
+
 final class TelemetryParserTests: XCTestCase {
     private let parser = XPlaneTelemetryParser()
 
